@@ -1,0 +1,29 @@
+[package]
+name = "pathkit"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Rust port of Google Skia's PathKit: path construction, geometry, and boolean path operations"
+license = "BSD-3-Clause"
+repository = "https://github.com/durableprogramming/pathkit-rs"
+documentation = "https://docs.rs/pathkit"
+readme = "README.md"
+keywords = ["path", "geometry", "vector-graphics", "skia", "pathops"]
+categories = ["graphics", "mathematics"]
+exclude = ["old/", "ref/"]
+
+[dependencies]
+thiserror = "2"
+once_cell = "1"
+skia-rs-core = { path = "inspirations/skia-rs/crates/skia-rs-core", optional = true }
+skia-rs-path = { path = "inspirations/skia-rs/crates/skia-rs-path", optional = true }
+
+[features]
+default = []
+skia-rs = ["dep:skia-rs-core", "dep:skia-rs-path"]
+
+[dev-dependencies]
+
+[[bin]]
+name = "pathkit-main"
+path = "src/old/pathkit/main.rs"
