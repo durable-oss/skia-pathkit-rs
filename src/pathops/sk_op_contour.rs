@@ -145,32 +145,29 @@ impl SkOpContour {
     }
 
     /// Calculate angles for all segments in this contour
-    pub fn calc_angles(&self) {
-        // Simplified implementation - in full version would compute angles for each span
+    pub fn calc_angles(&mut self) {
+        // TODO: full delegation once next_mut lands
+        self.f_head.calc_angles();
     }
 
     /// Check if this contour is missing coincidence
-    pub fn missing_coincidence(&self) -> bool {
-        // Simplified implementation
-        false
+    pub fn missing_coincidence(&mut self) -> bool {
+        self.f_head.missing_coincidence()
     }
 
     /// Move multiples to align t values
     pub fn move_multiples(&mut self) -> bool {
-        // Simplified implementation
-        true
+        self.f_head.move_multiples()
     }
 
     /// Move nearby points to eliminate small gaps
     pub fn move_nearby(&mut self) -> bool {
-        // Simplified implementation
-        true
+        self.f_head.move_nearby()
     }
 
     /// Sort angles for this contour
     pub fn sort_angles(&mut self) -> bool {
-        // Simplified implementation
-        true
+        self.f_head.sort_angles()
     }
 
     /// Returns the number of segments

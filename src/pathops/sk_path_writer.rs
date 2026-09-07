@@ -238,16 +238,24 @@ impl<'a> SkPathWriter<'a> {
             return;
         }
 
-        // Extend partial contours adjacent to simple segments
-        for _p_idx in 0..end_count {
-            // Simplified: in the full implementation, this would extend contours
-            // based on segment simplicity and t values
+        // Phase 1: lengthen partials through simple segments (restart on change)
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for p_idx in 0..self.partials.len() {
+                // stub - full lengthen_partial would use SkOpPtT to extend through simple segments
+                if self.is_simple(p_idx) {
+                    self.lengthen_partial(p_idx);
+                    changed = true;
+                    break;
+                }
+            }
         }
 
-        // Build distance matrix between endpoints
+        // Phase 2: build sLink/eLink with PK_MaxS32 sentinel logic (!idx for negation)
         let link_count = end_count / 2;
-        let mut s_link: Vec<Option<usize>> = vec![None; link_count];
-        let mut e_link: Vec<Option<usize>> = vec![None; link_count];
+        let mut s_link: Vec<Option<isize>> = vec![None; link_count];
+        let mut e_link: Vec<Option<isize>> = vec![None; link_count];
 
         let entries = end_count * (end_count - 1) / 2;
         let mut distances: Vec<f32> = Vec::with_capacity(entries);
@@ -292,16 +300,18 @@ impl<'a> SkPathWriter<'a> {
             }
 
             let flip = end_one == end_two;
+            let one = ndx_one as isize;
+            let two = ndx_two as isize;
             if end_one {
-                e_link[ndx_one] = Some(if flip { !ndx_two } else { ndx_two });
+                e_link[ndx_one] = Some(if flip { -two - 1 } else { two });
             } else {
-                s_link[ndx_one] = Some(if flip { !ndx_two } else { ndx_two });
+                s_link[ndx_one] = Some(if flip { -two - 1 } else { two });
             }
 
             if end_two {
-                e_link[ndx_two] = Some(if flip { !ndx_one } else { ndx_one });
+                e_link[ndx_two] = Some(if flip { -one - 1 } else { one });
             } else {
-                s_link[ndx_two] = Some(if flip { !ndx_one } else { ndx_one });
+                s_link[ndx_two] = Some(if flip { -one - 1 } else { one });
             }
 
             remaining -= 1;
@@ -316,18 +326,20 @@ impl<'a> SkPathWriter<'a> {
             let forward = true;
             let mut first = true;
 
-            let s_idx = match s_link[r_idx].take() {
+            let s_idx_opt = s_link[r_idx].take();
+            let s_idx = match s_idx_opt {
                 Some(v) => v,
                 None => break,
             };
 
-            let e_idx = if s_idx >= 0 {
-                e_link[s_idx].take()
+            let e_idx_opt = if s_idx >= 0 {
+                e_link[s_idx as usize].take()
             } else {
-                s_link[!s_idx].take()
+                let idx = (-s_idx - 1) as usize;
+                s_link[idx].take()
             };
 
-            if let Some(e_idx) = e_idx {
+            if let Some(e_idx) = e_idx_opt {
                 while r_idx < link_count {
                     let contour = self.partials[r_idx].clone();
 
@@ -358,10 +370,10 @@ impl<'a> SkPathWriter<'a> {
                         first = false;
                     }
 
-                    let close_now = s_idx == r_idx
-                        || s_idx == (r_idx + link_count)
-                        || e_idx == r_idx
-                        || e_idx == (r_idx + link_count);
+                    let close_now = s_idx == r_idx as isize
+                        || s_idx == (r_idx as isize + link_count as isize)
+                        || e_idx == r_idx as isize
+                        || e_idx == (r_idx as isize + link_count as isize);
                     if close_now {
                         self.path_ptr.close();
                         break;
@@ -369,8 +381,8 @@ impl<'a> SkPathWriter<'a> {
 
                     // Update link for next iteration
                     if forward {
-                        if e_idx >= 0 && e_idx < link_count {
-                            s_link[e_idx] = None;
+                        if e_idx >= 0 && (e_idx as usize) < link_count {
+                            s_link[e_idx as usize] = None;
                         }
                     } else {
                         if r_idx < link_count {

@@ -68,8 +68,8 @@ pub fn calc_angles(contour_list: &mut [SkOpContour]) {
 }
 
 /// Check for missing coincidence
-pub fn missing_coincidence(contour_list: &[SkOpContour]) -> bool {
-    contour_list.iter().any(|c| c.missing_coincidence())
+pub fn missing_coincidence(contour_list: &mut [SkOpContour]) -> bool {
+    contour_list.iter_mut().any(|c| c.missing_coincidence())
 }
 
 /// Move multiples

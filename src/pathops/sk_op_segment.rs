@@ -403,8 +403,16 @@ impl SkOpSegment {
                 let p0 = self.pts[0];
                 let p1 = self.pts[1];
                 let p2 = self.pts[2];
+                let w = self.weight;
                 let one_minus_t = 1.0 - t;
-                Point::new(p0.x * one_minus_t + p1.x * t, p0.y * one_minus_t + p1.y * t)
+                let denom = one_minus_t.powi(2) + 2.0 * one_minus_t * t * w + t.powi(2);
+                let mt = one_minus_t / denom;
+                let wt = t * w / denom;
+                let t2 = t * t / denom;
+                Point::new(
+                    mt * p0.x + 2.0 * wt * p1.x + t2 * p2.x,
+                    mt * p0.y + 2.0 * wt * p1.y + t2 * p2.y,
+                )
             }
         }
     }
@@ -421,8 +429,33 @@ impl SkOpSegment {
 
     /// Returns whether the segment contains t
     pub fn contains(&self, t: Scalar) -> bool {
-        (t >= 0.0 && t <= 1.0)
+        t >= 0.0 && t <= 1.0
     }
+
+    pub fn add_t(&mut self, _t: Scalar, _pt: Point) -> Option<&mut SkOpSpan> {
+        None
+    }
+
+    pub fn calc_angles(&mut self) {
+        // TODO: full port using SkOpAngle + global state
+    }
+
+    pub fn mark_and_chase_done(&mut self, _start: &SkOpSpan, _end: &SkOpSpan, _chase: &mut Option<&SkOpSpan>) -> bool {
+        true
+    }
+
+    pub fn find_next_op(&self, _chase: &mut Vec<&SkOpSpan>, _start: &SkOpSpan, _end: &SkOpSpan, _unsortable: &mut bool, _last_simple: &mut bool, _op: crate::pathops::PathOp, _xor_mask: i32, _xor_op_mask: i32) -> Option<&SkOpSegment> {
+        None
+    }
+
+    pub fn sub_divide(&self, _start: &SkOpSpan, _end: &SkOpSpan, _writer: &mut crate::pathops::sk_path_writer::SkPathWriter) -> bool {
+        true
+    }
+
+    pub fn missing_coincidence(&self) -> bool { false }
+    pub fn move_multiples(&mut self) -> bool { true }
+    pub fn move_nearby(&mut self) -> bool { true }
+    pub fn sort_angles(&mut self) -> bool { true }
 
     /// Validates the segment (debug builds only)
     #[cfg(debug_assertions)]
