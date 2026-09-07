@@ -491,10 +491,7 @@ mod tests {
     #[test]
     fn set_bounds_no_check_with_finite_points() {
         let mut r = Rect::empty();
-        let pts = [
-            Point::new(1.0, 2.0),
-            Point::new(3.0, 4.0),
-        ];
+        let pts = [Point::new(1.0, 2.0), Point::new(3.0, 4.0)];
         r.set_bounds_no_check(&pts);
         assert_eq!(r, Rect::from_ltrb(1.0, 2.0, 3.0, 4.0));
     }
@@ -502,10 +499,7 @@ mod tests {
     #[test]
     fn set_bounds_no_check_with_nan_points() {
         let mut r = Rect::from_ltrb(0.0, 0.0, 10.0, 10.0);
-        let pts = [
-            Point::new(1.0, 2.0),
-            Point::new(f32::NAN, 4.0),
-        ];
+        let pts = [Point::new(1.0, 2.0), Point::new(f32::NAN, 4.0)];
         r.set_bounds_no_check(&pts);
         assert!(r.left.is_nan());
         assert!(r.top.is_nan());

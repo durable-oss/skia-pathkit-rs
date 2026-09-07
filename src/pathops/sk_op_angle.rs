@@ -16,7 +16,9 @@ const NUM_SECTORS: i32 = 32;
 struct SkOpGlobalState;
 
 impl SkOpGlobalState {
-    fn next_angle_id(&self) -> i32 { 0 }
+    fn next_angle_id(&self) -> i32 {
+        0
+    }
 }
 
 /// A SkOpAngle represents a curve from start to end, and sorts them relative
@@ -101,15 +103,25 @@ impl SkOpAngle {
         };
 
         // Simplified sector computation
-        if x >= 0.0 && y >= 0.0 && x >= y { 3 }
-        else if x >= 0.0 && y >= 0.0 && x < y { 5 }
-        else if x >= 0.0 && y <= 0.0 && x >= -y { 31 }
-        else if x >= 0.0 && y <= 0.0 && x < -y { 29 }
-        else if x <= 0.0 && y >= 0.0 && -x >= y { 11 }
-        else if x <= 0.0 && y >= 0.0 && -x < y { 13 }
-        else if x <= 0.0 && y <= 0.0 && -x >= -y { 27 }
-        else if x <= 0.0 && y <= 0.0 && -x < -y { 25 }
-        else { -1 }
+        if x >= 0.0 && y >= 0.0 && x >= y {
+            3
+        } else if x >= 0.0 && y >= 0.0 && x < y {
+            5
+        } else if x >= 0.0 && y <= 0.0 && x >= -y {
+            31
+        } else if x >= 0.0 && y <= 0.0 && x < -y {
+            29
+        } else if x <= 0.0 && y >= 0.0 && -x >= y {
+            11
+        } else if x <= 0.0 && y >= 0.0 && -x < y {
+            13
+        } else if x <= 0.0 && y <= 0.0 && -x >= -y {
+            27
+        } else if x <= 0.0 && y <= 0.0 && -x < -y {
+            25
+        } else {
+            -1
+        }
     }
 
     /// Sets the sector information

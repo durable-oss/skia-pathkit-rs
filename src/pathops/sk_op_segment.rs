@@ -2,8 +2,8 @@
 //!
 //! Port of Skia's SkOpSegment.{h,cpp}
 
-use crate::core::{Point, Scalar};
 use super::sk_intersection_helper::SkPathOpsBounds;
+use crate::core::{Point, Scalar};
 
 /// Path segment verb types (matches Skia's SkPath::Verb)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -389,10 +389,14 @@ impl SkOpSegment {
                 let one_minus_t3 = one_minus_t2 * one_minus_t;
                 let t3 = t2 * t;
                 Point::new(
-                    p0.x * one_minus_t3 + p1.x * 3.0 * one_minus_t2 * t + 
-                    p2.x * 3.0 * one_minus_t * t2 + p3.x * t3,
-                    p0.y * one_minus_t3 + p1.y * 3.0 * one_minus_t2 * t + 
-                    p2.y * 3.0 * one_minus_t * t2 + p3.y * t3,
+                    p0.x * one_minus_t3
+                        + p1.x * 3.0 * one_minus_t2 * t
+                        + p2.x * 3.0 * one_minus_t * t2
+                        + p3.x * t3,
+                    p0.y * one_minus_t3
+                        + p1.y * 3.0 * one_minus_t2 * t
+                        + p2.y * 3.0 * one_minus_t * t2
+                        + p3.y * t3,
                 )
             }
             Verb::Conic => {
@@ -400,10 +404,7 @@ impl SkOpSegment {
                 let p1 = self.pts[1];
                 let p2 = self.pts[2];
                 let one_minus_t = 1.0 - t;
-                Point::new(
-                    p0.x * one_minus_t + p1.x * t,
-                    p0.y * one_minus_t + p1.y * t,
-                )
+                Point::new(p0.x * one_minus_t + p1.x * t, p0.y * one_minus_t + p1.y * t)
             }
         }
     }
@@ -443,10 +444,7 @@ mod tests {
 
     #[test]
     fn test_new_line() {
-        let seg = SkOpSegment::new_line(
-            Point::new(0.0, 0.0),
-            Point::new(10.0, 10.0),
-        );
+        let seg = SkOpSegment::new_line(Point::new(0.0, 0.0), Point::new(10.0, 10.0));
         assert_eq!(seg.verb(), Verb::Line);
         assert_eq!(seg.pts()[0], Point::new(0.0, 0.0));
         assert_eq!(seg.pts()[1], Point::new(10.0, 10.0));
@@ -455,10 +453,7 @@ mod tests {
     #[test]
     fn test_add_line() {
         let mut seg = SkOpSegment::new();
-        seg.add_line(
-            Point::new(5.0, 5.0),
-            Point::new(15.0, 15.0),
-        );
+        seg.add_line(Point::new(5.0, 5.0), Point::new(15.0, 15.0));
         assert_eq!(seg.verb(), Verb::Line);
     }
 
@@ -502,19 +497,13 @@ mod tests {
 
     #[test]
     fn test_is_horizontal() {
-        let seg = SkOpSegment::new_line(
-            Point::new(0.0, 5.0),
-            Point::new(10.0, 5.0),
-        );
+        let seg = SkOpSegment::new_line(Point::new(0.0, 5.0), Point::new(10.0, 5.0));
         assert!(seg.is_horizontal());
     }
 
     #[test]
     fn test_is_vertical() {
-        let seg = SkOpSegment::new_line(
-            Point::new(5.0, 0.0),
-            Point::new(5.0, 10.0),
-        );
+        let seg = SkOpSegment::new_line(Point::new(5.0, 0.0), Point::new(5.0, 10.0));
         assert!(seg.is_vertical());
     }
 
@@ -546,10 +535,7 @@ mod tests {
 
     #[test]
     fn test_pt_at_t() {
-        let seg = SkOpSegment::new_line(
-            Point::new(0.0, 0.0),
-            Point::new(10.0, 0.0),
-        );
+        let seg = SkOpSegment::new_line(Point::new(0.0, 0.0), Point::new(10.0, 0.0));
         let pt = seg.pt_at_t(0.5);
         assert!((pt.x - 5.0).abs() < 1e-10);
         assert!((pt.y - 0.0).abs() < 1e-10);

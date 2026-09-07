@@ -2,9 +2,9 @@
 //!
 //! Ported from `src/core/SkStrokerPriv.cpp`.
 
-use super::scalar::{self, Scalar};
 use super::path::Path;
 use super::point::{Point, Vector};
+use super::scalar::{self, Scalar};
 
 /// Callback used to draw line caps at the ends of a contour.
 ///
@@ -14,8 +14,7 @@ pub type CapProc = fn(&mut Path, Point, Vector, Point, Option<&mut Path>);
 /// Callback used to draw joins between segments.
 ///
 /// Corresponds to `SkStrokerPriv::JoinProc` in C++.
-pub type JoinProc =
-    fn(&mut Path, &mut Path, Vector, Point, Vector, Scalar, Scalar, bool, bool);
+pub type JoinProc = fn(&mut Path, &mut Path, Vector, Point, Vector, Scalar, Scalar, bool, bool);
 
 /// Helper to determine if the turn from `before` to `after` is clockwise.
 fn is_clockwise(before: Vector, after: Vector) -> bool {
@@ -51,37 +50,83 @@ fn dot2_angle_type(dot: Scalar) -> AngleType {
 }
 
 /// Draws a butt cap: just line to the stop point.
-fn butt_capper(path: &mut Path, _pivot: Point, _normal: Vector, stop: Point, _other: Option<&mut Path>) {
+fn butt_capper(
+    path: &mut Path,
+    _pivot: Point,
+    _normal: Vector,
+    stop: Point,
+    _other: Option<&mut Path>,
+) {
     path.line_to(stop.x, stop.y);
 }
 
 /// Draws a round cap: two conic arcs forming a semicircle.
-fn round_capper(path: &mut Path, pivot: Point, normal: Vector, stop: Point, _other: Option<&mut Path>) {
+fn round_capper(
+    path: &mut Path,
+    pivot: Point,
+    normal: Vector,
+    stop: Point,
+    _other: Option<&mut Path>,
+) {
     // Rotate normal 90 degrees clockwise to get the parallel vector
     let parallel = Vector::new(normal.y, -normal.x);
     let projected_center = pivot + parallel;
 
-    path.conic_to(projected_center.x + normal.x, projected_center.y + normal.y,
-                  projected_center.x, projected_center.y, scalar::SCALAR_ROOT_2_OVER_2);
-    path.conic_to(projected_center.x - normal.x, projected_center.y - normal.y,
-                  stop.x, stop.y, scalar::SCALAR_ROOT_2_OVER_2);
+    path.conic_to(
+        projected_center.x + normal.x,
+        projected_center.y + normal.y,
+        projected_center.x,
+        projected_center.y,
+        scalar::SCALAR_ROOT_2_OVER_2,
+    );
+    path.conic_to(
+        projected_center.x - normal.x,
+        projected_center.y - normal.y,
+        stop.x,
+        stop.y,
+        scalar::SCALAR_ROOT_2_OVER_2,
+    );
 }
 
 /// Draws a square cap: extends perpendicular to the path direction.
-fn square_capper(path: &mut Path, pivot: Point, normal: Vector, stop: Point, other: Option<&mut Path>) {
+fn square_capper(
+    path: &mut Path,
+    pivot: Point,
+    normal: Vector,
+    stop: Point,
+    other: Option<&mut Path>,
+) {
     let parallel = Vector::new(normal.y, -normal.x);
 
     if let Some(other_path) = other {
         if !other_path.points().is_empty() {
-            other_path.line_to(pivot.x + normal.x + parallel.x, pivot.y + normal.y + parallel.y);
-            other_path.line_to(pivot.x - normal.x + parallel.x, pivot.y - normal.y + parallel.y);
+            other_path.line_to(
+                pivot.x + normal.x + parallel.x,
+                pivot.y + normal.y + parallel.y,
+            );
+            other_path.line_to(
+                pivot.x - normal.x + parallel.x,
+                pivot.y - normal.y + parallel.y,
+            );
         } else {
-            other_path.move_to(pivot.x + normal.x + parallel.x, pivot.y + normal.y + parallel.y);
-            other_path.line_to(pivot.x - normal.x + parallel.x, pivot.y - normal.y + parallel.y);
+            other_path.move_to(
+                pivot.x + normal.x + parallel.x,
+                pivot.y + normal.y + parallel.y,
+            );
+            other_path.line_to(
+                pivot.x - normal.x + parallel.x,
+                pivot.y - normal.y + parallel.y,
+            );
         }
     } else {
-        path.line_to(pivot.x + normal.x + parallel.x, pivot.y + normal.y + parallel.y);
-        path.line_to(pivot.x - normal.x + parallel.x, pivot.y - normal.y + parallel.y);
+        path.line_to(
+            pivot.x + normal.x + parallel.x,
+            pivot.y + normal.y + parallel.y,
+        );
+        path.line_to(
+            pivot.x - normal.x + parallel.x,
+            pivot.y - normal.y + parallel.y,
+        );
         path.line_to(stop.x, stop.y);
     }
 }
@@ -93,8 +138,17 @@ fn handle_inner_join(inner: &mut Path, pivot: Point, after: Vector) {
 }
 
 /// Blunt (bevel) joiner: connects the outer edges with a straight line.
-fn blunt_joiner(outer: &mut Path, inner: &mut Path, before_unit_normal: Vector, pivot: Point, after_unit_normal: Vector,
-                radius: Scalar, _inv_miter_limit: Scalar, _prev_is_line: bool, _curr_is_line: bool) {
+fn blunt_joiner(
+    outer: &mut Path,
+    inner: &mut Path,
+    before_unit_normal: Vector,
+    pivot: Point,
+    after_unit_normal: Vector,
+    radius: Scalar,
+    _inv_miter_limit: Scalar,
+    _prev_is_line: bool,
+    _curr_is_line: bool,
+) {
     let after = after_unit_normal.scale(radius);
 
     let (outer, inner) = if is_clockwise(before_unit_normal, after_unit_normal) {
@@ -108,8 +162,17 @@ fn blunt_joiner(outer: &mut Path, inner: &mut Path, before_unit_normal: Vector, 
 }
 
 /// Round joiner: connects the outer edges with a circular arc.
-fn round_joiner(outer: &mut Path, inner: &mut Path, before_unit_normal: Vector, pivot: Point, after_unit_normal: Vector,
-                radius: Scalar, _inv_miter_limit: Scalar, _prev_is_line: bool, _curr_is_line: bool) {
+fn round_joiner(
+    outer: &mut Path,
+    inner: &mut Path,
+    before_unit_normal: Vector,
+    pivot: Point,
+    after_unit_normal: Vector,
+    radius: Scalar,
+    _inv_miter_limit: Scalar,
+    _prev_is_line: bool,
+    _curr_is_line: bool,
+) {
     let dot = Point::dot_product(before_unit_normal, after_unit_normal);
     if dot2_angle_type(dot) == AngleType::NearlyLine {
         return;
@@ -146,8 +209,17 @@ fn round_joiner(outer: &mut Path, inner: &mut Path, before_unit_normal: Vector, 
 const K_ONE_OVER_SQRT2: Scalar = 0.707106781;
 
 /// Miter joiner: extends segments to meet at a miter point or falls back to blunt.
-fn miter_joiner(outer: &mut Path, inner: &mut Path, before_unit_normal: Vector, pivot: Point, after_unit_normal: Vector,
-                radius: Scalar, inv_miter_limit: Scalar, prev_is_line: bool, mut curr_is_line: bool) {
+fn miter_joiner(
+    outer: &mut Path,
+    inner: &mut Path,
+    before_unit_normal: Vector,
+    pivot: Point,
+    after_unit_normal: Vector,
+    radius: Scalar,
+    inv_miter_limit: Scalar,
+    prev_is_line: bool,
+    mut curr_is_line: bool,
+) {
     let dot = Point::dot_product(before_unit_normal, after_unit_normal);
     let angle_type = dot2_angle_type(dot);
 
@@ -157,7 +229,17 @@ fn miter_joiner(outer: &mut Path, inner: &mut Path, before_unit_normal: Vector, 
 
     if angle_type == AngleType::Nearly180 {
         curr_is_line = false;
-        blunt_joiner(outer, inner, before_unit_normal, pivot, after_unit_normal, radius, inv_miter_limit, prev_is_line, curr_is_line);
+        blunt_joiner(
+            outer,
+            inner,
+            before_unit_normal,
+            pivot,
+            after_unit_normal,
+            radius,
+            inv_miter_limit,
+            prev_is_line,
+            curr_is_line,
+        );
         return;
     }
 
@@ -195,7 +277,17 @@ fn miter_joiner(outer: &mut Path, inner: &mut Path, before_unit_normal: Vector, 
     let sin_half_angle = (0.5 * (1.0 + dot)).sqrt();
     if sin_half_angle < inv_miter_limit {
         curr_is_line = false;
-        blunt_joiner(outer, inner, before_unit_normal, pivot, after_unit_normal, radius, inv_miter_limit, prev_is_line, curr_is_line);
+        blunt_joiner(
+            outer,
+            inner,
+            before_unit_normal,
+            pivot,
+            after_unit_normal,
+            radius,
+            inv_miter_limit,
+            prev_is_line,
+            curr_is_line,
+        );
         return;
     }
 
@@ -353,7 +445,9 @@ mod tests {
         let after = Vector::new(0.0, -1.0);
         let pivot = Point::new(10.0, 10.0);
 
-        blunt_joiner(&mut outer, &mut inner, before, pivot, after, 5.0, 4.0, true, true);
+        blunt_joiner(
+            &mut outer, &mut inner, before, pivot, after, 5.0, 4.0, true, true,
+        );
 
         assert!(outer.points().len() > 0);
         assert!(inner.points().len() > 0);
@@ -368,7 +462,9 @@ mod tests {
         let after = Vector::new(0.0, -1.0);
         let pivot = Point::new(10.0, 10.0);
 
-        miter_joiner(&mut outer, &mut inner, before, pivot, after, 5.0, 4.0, true, true);
+        miter_joiner(
+            &mut outer, &mut inner, before, pivot, after, 5.0, 4.0, true, true,
+        );
 
         assert!(!outer.points().is_empty());
         assert!(!inner.points().is_empty());

@@ -5,8 +5,8 @@
 //! This module provides utilities for reducing higher-order curves (cubics,
 //! quadratics) to lower-order equivalents (lines, points) when possible.
 
-use crate::core::{Point, Scalar};
 use super::sk_path_ops_types::almost_equal_ulps;
+use crate::core::{Point, Scalar};
 
 /// Double-precision point (2D).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -75,17 +75,15 @@ fn approximately_equal_half(a: Scalar, b: Scalar) -> bool {
 pub fn reduce_line(line: &[SkDPoint; 2]) -> (usize, [SkDPoint; 2]) {
     let mut result = [SkDPoint::zero(); 2];
     result[0] = line[0];
-    let different = !almost_equal_ulps(line[0].fX, line[1].fX)
-        || !almost_equal_ulps(line[0].fY, line[1].fY);
+    let different =
+        !almost_equal_ulps(line[0].fX, line[1].fX) || !almost_equal_ulps(line[0].fY, line[1].fY);
     result[1] = if different { line[1] } else { line[0] };
     (1 + different as usize, result)
 }
 
 /// Check how many unique points are in a reduction.
 fn reduction_line_count(pts: &[SkDPoint; 2]) -> usize {
-    if almost_equal_ulps(pts[0].fX, pts[1].fX)
-        && almost_equal_ulps(pts[0].fY, pts[1].fY)
-    {
+    if almost_equal_ulps(pts[0].fX, pts[1].fX) && almost_equal_ulps(pts[0].fY, pts[1].fY) {
         1
     } else {
         2
@@ -119,10 +117,10 @@ fn check_linear(
     // Check if the quadratic is actually linear (control point on the line between endpoints)
     let v01 = quad[1] - quad[0];
     let v12 = quad[2] - quad[1];
-    
+
     // Cross product should be near zero for colinearity
     let cross = v01.fX * v12.fY - v01.fY * v12.fX;
-    
+
     if approximately_zero(cross) {
         let mut reduction = [SkDPoint::zero(); 2];
         reduction[0] = quad[0];
@@ -141,7 +139,7 @@ pub fn reduce_quad(quad: &[SkDPoint; 3]) -> (usize, [SkDPoint; 3]) {
     let mut max_x = 0;
     let mut min_y = 0;
     let mut max_y = 0;
-    
+
     for i in 1..3 {
         if quad[i].fX < quad[min_x].fX {
             min_x = i;
@@ -156,11 +154,11 @@ pub fn reduce_quad(quad: &[SkDPoint; 3]) -> (usize, [SkDPoint; 3]) {
             max_y = i;
         }
     }
-    
+
     // Find which indices have min/max x/y values (using ULP comparison)
     let mut min_x_set = 0;
     let mut min_y_set = 0;
-    
+
     for i in 0..3 {
         if almost_equal_ulps(quad[i].fX, quad[min_x].fX) {
             min_x_set |= 1 << i;
@@ -169,7 +167,7 @@ pub fn reduce_quad(quad: &[SkDPoint; 3]) -> (usize, [SkDPoint; 3]) {
             min_y_set |= 1 << i;
         }
     }
-    
+
     // Check for degenerate case: start and end at same point
     if (min_x_set & 0x05) == 0x05 && (min_y_set & 0x05) == 0x05 {
         let mut reduction = [SkDPoint::zero(); 3];
@@ -178,7 +176,7 @@ pub fn reduce_quad(quad: &[SkDPoint; 3]) -> (usize, [SkDPoint; 3]) {
         reduction[2] = quad[0];
         return (1, reduction);
     }
-    
+
     // Check for vertical line (all x same)
     if min_x_set == 0x7 {
         let (order, reduction) = vertical_line(quad);
@@ -188,7 +186,7 @@ pub fn reduce_quad(quad: &[SkDPoint; 3]) -> (usize, [SkDPoint; 3]) {
         result[2] = reduction[1];
         return (order, result);
     }
-    
+
     // Check for horizontal line (all y same)
     if min_y_set == 0x7 {
         let (order, reduction) = horizontal_line(quad);
@@ -198,7 +196,7 @@ pub fn reduce_quad(quad: &[SkDPoint; 3]) -> (usize, [SkDPoint; 3]) {
         result[2] = reduction[1];
         return (order, result);
     }
-    
+
     // Check for linear (colinear points)
     if let Some((order, reduction)) = check_linear(quad, min_x, max_x, min_y, max_y) {
         let mut result = [SkDPoint::zero(); 3];
@@ -207,7 +205,7 @@ pub fn reduce_quad(quad: &[SkDPoint; 3]) -> (usize, [SkDPoint; 3]) {
         result[2] = reduction[1];
         return (order, result);
     }
-    
+
     // No reduction possible
     let mut result = [SkDPoint::zero(); 3];
     result[0] = quad[0];
@@ -220,16 +218,16 @@ pub fn reduce_quad(quad: &[SkDPoint; 3]) -> (usize, [SkDPoint; 3]) {
 fn check_quadratic(cubic: &[SkDPoint; 4]) -> Option<(usize, [SkDPoint; 3])> {
     // The cubic is quadratic if the middle two control points lie on a line
     // between the endpoints with the proper ratio
-    
+
     // For a cubic to be reducible to quadratic:
     // P1 - P0 and P3 - P2 should be parallel and in 2:3 ratio
-    
+
     let dx10 = cubic[1].fX - cubic[0].fX;
     let dx23 = cubic[2].fX - cubic[3].fX;
     let mid_x = cubic[0].fX + dx10 * 1.5;
     let side_ax = mid_x - cubic[3].fX;
     let side_bx = dx23 * 1.5;
-    
+
     if approximately_zero(side_ax) {
         if !approximately_equal_half(side_ax, side_bx) {
             return None;
@@ -237,13 +235,13 @@ fn check_quadratic(cubic: &[SkDPoint; 4]) -> Option<(usize, [SkDPoint; 3])> {
     } else if !almost_equal_ulps(side_ax, side_bx) {
         return None;
     }
-    
+
     let dy10 = cubic[1].fY - cubic[0].fY;
     let dy23 = cubic[2].fY - cubic[3].fY;
     let mid_y = cubic[0].fY + dy10 * 1.5;
     let side_ay = mid_y - cubic[3].fY;
     let side_by = dy23 * 1.5;
-    
+
     if approximately_zero(side_ay) {
         if !approximately_equal_half(side_ay, side_by) {
             return None;
@@ -251,7 +249,7 @@ fn check_quadratic(cubic: &[SkDPoint; 4]) -> Option<(usize, [SkDPoint; 3])> {
     } else if !almost_equal_ulps(side_ay, side_by) {
         return None;
     }
-    
+
     // Compute the quadratic control point
     let mut reduction = [SkDPoint::zero(); 3];
     reduction[0] = cubic[0];
@@ -261,16 +259,13 @@ fn check_quadratic(cubic: &[SkDPoint; 4]) -> Option<(usize, [SkDPoint; 3])> {
 }
 
 /// Reduce a cubic to its minimal representation.
-pub fn reduce_cubic(
-    cubic: &[SkDPoint; 4],
-    allow_quadratics: bool,
-) -> (usize, [SkDPoint; 3]) {
+pub fn reduce_cubic(cubic: &[SkDPoint; 4], allow_quadratics: bool) -> (usize, [SkDPoint; 3]) {
     // Find min/max indices for x and y
     let mut min_x = 0;
     let mut max_x = 0;
     let mut min_y = 0;
     let mut max_y = 0;
-    
+
     for i in 1..4 {
         if cubic[i].fX < cubic[min_x].fX {
             min_x = i;
@@ -285,22 +280,26 @@ pub fn reduce_cubic(
             max_y = i;
         }
     }
-    
+
     // Find which indices have min/max x/y values
     let mut min_x_set = 0;
     let mut min_y_set = 0;
-    
+
     for i in 0..4 {
         let cx = cubic[i].fX;
         let cy = cubic[i].fY;
-        let denom = cx.abs().max(cy.abs()).max(cubic[min_x].fX.abs()).max(cubic[min_y].fY.abs());
-        
+        let denom = cx
+            .abs()
+            .max(cy.abs())
+            .max(cubic[min_x].fX.abs())
+            .max(cubic[min_y].fY.abs());
+
         if denom == 0.0 {
             min_x_set |= 1 << i;
             min_y_set |= 1 << i;
             continue;
         }
-        
+
         let inv = 1.0 / denom;
         if approximately_equal_half(cx * inv, cubic[min_x].fX * inv) {
             min_x_set |= 1 << i;
@@ -309,7 +308,7 @@ pub fn reduce_cubic(
             min_y_set |= 1 << i;
         }
     }
-    
+
     // Check for vertical line (all x same)
     if min_x_set == 0xF {
         if min_y_set == 0xF {
@@ -324,18 +323,24 @@ pub fn reduce_cubic(
         reduction[0] = cubic[0];
         reduction[1] = cubic[3];
         reduction[2] = cubic[3];
-        return (reduction_line_count(&[reduction[0], reduction[1]]), reduction);
+        return (
+            reduction_line_count(&[reduction[0], reduction[1]]),
+            reduction,
+        );
     }
-    
+
     // Check for horizontal line (all y same)
     if min_y_set == 0xF {
         let mut reduction = [SkDPoint::zero(); 3];
         reduction[0] = cubic[0];
         reduction[1] = cubic[3];
         reduction[2] = cubic[3];
-        return (reduction_line_count(&[reduction[0], reduction[1]]), reduction);
+        return (
+            reduction_line_count(&[reduction[0], reduction[1]]),
+            reduction,
+        );
     }
-    
+
     // Check for linear (colinear points)
     let mut reduction = [SkDPoint::zero(); 3];
     let mut is_linear = false;
@@ -344,11 +349,11 @@ pub fn reduce_cubic(
         let v01 = cubic[1] - cubic[0];
         let v12 = cubic[2] - cubic[1];
         let v23 = cubic[3] - cubic[2];
-        
+
         // Check all segments have the same direction
         let c1 = v01.fX * v12.fY - v01.fY * v12.fX;
         let c2 = v12.fX * v23.fY - v12.fY * v23.fX;
-        
+
         if approximately_zero(c1) && approximately_zero(c2) {
             is_linear = true;
             reduction[0] = cubic[0];
@@ -356,18 +361,21 @@ pub fn reduce_cubic(
             reduction[2] = cubic[3];
         }
     }
-    
+
     if is_linear {
-        return (reduction_line_count(&[reduction[0], reduction[1]]), reduction);
+        return (
+            reduction_line_count(&[reduction[0], reduction[1]]),
+            reduction,
+        );
     }
-    
+
     // Check for quadratic reduction
     if allow_quadratics {
         if let Some((order, quad_reduction)) = check_quadratic(cubic) {
             return (order, quad_reduction);
         }
     }
-    
+
     // No reduction possible
     let mut result = [SkDPoint::zero(); 3];
     result[0] = cubic[0];
@@ -383,7 +391,7 @@ pub fn reduce_quad_path(pts: &[Point; 3]) -> ReduceResult {
         SkDPoint::new(pts[1].x, pts[1].y),
         SkDPoint::new(pts[2].x, pts[2].y),
     ];
-    
+
     let (order, _reduction) = reduce_quad(&quad);
     (order).into()
 }
@@ -400,14 +408,14 @@ pub fn reduce_cubic_path(pts: &[Point; 4]) -> ReduceResult {
     {
         return ReduceResult::Point;
     }
-    
+
     let cubic: [SkDPoint; 4] = [
         SkDPoint::new(pts[0].x, pts[0].y),
         SkDPoint::new(pts[1].x, pts[1].y),
         SkDPoint::new(pts[2].x, pts[2].y),
         SkDPoint::new(pts[3].x, pts[3].y),
     ];
-    
+
     let (order, _reduction) = reduce_cubic(&cubic, true);
     (order).into()
 }
@@ -416,7 +424,7 @@ pub fn reduce_cubic_path(pts: &[Point; 4]) -> ReduceResult {
 pub fn reduce_conic_path(pts: &[Point; 3], weight: Scalar) -> ReduceResult {
     // For weight = 1, conic is equivalent to quadratic
     let result = reduce_quad_path(pts);
-    
+
     if weight == 1.0 && result != ReduceResult::Point {
         ReduceResult::Quadratic
     } else {
@@ -430,20 +438,14 @@ mod tests {
 
     #[test]
     fn test_reduce_line_identical_points() {
-        let line = [
-            SkDPoint::new(1.0, 1.0),
-            SkDPoint::new(1.0, 1.0),
-        ];
+        let line = [SkDPoint::new(1.0, 1.0), SkDPoint::new(1.0, 1.0)];
         let (order, _result) = reduce_line(&line);
         assert_eq!(order, 1);
     }
 
     #[test]
     fn test_reduce_line_different_points() {
-        let line = [
-            SkDPoint::new(0.0, 0.0),
-            SkDPoint::new(10.0, 10.0),
-        ];
+        let line = [SkDPoint::new(0.0, 0.0), SkDPoint::new(10.0, 10.0)];
         let (order, _result) = reduce_line(&line);
         assert_eq!(order, 2);
     }

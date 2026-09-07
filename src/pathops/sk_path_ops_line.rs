@@ -5,8 +5,8 @@
 //! This module provides line segment geometry operations including
 //! point-on-line tests, interpolation, and near-point calculations.
 
-use crate::core::{Point, Scalar};
 use super::sk_path_ops_types::{almost_between_ulps, almost_equal_ulps, roughly_equal_ulps};
+use crate::core::{Point, Scalar};
 
 /// A line segment defined by two points
 #[derive(Debug, Clone, Copy, Default)]

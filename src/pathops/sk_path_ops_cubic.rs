@@ -143,8 +143,14 @@ impl SkDCubic {
         let c = 3.0 * one_t * t2;
         let d = t2 * t;
         SkDPoint::new(
-            a * self.f_pts[0].f_x + b * self.f_pts[1].f_x + c * self.f_pts[2].f_x + d * self.f_pts[3].f_x,
-            a * self.f_pts[0].f_y + b * self.f_pts[1].f_y + c * self.f_pts[2].f_y + d * self.f_pts[3].f_y,
+            a * self.f_pts[0].f_x
+                + b * self.f_pts[1].f_x
+                + c * self.f_pts[2].f_x
+                + d * self.f_pts[3].f_x,
+            a * self.f_pts[0].f_y
+                + b * self.f_pts[1].f_y
+                + c * self.f_pts[2].f_y
+                + d * self.f_pts[3].f_y,
         )
     }
 
@@ -197,8 +203,10 @@ impl SkDCubic {
         let ay = self.f_pts[1].f_y - self.f_pts[0].f_y;
         let bx = self.f_pts[2].f_x - 2.0 * self.f_pts[1].f_x + self.f_pts[0].f_x;
         let by = self.f_pts[2].f_y - 2.0 * self.f_pts[1].f_y + self.f_pts[0].f_y;
-        let cx = self.f_pts[3].f_x + 3.0 * (self.f_pts[1].f_x - self.f_pts[2].f_x) - self.f_pts[0].f_x;
-        let cy = self.f_pts[3].f_y + 3.0 * (self.f_pts[1].f_y - self.f_pts[2].f_y) - self.f_pts[0].f_y;
+        let cx =
+            self.f_pts[3].f_x + 3.0 * (self.f_pts[1].f_x - self.f_pts[2].f_x) - self.f_pts[0].f_x;
+        let cy =
+            self.f_pts[3].f_y + 3.0 * (self.f_pts[1].f_y - self.f_pts[2].f_y) - self.f_pts[0].f_y;
         let mut t_values = [0.0; 2];
         let n = SkDQuad::roots_valid_t(
             bx * cy - by * cx,
@@ -261,7 +269,11 @@ impl SkDCubic {
                 return *self;
             }
             let pair = self.chop_at(if t1 == 0.0 { t2 } else { t1 });
-            return if t1 == 0.0 { pair.first() } else { pair.second() };
+            return if t1 == 0.0 {
+                pair.first()
+            } else {
+                pair.second()
+            };
         }
         let xs = x_coords(self);
         let ys = y_coords(self);
@@ -334,13 +346,19 @@ impl SkDCubic {
         let mut found_roots = SkDQuad::add_valid_ts(&s, real_roots, &mut t);
         for &t_value in s.iter().take(real_roots) {
             if !approximately_one_or_less(t_value) && between_d(1.0, t_value, 1.00005) {
-                if t[..found_roots].iter().any(|&v| approximately_equal(v, 1.0)) {
+                if t[..found_roots]
+                    .iter()
+                    .any(|&v| approximately_equal(v, 1.0))
+                {
                     continue;
                 }
                 t[found_roots] = 1.0;
                 found_roots += 1;
             } else if !approximately_zero_or_more(t_value) && between_d(-0.00005, t_value, 0.0) {
-                if t[..found_roots].iter().any(|&v| approximately_equal(v, 0.0)) {
+                if t[..found_roots]
+                    .iter()
+                    .any(|&v| approximately_equal(v, 0.0))
+                {
                     continue;
                 }
                 t[found_roots] = 0.0;
@@ -390,8 +408,8 @@ impl SkDCubic {
             let mut sign =
                 (self.f_pts[odd_man].f_y - orig_y) * adj - (self.f_pts[odd_man].f_x - orig_x) * opp;
             let odd_man2 = end2 ^ odd_man_mask;
-            let sign2 =
-                (self.f_pts[odd_man2].f_y - orig_y) * adj - (self.f_pts[odd_man2].f_x - orig_x) * opp;
+            let sign2 = (self.f_pts[odd_man2].f_y - orig_y) * adj
+                - (self.f_pts[odd_man2].f_x - orig_x) * opp;
             if sign * sign2 < 0.0 {
                 end_pt0 = end_pt1;
                 end1 = end2;
@@ -605,11 +623,21 @@ impl std::ops::IndexMut<usize> for SkDCubic {
 }
 
 fn x_coords(c: &SkDCubic) -> [f64; 4] {
-    [c.f_pts[0].f_x, c.f_pts[1].f_x, c.f_pts[2].f_x, c.f_pts[3].f_x]
+    [
+        c.f_pts[0].f_x,
+        c.f_pts[1].f_x,
+        c.f_pts[2].f_x,
+        c.f_pts[3].f_x,
+    ]
 }
 
 fn y_coords(c: &SkDCubic) -> [f64; 4] {
-    [c.f_pts[0].f_y, c.f_pts[1].f_y, c.f_pts[2].f_y, c.f_pts[3].f_y]
+    [
+        c.f_pts[0].f_y,
+        c.f_pts[1].f_y,
+        c.f_pts[2].f_y,
+        c.f_pts[3].f_y,
+    ]
 }
 
 /// `c'(t) = 3[(b-a)(1-t)^2 + 2(c-b)t(1-t) + (d-c)t^2]`, evaluated for one
@@ -907,7 +935,12 @@ mod tests {
     #[test]
     fn hull_intersects_disjoint_cubics() {
         let c1 = cubic([(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 0.0)]);
-        let c2 = cubic([(100.0, 100.0), (100.0, 110.0), (110.0, 110.0), (110.0, 100.0)]);
+        let c2 = cubic([
+            (100.0, 100.0),
+            (100.0, 110.0),
+            (110.0, 110.0),
+            (110.0, 100.0),
+        ]);
         let mut is_linear = false;
         assert!(!c1.hull_intersects_cubic(&c2, &mut is_linear));
     }

@@ -40,8 +40,17 @@ fn cheap_dist_exceeds_limit(pt: &Point, x: Scalar, y: Scalar, tolerance: Scalar)
 }
 
 fn cubic_too_curvy(pts: &[Point; 4], tolerance: Scalar) -> bool {
-    cheap_dist_exceeds_limit(&pts[1], scalar::interp(pts[0].x, pts[3].x, 1.0 / 3.0), scalar::interp(pts[0].y, pts[3].y, 1.0 / 3.0), tolerance)
-        || cheap_dist_exceeds_limit(&pts[2], scalar::interp(pts[0].x, pts[3].x, 2.0 / 3.0), scalar::interp(pts[0].y, pts[3].y, 2.0 / 3.0), tolerance)
+    cheap_dist_exceeds_limit(
+        &pts[1],
+        scalar::interp(pts[0].x, pts[3].x, 1.0 / 3.0),
+        scalar::interp(pts[0].y, pts[3].y, 1.0 / 3.0),
+        tolerance,
+    ) || cheap_dist_exceeds_limit(
+        &pts[2],
+        scalar::interp(pts[0].x, pts[3].x, 2.0 / 3.0),
+        scalar::interp(pts[0].y, pts[3].y, 2.0 / 3.0),
+        tolerance,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +76,11 @@ impl Segment {
 
     pub fn next<'a>(segments: &'a [Segment], seg: &Segment) -> &'a Segment {
         let pt_index = seg.pt_index;
-        segments.iter().skip_while(|s| s.pt_index == pt_index).next().unwrap_or_else(|| &segments[segments.len() - 1])
+        segments
+            .iter()
+            .skip_while(|s| s.pt_index == pt_index)
+            .next()
+            .unwrap_or_else(|| &segments[segments.len() - 1])
     }
 }
 
@@ -99,7 +112,12 @@ impl ContourMeasure {
     /// contour. `distance` is clamped to `[0, length()]`.
     ///
     /// Returns `false` if `distance` is NaN.
-    pub fn get_pos_tan(&self, distance: Scalar, pos: Option<&mut Point>, tangent: Option<&mut Point>) -> bool {
+    pub fn get_pos_tan(
+        &self,
+        distance: Scalar,
+        pos: Option<&mut Point>,
+        tangent: Option<&mut Point>,
+    ) -> bool {
         if distance.is_nan() {
             return false;
         }
@@ -186,7 +204,13 @@ impl ContourMeasure {
 
         if start_with_move_to {
             let mut p = Point::default();
-            compute_pos_tan(&self.pts[seg.pt_index as usize..], seg.seg_type, start_t, Some(&mut p), None);
+            compute_pos_tan(
+                &self.pts[seg.pt_index as usize..],
+                seg.seg_type,
+                start_t,
+                Some(&mut p),
+                None,
+            );
             dst.move_to(p.x, p.y);
         }
 
@@ -326,7 +350,11 @@ impl ContourMeasureIter {
     pub fn reset(&mut self, path: &Path, force_closed: bool, res_scale: Scalar) {
         self.path = path.clone();
         if path.is_finite() {
-            self.impl_ = Some(ContourMeasureIterImpl::new(&self.path, force_closed, res_scale));
+            self.impl_ = Some(ContourMeasureIterImpl::new(
+                &self.path,
+                force_closed,
+                res_scale,
+            ));
         } else {
             self.impl_ = None;
         }
@@ -452,12 +480,7 @@ impl ContourMeasureIterImpl {
                 }
                 Verb::Conic => {
                     let prev_d = distance;
-                    let conic = Conic::new(
-                        points[pi - 1],
-                        points[pi],
-                        points[pi + 1],
-                        weights[wi],
-                    );
+                    let conic = Conic::new(points[pi - 1], points[pi], points[pi + 1], weights[wi]);
                     distance = compute_conic_segs(
                         &conic,
                         distance,
@@ -480,12 +503,7 @@ impl ContourMeasureIterImpl {
                 }
                 Verb::Cubic => {
                     let prev_d = distance;
-                    let cubic_pts = [
-                        points[pi - 1],
-                        points[pi],
-                        points[pi + 1],
-                        points[pi + 2],
-                    ];
+                    let cubic_pts = [points[pi - 1], points[pi], points[pi + 1], points[pi + 2]];
                     distance = compute_cubic_segs(
                         &cubic_pts,
                         distance,
@@ -580,8 +598,24 @@ fn compute_quad_segs(
         let halft = (mint + maxt) >> 1;
         let mut tmp = [Point::default(); 5];
         chop_quad_at_half(pts, &mut tmp);
-        let distance = compute_quad_segs(&[tmp[0], tmp[1], tmp[2]], distance, mint, halft, pt_index, segments, tolerance);
-        compute_quad_segs(&[tmp[2], tmp[3], tmp[4]], distance, halft, maxt, pt_index, segments, tolerance)
+        let distance = compute_quad_segs(
+            &[tmp[0], tmp[1], tmp[2]],
+            distance,
+            mint,
+            halft,
+            pt_index,
+            segments,
+            tolerance,
+        );
+        compute_quad_segs(
+            &[tmp[2], tmp[3], tmp[4]],
+            distance,
+            halft,
+            maxt,
+            pt_index,
+            segments,
+            tolerance,
+        )
     } else {
         let d = Point::distance(pts[0], pts[2]);
         let prev_d = distance;
@@ -615,8 +649,12 @@ fn compute_conic_segs(
         return distance;
     }
     if tspan_big_enough(maxt - mint) && conic_too_curvy(min_pt, &half_pt, max_pt, tolerance) {
-        let distance = compute_conic_segs(conic, distance, mint, min_pt, halft, &half_pt, pt_index, segments, tolerance);
-        compute_conic_segs(conic, distance, halft, &half_pt, maxt, max_pt, pt_index, segments, tolerance)
+        let distance = compute_conic_segs(
+            conic, distance, mint, min_pt, halft, &half_pt, pt_index, segments, tolerance,
+        );
+        compute_conic_segs(
+            conic, distance, halft, &half_pt, maxt, max_pt, pt_index, segments, tolerance,
+        )
     } else {
         let d = Point::distance(*min_pt, *max_pt);
         let prev_d = distance;
@@ -646,8 +684,24 @@ fn compute_cubic_segs(
         let halft = (mint + maxt) >> 1;
         let mut tmp = [Point::default(); 7];
         chop_cubic_at_half(pts, &mut tmp);
-        let distance = compute_cubic_segs(&[tmp[0], tmp[1], tmp[2], tmp[3]], distance, mint, halft, pt_index, segments, tolerance);
-        compute_cubic_segs(&[tmp[3], tmp[4], tmp[5], tmp[6]], distance, halft, maxt, pt_index, segments, tolerance)
+        let distance = compute_cubic_segs(
+            &[tmp[0], tmp[1], tmp[2], tmp[3]],
+            distance,
+            mint,
+            halft,
+            pt_index,
+            segments,
+            tolerance,
+        );
+        compute_cubic_segs(
+            &[tmp[3], tmp[4], tmp[5], tmp[6]],
+            distance,
+            halft,
+            maxt,
+            pt_index,
+            segments,
+            tolerance,
+        )
     } else {
         let d = Point::distance(pts[0], pts[3]);
         let prev_d = distance;
@@ -717,23 +771,47 @@ fn contour_measure_seg_to(
             let conic = Conic::new(pts[0], pts[2], pts[3], pts[1].x);
             if start_t == 0.0 {
                 if stop_t == 1.0 {
-                    dst.conic_to(conic.f_pts[1].x, conic.f_pts[1].y, conic.f_pts[2].x, conic.f_pts[2].y, conic.f_w);
+                    dst.conic_to(
+                        conic.f_pts[1].x,
+                        conic.f_pts[1].y,
+                        conic.f_pts[2].x,
+                        conic.f_pts[2].y,
+                        conic.f_w,
+                    );
                 } else {
                     let mut tmp = [Conic::default(); 2];
                     if conic.chop_at(stop_t, &mut tmp) {
-                        dst.conic_to(tmp[0].f_pts[1].x, tmp[0].f_pts[1].y, tmp[0].f_pts[2].x, tmp[0].f_pts[2].y, tmp[0].f_w);
+                        dst.conic_to(
+                            tmp[0].f_pts[1].x,
+                            tmp[0].f_pts[1].y,
+                            tmp[0].f_pts[2].x,
+                            tmp[0].f_pts[2].y,
+                            tmp[0].f_w,
+                        );
                     }
                 }
             } else {
                 if stop_t == 1.0 {
                     let mut tmp = [Conic::default(); 2];
                     if conic.chop_at(start_t, &mut tmp) {
-                        dst.conic_to(tmp[1].f_pts[1].x, tmp[1].f_pts[1].y, tmp[1].f_pts[2].x, tmp[1].f_pts[2].y, tmp[1].f_w);
+                        dst.conic_to(
+                            tmp[1].f_pts[1].x,
+                            tmp[1].f_pts[1].y,
+                            tmp[1].f_pts[2].x,
+                            tmp[1].f_pts[2].y,
+                            tmp[1].f_w,
+                        );
                     }
                 } else {
                     let mut tmp = Conic::default();
                     conic.chop_at_range(start_t, stop_t, &mut tmp);
-                    dst.conic_to(tmp.f_pts[1].x, tmp.f_pts[1].y, tmp.f_pts[2].x, tmp.f_pts[2].y, tmp.f_w);
+                    dst.conic_to(
+                        tmp.f_pts[1].x,
+                        tmp.f_pts[1].y,
+                        tmp.f_pts[2].x,
+                        tmp.f_pts[2].y,
+                        tmp.f_w,
+                    );
                 }
             }
         }
@@ -755,7 +833,9 @@ fn contour_measure_seg_to(
                     let mut tmp2 = [Point::default(); 7];
                     let t = (stop_t - start_t) / (1.0 - start_t);
                     chop_cubic_at(&[tmp[3], tmp[4], tmp[5], tmp[6]], &mut tmp2, t);
-                    dst.cubic_to(tmp2[1].x, tmp2[1].y, tmp2[2].x, tmp2[2].y, tmp2[3].x, tmp2[3].y);
+                    dst.cubic_to(
+                        tmp2[1].x, tmp2[1].y, tmp2[2].x, tmp2[2].y, tmp2[3].x, tmp2[3].y,
+                    );
                 }
             }
         }
@@ -797,7 +877,12 @@ fn compute_pos_tan(
     }
 }
 
-fn compute_quad_pos_tan(pts: &[Point], t: Scalar, pos: Option<&mut Point>, tangent: Option<&mut Point>) {
+fn compute_quad_pos_tan(
+    pts: &[Point],
+    t: Scalar,
+    pos: Option<&mut Point>,
+    tangent: Option<&mut Point>,
+) {
     let mt = 1.0 - t;
     if let Some(pos) = pos {
         pos.x = mt * mt * pts[0].x + 2.0 * mt * t * pts[1].x + t * t * pts[2].x;
@@ -824,7 +909,12 @@ fn compute_quad_pos_tan(pts: &[Point], t: Scalar, pos: Option<&mut Point>, tange
     }
 }
 
-fn compute_conic_pos_tan(pts: &[Point], t: Scalar, pos: Option<&mut Point>, tangent: Option<&mut Point>) {
+fn compute_conic_pos_tan(
+    pts: &[Point],
+    t: Scalar,
+    pos: Option<&mut Point>,
+    tangent: Option<&mut Point>,
+) {
     let conic = Conic::new(pts[0], pts[2], pts[3], pts[1].x);
     if let Some(pos) = pos {
         let p = conic.eval_at_point(t);
@@ -838,8 +928,14 @@ fn compute_conic_pos_tan(pts: &[Point], t: Scalar, pos: Option<&mut Point>, tang
             tangent.x = conic.f_pts[2].x - conic.f_pts[0].x;
             tangent.y = conic.f_pts[2].y - conic.f_pts[0].y;
         } else {
-            let p20 = Point::new(conic.f_pts[2].x - conic.f_pts[0].x, conic.f_pts[2].y - conic.f_pts[0].y);
-            let p10 = Point::new(conic.f_pts[1].x - conic.f_pts[0].x, conic.f_pts[1].y - conic.f_pts[0].y);
+            let p20 = Point::new(
+                conic.f_pts[2].x - conic.f_pts[0].x,
+                conic.f_pts[2].y - conic.f_pts[0].y,
+            );
+            let p10 = Point::new(
+                conic.f_pts[1].x - conic.f_pts[0].x,
+                conic.f_pts[1].y - conic.f_pts[0].y,
+            );
             let c = p10.scale(conic.f_w);
             let a = p20.scale(conic.f_w) - p20;
             let b = p20 - c - c;
@@ -854,7 +950,12 @@ fn compute_conic_pos_tan(pts: &[Point], t: Scalar, pos: Option<&mut Point>, tang
     }
 }
 
-fn compute_cubic_pos_tan(pts: &[Point], t: Scalar, pos: Option<&mut Point>, tangent: Option<&mut Point>) {
+fn compute_cubic_pos_tan(
+    pts: &[Point],
+    t: Scalar,
+    pos: Option<&mut Point>,
+    tangent: Option<&mut Point>,
+) {
     let mt = 1.0 - t;
     if let Some(pos) = pos {
         let a = mt * mt * mt;
@@ -907,8 +1008,12 @@ impl Conic {
         let tt = t;
         let w = self.f_w;
 
-        let x = mt * mt * self.f_pts[0].x + 2.0 * mt * tt * w * self.f_pts[1].x + tt * tt * self.f_pts[2].x;
-        let y = mt * mt * self.f_pts[0].y + 2.0 * mt * tt * w * self.f_pts[1].y + tt * tt * self.f_pts[2].y;
+        let x = mt * mt * self.f_pts[0].x
+            + 2.0 * mt * tt * w * self.f_pts[1].x
+            + tt * tt * self.f_pts[2].x;
+        let y = mt * mt * self.f_pts[0].y
+            + 2.0 * mt * tt * w * self.f_pts[1].y
+            + tt * tt * self.f_pts[2].y;
         let z = mt * mt + 2.0 * mt * tt * w + tt * tt;
 
         if let Some(pos) = pos {
@@ -927,8 +1032,14 @@ impl Conic {
                 tangent.x = dx;
                 tangent.y = dy;
             } else {
-                let p20 = Point::new(self.f_pts[2].x - self.f_pts[0].x, self.f_pts[2].y - self.f_pts[0].y);
-                let p10 = Point::new(self.f_pts[1].x - self.f_pts[0].x, self.f_pts[1].y - self.f_pts[0].y);
+                let p20 = Point::new(
+                    self.f_pts[2].x - self.f_pts[0].x,
+                    self.f_pts[2].y - self.f_pts[0].y,
+                );
+                let p10 = Point::new(
+                    self.f_pts[1].x - self.f_pts[0].x,
+                    self.f_pts[1].y - self.f_pts[0].y,
+                );
                 let c = p10.scale(w);
                 let a = p20.scale(w) - p20;
                 let b = p20 - c - c;
@@ -973,11 +1084,19 @@ impl Conic {
         let root = abc_z.sqrt();
 
         dst[0] = Conic {
-            f_pts: [p0, project_down(ab_x, ab_y, ab_z), project_down(abc_x, abc_y, abc_z)],
+            f_pts: [
+                p0,
+                project_down(ab_x, ab_y, ab_z),
+                project_down(abc_x, abc_y, abc_z),
+            ],
             f_w: ab_z / root,
         };
         dst[1] = Conic {
-            f_pts: [project_down(abc_x, abc_y, abc_z), project_down(bc_x, bc_y, bc_z), p2],
+            f_pts: [
+                project_down(abc_x, abc_y, abc_z),
+                project_down(bc_x, bc_y, bc_z),
+                p2,
+            ],
             f_w: bc_z / root,
         };
 
@@ -1047,7 +1166,10 @@ fn chop_quad_at(src: &[Point], dst: &mut [Point; 5], t: Scalar) {
 
     let p01 = Point::new(scalar::interp(p0.x, p1.x, t), scalar::interp(p0.y, p1.y, t));
     let p12 = Point::new(scalar::interp(p1.x, p2.x, t), scalar::interp(p1.y, p2.y, t));
-    let p012 = Point::new(scalar::interp(p01.x, p12.x, t), scalar::interp(p01.y, p12.y, t));
+    let p012 = Point::new(
+        scalar::interp(p01.x, p12.x, t),
+        scalar::interp(p01.y, p12.y, t),
+    );
 
     dst[0] = p0;
     dst[1] = p01;
@@ -1071,7 +1193,10 @@ fn chop_cubic_at(src: &[Point], dst: &mut [Point; 7], t: Scalar) {
     let cd = Point::new(scalar::interp(p2.x, p3.x, t), scalar::interp(p2.y, p3.y, t));
     let abc = Point::new(scalar::interp(ab.x, bc.x, t), scalar::interp(ab.y, bc.y, t));
     let bcd = Point::new(scalar::interp(bc.x, cd.x, t), scalar::interp(bc.y, cd.y, t));
-    let abcd = Point::new(scalar::interp(abc.x, bcd.x, t), scalar::interp(abc.y, bcd.y, t));
+    let abcd = Point::new(
+        scalar::interp(abc.x, bcd.x, t),
+        scalar::interp(abc.y, bcd.y, t),
+    );
 
     dst[0] = p0;
     dst[1] = ab;
@@ -1254,9 +1379,24 @@ mod tests {
     #[test]
     fn test_segment_next() {
         let segments = vec![
-            Segment { distance: 10.0, pt_index: 0, t_value: MAX_T_VALUE as u32, seg_type: SegType::Line },
-            Segment { distance: 20.0, pt_index: 0, t_value: MAX_T_VALUE as u32, seg_type: SegType::Line },
-            Segment { distance: 30.0, pt_index: 1, t_value: MAX_T_VALUE as u32, seg_type: SegType::Line },
+            Segment {
+                distance: 10.0,
+                pt_index: 0,
+                t_value: MAX_T_VALUE as u32,
+                seg_type: SegType::Line,
+            },
+            Segment {
+                distance: 20.0,
+                pt_index: 0,
+                t_value: MAX_T_VALUE as u32,
+                seg_type: SegType::Line,
+            },
+            Segment {
+                distance: 30.0,
+                pt_index: 1,
+                t_value: MAX_T_VALUE as u32,
+                seg_type: SegType::Line,
+            },
         ];
         let next = Segment::next(&segments, &segments[0]);
         assert_eq!(next.pt_index, 1);

@@ -3,7 +3,7 @@
 //! This module provides the GrTriangulator class which converts paths to triangles
 //! using a sweep-line algorithm. Ported from Skia's GrTriangulator.cpp.
 
-use crate::core::{Path, Point, Rect, Scalar, FillType, Verb, ArenaAlloc};
+use crate::core::{ArenaAlloc, FillType, Path, Point, Rect, Scalar, Verb};
 
 const K_ARENA_DEFAULT_CHUNK_SIZE: usize = 16 * 1024;
 
@@ -177,10 +177,18 @@ impl BreadcrumbTriangleList {
     }
 
     fn append(&mut self, a: Point, b: Point, c: Point, winding: i32) {
-        if (a.x == b.x && a.y == b.y) || (a.x == c.x && a.y == c.y) || (b.x == c.x && b.y == c.y) || winding == 0 {
+        if (a.x == b.x && a.y == b.y)
+            || (a.x == c.x && a.y == c.y)
+            || (b.x == c.x && b.y == c.y)
+            || winding == 0
+        {
             return;
         }
-        let (a, b, winding) = if winding < 0 { (b, a, -winding) } else { (a, b, winding) };
+        let (a, b, winding) = if winding < 0 {
+            (b, a, -winding)
+        } else {
+            (a, b, winding)
+        };
         for _ in 0..winding {
             let node = Box::new(BreadcrumbNode {
                 pts: [a, b, c],
@@ -299,7 +307,10 @@ impl<'a> GrTriangulator<'a> {
     }
 
     fn is_inverse_fill_type(fill_type: FillType) -> bool {
-        matches!(fill_type, FillType::InverseWinding | FillType::InverseEvenOdd)
+        matches!(
+            fill_type,
+            FillType::InverseWinding | FillType::InverseEvenOdd
+        )
     }
 
     fn path_to_contours(
@@ -336,7 +347,11 @@ impl<'a> GrTriangulator<'a> {
                         }
                     } else {
                         if points.len() >= 3 {
-                            self.append_quadratic_to_contour(&[points[0], points[1], points[2]], tolerance_sqd, &mut contours[contour_idx]);
+                            self.append_quadratic_to_contour(
+                                &[points[0], points[1], points[2]],
+                                tolerance_sqd,
+                                &mut contours[contour_idx],
+                            );
                         }
                     }
                 }
@@ -348,7 +363,11 @@ impl<'a> GrTriangulator<'a> {
                         }
                     } else {
                         if points.len() >= 3 {
-                            self.append_quadratic_to_contour(&[points[0], points[1], points[2]], tolerance_sqd, &mut contours[contour_idx]);
+                            self.append_quadratic_to_contour(
+                                &[points[0], points[1], points[2]],
+                                tolerance_sqd,
+                                &mut contours[contour_idx],
+                            );
                         }
                     }
                 }
@@ -360,12 +379,21 @@ impl<'a> GrTriangulator<'a> {
                         }
                     } else {
                         if points.len() >= 4 {
-                            let points_left = crate::gpu::geometry::gr_path_utils::cubic_point_count(
-                                &[[points[0].x, points[0].y], [points[1].x, points[1].y], [points[2].x, points[2].y], [points[3].x, points[3].y]],
-                                tolerance,
-                            );
+                            let points_left =
+                                crate::gpu::geometry::gr_path_utils::cubic_point_count(
+                                    &[
+                                        [points[0].x, points[0].y],
+                                        [points[1].x, points[1].y],
+                                        [points[2].x, points[2].y],
+                                        [points[3].x, points[3].y],
+                                    ],
+                                    tolerance,
+                                );
                             self.generate_cubic_points(
-                                points[0], points[1], points[2], points[3],
+                                points[0],
+                                points[1],
+                                points[2],
+                                points[3],
                                 tolerance_sqd,
                                 &mut contours[contour_idx],
                                 points_left as i32,
@@ -421,10 +449,10 @@ impl<'a> GrTriangulator<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::core::{Path, Point, Rect, FillType, Direction as CoreDirection};
-    use crate::gpu::geometry::gr_path_utils::DEFAULT_TOLERANCE;
     use super::Direction;
+    use super::*;
+    use crate::core::{Direction as CoreDirection, FillType, Path, Point, Rect};
+    use crate::gpu::geometry::gr_path_utils::DEFAULT_TOLERANCE;
 
     #[test]
     fn test_gr_triangulator_new() {
@@ -556,8 +584,16 @@ mod tests {
 
     #[test]
     fn test_line_intersection() {
-        let line1 = Line { a: 1.0, b: 0.0, c: -5.0 };
-        let line2 = Line { a: 0.0, b: 1.0, c: -5.0 };
+        let line1 = Line {
+            a: 1.0,
+            b: 0.0,
+            c: -5.0,
+        };
+        let line2 = Line {
+            a: 0.0,
+            b: 1.0,
+            c: -5.0,
+        };
         let denom = line1.a * line2.b - line1.b * line2.a;
         if denom.abs() > 1e-10 {
             let x = ((line1.b * line2.c - line2.b * line1.c) / denom) as f32;
@@ -643,7 +679,11 @@ mod tests {
 
     #[test]
     fn test_line_dist() {
-        let line = Line { a: 1.0, b: 0.0, c: -5.0 };
+        let line = Line {
+            a: 1.0,
+            b: 0.0,
+            c: -5.0,
+        };
         let pt = Point::new(5.0, 0.0);
         let dist = line.a * pt.x as f64 + line.b * pt.y as f64 + line.c;
         assert!((dist.abs() < 1e-10));

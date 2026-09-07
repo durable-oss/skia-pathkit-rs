@@ -150,13 +150,17 @@ impl SkDRect {
         let mut roots = 0;
 
         if !sub.monotonic_in_x() {
-            if let Some(t) = SkDConic::find_extrema(&[sub[0].f_x, sub[1].f_x, sub[2].f_x], sub.f_weight) {
+            if let Some(t) =
+                SkDConic::find_extrema(&[sub[0].f_x, sub[1].f_x, sub[2].f_x], sub.f_weight)
+            {
                 t_values[roots] = t;
                 roots += 1;
             }
         }
         if !sub.monotonic_in_y() {
-            if let Some(t) = SkDConic::find_extrema(&[sub[0].f_y, sub[1].f_y, sub[2].f_y], sub.f_weight) {
+            if let Some(t) =
+                SkDConic::find_extrema(&[sub[0].f_y, sub[1].f_y, sub[2].f_y], sub.f_weight)
+            {
                 t_values[roots] = t;
                 roots += 1;
             }

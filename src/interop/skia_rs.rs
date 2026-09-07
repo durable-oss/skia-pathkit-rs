@@ -11,7 +11,8 @@ use crate::error::PathKitError;
 /// weights. Non-finite coordinates are passed through unchanged, matching
 /// both crates' path-construction behavior.
 pub fn to_skia_rs_path(path: &Path) -> Result<skia_rs_path::Path, PathKitError> {
-    let mut builder = skia_rs_path::PathBuilder::with_fill_type(to_skia_fill_type(path.fill_type()));
+    let mut builder =
+        skia_rs_path::PathBuilder::with_fill_type(to_skia_fill_type(path.fill_type()));
 
     for (verb, points, conic_weight) in path.iter() {
         match verb {
@@ -77,7 +78,11 @@ pub fn from_skia_rs_path(path: &skia_rs_path::Path) -> Result<Path, PathKitError
                 builder.conic_to(from_skia_point(p1), from_skia_point(p2), weight);
             }
             skia_rs_path::PathElement::Cubic(p1, p2, p3) => {
-                builder.cubic_to(from_skia_point(p1), from_skia_point(p2), from_skia_point(p3));
+                builder.cubic_to(
+                    from_skia_point(p1),
+                    from_skia_point(p2),
+                    from_skia_point(p3),
+                );
             }
             skia_rs_path::PathElement::Close => {
                 builder.close();

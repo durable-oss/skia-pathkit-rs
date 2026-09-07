@@ -30,14 +30,10 @@ impl PaintPriv {
     #[must_use]
     pub fn compute_res_scale_for_stroking(matrix: &Matrix) -> f32 {
         // Compute the length of the transformed x and y basis vectors
-        let sx = Point::distance_to_origin(
-            matrix.get(matrix::M_SCALE_X),
-            matrix.get(matrix::M_SKEW_Y),
-        );
-        let sy = Point::distance_to_origin(
-            matrix.get(matrix::M_SKEW_X),
-            matrix.get(matrix::M_SCALE_Y),
-        );
+        let sx =
+            Point::distance_to_origin(matrix.get(matrix::M_SCALE_X), matrix.get(matrix::M_SKEW_Y));
+        let sy =
+            Point::distance_to_origin(matrix.get(matrix::M_SKEW_X), matrix.get(matrix::M_SCALE_Y));
 
         if scalar::are_finite(sx, sy) {
             let scale = sx.max(sy);

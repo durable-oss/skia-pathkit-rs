@@ -11,9 +11,9 @@
 //! micro-optimization is dropped.
 
 use super::point::Point;
-use crate::core::point::Point3;
 use super::rect::Rect;
 use super::scalar::{self, Scalar};
+use crate::core::point::Point3;
 
 /// Index of the horizontal scale factor within [`Matrix::as_slice`].
 pub const M_SCALE_X: usize = 0;
@@ -795,7 +795,12 @@ impl Matrix {
         }
         for i in 0..9 {
             let offset = i * 4;
-            let val = [buffer[offset], buffer[offset + 1], buffer[offset + 2], buffer[offset + 3]];
+            let val = [
+                buffer[offset],
+                buffer[offset + 1],
+                buffer[offset + 2],
+                buffer[offset + 3],
+            ];
             self.m[i] = Scalar::from_le_bytes(val);
         }
         bytes
@@ -1138,4 +1143,3 @@ mod tests {
         assert!(result.is_none());
     }
 }
-

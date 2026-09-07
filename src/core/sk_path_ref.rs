@@ -6,11 +6,11 @@
 //! instances can share the same SkPathRef, which is reference-counted.
 
 use super::{
-    scalar::Scalar,
-    types::{SEGMENT_MASK_LINE, SEGMENT_MASK_CONIC, SEGMENT_MASK_QUAD, SEGMENT_MASK_CUBIC},
     point::Point,
     rect::Rect,
+    scalar::Scalar,
     types::Verb,
+    types::{SEGMENT_MASK_CONIC, SEGMENT_MASK_CUBIC, SEGMENT_MASK_LINE, SEGMENT_MASK_QUAD},
 };
 use std::sync::Arc;
 
@@ -77,8 +77,10 @@ impl SkPathRef {
             self.is_finite = false;
         } else {
             self.bounds = Rect::from_ltrb(
-                self.points[0].x, self.points[0].y,
-                self.points[0].x, self.points[0].y,
+                self.points[0].x,
+                self.points[0].y,
+                self.points[0].x,
+                self.points[0].y,
             );
             for p in &self.points[1..] {
                 self.bounds.left = self.bounds.left.min(p.x);
@@ -146,8 +148,10 @@ impl SkPathRef {
             let mut bounds = Rect::empty();
             if !self.points.is_empty() {
                 bounds = Rect::from_ltrb(
-                    self.points[0].x, self.points[0].y,
-                    self.points[0].x, self.points[0].y,
+                    self.points[0].x,
+                    self.points[0].y,
+                    self.points[0].x,
+                    self.points[0].y,
                 );
                 for p in &self.points[1..] {
                     bounds.left = bounds.left.min(p.x);
@@ -223,7 +227,12 @@ impl SkPathRef {
     }
 
     /// Copy another SkPathRef
-    pub fn copy(&mut self, src: &SkPathRef, additional_verb_reserve: usize, additional_point_reserve: usize) {
+    pub fn copy(
+        &mut self,
+        src: &SkPathRef,
+        additional_verb_reserve: usize,
+        additional_point_reserve: usize,
+    ) {
         self.reset_to_size(
             src.verbs.len(),
             src.points.len(),
@@ -258,7 +267,10 @@ impl SkPathRef {
             None
         } else {
             self.verbs.extend_from_slice(&path.verbs);
-            Some(Point::new(self.points.len() as Scalar, self.points.len() as Scalar))
+            Some(Point::new(
+                self.points.len() as Scalar,
+                self.points.len() as Scalar,
+            ))
         }
     }
 
@@ -304,9 +316,10 @@ impl SkPathRef {
 
         let verbs_start = self.verbs.len();
         self.verbs.resize(verbs_start + num_verbs, verb);
-        
+
         let points_start = self.points.len();
-        self.points.resize(points_start + point_count, Point::new(0.0, 0.0));
+        self.points
+            .resize(points_start + point_count, Point::new(0.0, 0.0));
 
         let weights = if verb == Verb::Conic as u8 {
             let weights_start = self.conic_weights.len();
@@ -366,7 +379,8 @@ impl SkPathRef {
             self.conic_weights.push(weight);
         }
         let points_start = self.points.len();
-        self.points.resize(points_start + point_count, Point::new(0.0, 0.0));
+        self.points
+            .resize(points_start + point_count, Point::new(0.0, 0.0));
 
         self.points.get_mut(points_start).cloned()
     }
@@ -461,11 +475,11 @@ impl Clone for SkPathRef {
 
 impl PartialEq for SkPathRef {
     fn eq(&self, other: &Self) -> bool {
-        self.segment_mask == other.segment_mask &&
-        (self.generation_id != 0 && self.generation_id == other.generation_id ||
-         self.points == other.points &&
-         self.conic_weights == other.conic_weights &&
-         self.verbs == other.verbs)
+        self.segment_mask == other.segment_mask
+            && (self.generation_id != 0 && self.generation_id == other.generation_id
+                || self.points == other.points
+                    && self.conic_weights == other.conic_weights
+                    && self.verbs == other.verbs)
     }
 }
 
@@ -495,7 +509,7 @@ impl<'a> PathIter<'a> {
     /// Get the next verb and its points
     pub fn next(&mut self, pts: &mut [Point; 4]) -> Option<Verb> {
         let verb = self.verbs.next().copied()?;
-        
+
         match verb {
             verb if verb == Verb::Move as u8 => {
                 pts[0] = *self.points.next().unwrap();
@@ -571,11 +585,11 @@ mod tests {
         let mut path_ref = SkPathRef::new();
         path_ref.points.push(Point::new(1.0, 2.0));
         path_ref.verbs.push(Verb::Move as u8);
-        
+
         let id = path_ref.gen_id();
         assert!(id != 0);
         assert!(id != EMPTY_GEN_ID);
-        
+
         // Second call should return same ID
         assert_eq!(path_ref.gen_id(), id);
     }
@@ -588,22 +602,22 @@ mod tests {
         start.verbs.push(Verb::Move as u8);
         start.verbs.push(Verb::Line as u8);
         start.bounds_is_dirty = false;
-        
+
         let mut end = SkPathRef::new();
         end.points.push(Point::new(0.0, 0.0));
         end.points.push(Point::new(20.0, 20.0));
         end.verbs.push(Verb::Move as u8);
         end.verbs.push(Verb::Line as u8);
         end.bounds_is_dirty = false;
-        
+
         let mut result = SkPathRef::new();
         result.points.push(Point::new(0.0, 0.0));
         result.points.push(Point::new(10.0, 10.0));
         result.verbs = start.verbs.clone();
         result.bounds_is_dirty = false;
-        
+
         start.interpolate(&end, 0.5, &mut result);
-        
+
         assert!(result.points[1].x > 10.0);
         assert!(result.points[1].x < 20.0);
     }
@@ -613,7 +627,7 @@ mod tests {
         let mut path_ref = SkPathRef::new();
         path_ref.points.push(Point::new(1.0, 2.0));
         path_ref.verbs.push(Verb::Move as u8);
-        
+
         let cloned = path_ref.clone();
         assert_eq!(cloned.count_points(), 1);
         assert_eq!(cloned.points[0].x, 1.0);
@@ -623,7 +637,7 @@ mod tests {
     fn test_partial_eq() {
         let path_ref1 = SkPathRef::new();
         let path_ref2 = SkPathRef::new();
-        
+
         assert_eq!(path_ref1, path_ref2);
     }
 
@@ -632,9 +646,12 @@ mod tests {
         let mut path_ref = SkPathRef::new();
         path_ref.grow_for_verb(Verb::Line as u8, 0.0);
         assert_eq!(path_ref.segment_mask(), SEGMENT_MASK_LINE);
-        
+
         path_ref.grow_for_verb(Verb::Cubic as u8, 0.0);
-        assert_eq!(path_ref.segment_mask(), SEGMENT_MASK_LINE | SEGMENT_MASK_CUBIC);
+        assert_eq!(
+            path_ref.segment_mask(),
+            SEGMENT_MASK_LINE | SEGMENT_MASK_CUBIC
+        );
     }
 
     #[test]
@@ -652,10 +669,10 @@ mod tests {
         let mut path_ref = SkPathRef::new();
         path_ref.grow_for_verb(Verb::Move as u8, 0.0);
         path_ref.grow_for_verb(Verb::Line as u8, 0.0);
-        
+
         let mut iter = PathIter::new(&path_ref);
         let mut pts = [Point::new(0.0, 0.0); 4];
-        
+
         assert_eq!(iter.next(&mut pts), Some(Verb::Move));
         assert_eq!(iter.next(&mut pts), Some(Verb::Line));
         assert_eq!(iter.next(&mut pts), None);
@@ -668,10 +685,10 @@ mod tests {
         src.verbs.push(Verb::Move as u8);
         src.bounds_is_dirty = false;
         src.bounds = Rect::from_ltrb(1.0, 2.0, 1.0, 2.0);
-        
+
         let mut dst = SkPathRef::new();
         dst.copy(&src, 0, 0);
-        
+
         assert_eq!(dst.count_points(), 1);
         assert_eq!(dst.points[0].x, 1.0);
         assert!(!dst.bounds_is_dirty());
@@ -682,7 +699,7 @@ mod tests {
         let mut src = SkPathRef::new();
         src.verbs.push(Verb::Move as u8);
         src.points.push(Point::new(1.0, 2.0));
-        
+
         let mut dst = SkPathRef::new();
         let result = dst.grow_for_verbs_in_path(&src);
         assert!(result.is_some());

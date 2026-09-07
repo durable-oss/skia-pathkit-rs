@@ -199,7 +199,8 @@ impl SkDQuad {
         }
         let p = b / (2.0 * a);
         let q = c / a;
-        if approximately_zero(a) && (approximately_zero_inverse(p) || approximately_zero_inverse(q)) {
+        if approximately_zero(a) && (approximately_zero_inverse(p) || approximately_zero_inverse(q))
+        {
             return handle_zero(b, c, s);
         }
         let p2 = p * p;
@@ -235,7 +236,10 @@ impl SkDQuad {
             } else if super::sk_path_ops_types::approximately_greater_than_one(t_value) {
                 t_value = 1.0;
             }
-            if t.iter().take(found_roots).any(|&existing| approximately_equal(existing, t_value)) {
+            if t.iter()
+                .take(found_roots)
+                .any(|&existing| approximately_equal(existing, t_value))
+            {
                 continue;
             }
             t[found_roots] = t_value;
@@ -253,8 +257,18 @@ impl SkDQuad {
         let ax = interp_quad_coords(self.f_pts[0].f_x, self.f_pts[1].f_x, self.f_pts[2].f_x, t1);
         let ay = interp_quad_coords(self.f_pts[0].f_y, self.f_pts[1].f_y, self.f_pts[2].f_y, t1);
         let mid_t = (t1 + t2) / 2.0;
-        let dx = interp_quad_coords(self.f_pts[0].f_x, self.f_pts[1].f_x, self.f_pts[2].f_x, mid_t);
-        let dy = interp_quad_coords(self.f_pts[0].f_y, self.f_pts[1].f_y, self.f_pts[2].f_y, mid_t);
+        let dx = interp_quad_coords(
+            self.f_pts[0].f_x,
+            self.f_pts[1].f_x,
+            self.f_pts[2].f_x,
+            mid_t,
+        );
+        let dy = interp_quad_coords(
+            self.f_pts[0].f_y,
+            self.f_pts[1].f_y,
+            self.f_pts[2].f_y,
+            mid_t,
+        );
         let cx = interp_quad_coords(self.f_pts[0].f_x, self.f_pts[1].f_x, self.f_pts[2].f_x, t2);
         let cy = interp_quad_coords(self.f_pts[0].f_y, self.f_pts[1].f_y, self.f_pts[2].f_y, t2);
         Self {
@@ -269,18 +283,10 @@ impl SkDQuad {
     /// Splits the quad into two quads meeting at parameter `t`.
     pub fn chop_at(&self, t: f64) -> SkDQuadPair {
         let mut pts = [SkDPoint::default(); 5];
-        let (x0, x1, x2, x3, x4) = interp_quad_coords_chop(
-            self.f_pts[0].f_x,
-            self.f_pts[1].f_x,
-            self.f_pts[2].f_x,
-            t,
-        );
-        let (y0, y1, y2, y3, y4) = interp_quad_coords_chop(
-            self.f_pts[0].f_y,
-            self.f_pts[1].f_y,
-            self.f_pts[2].f_y,
-            t,
-        );
+        let (x0, x1, x2, x3, x4) =
+            interp_quad_coords_chop(self.f_pts[0].f_x, self.f_pts[1].f_x, self.f_pts[2].f_x, t);
+        let (y0, y1, y2, y3, y4) =
+            interp_quad_coords_chop(self.f_pts[0].f_y, self.f_pts[1].f_y, self.f_pts[2].f_y, t);
         pts[0] = SkDPoint::new(x0, y0);
         pts[1] = SkDPoint::new(x1, y1);
         pts[2] = SkDPoint::new(x2, y2);
@@ -358,7 +364,12 @@ fn interp_quad_coords(start: f64, control: f64, end: f64, t: f64) -> f64 {
 /// Same De Casteljau split as [`interp_quad_coords`], but returns every
 /// intermediate value: `(start, ab, abc, bc, end)`. `chop_at` needs the
 /// full ladder (not just the final point) to build both sub-quads.
-fn interp_quad_coords_chop(start: f64, control: f64, end: f64, t: f64) -> (f64, f64, f64, f64, f64) {
+fn interp_quad_coords_chop(
+    start: f64,
+    control: f64,
+    end: f64,
+    t: f64,
+) -> (f64, f64, f64, f64, f64) {
     let ab = lerp(start, control, t);
     let bc = lerp(control, end, t);
     let abc = lerp(ab, bc, t);

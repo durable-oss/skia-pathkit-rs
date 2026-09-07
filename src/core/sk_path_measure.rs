@@ -50,10 +50,7 @@ impl PathMeasure {
 
     /// Return the length of the current contour.
     pub fn length(&self) -> Scalar {
-        self.contour
-            .as_ref()
-            .map(|c| c.length())
-            .unwrap_or(0.0)
+        self.contour.as_ref().map(|c| c.length()).unwrap_or(0.0)
     }
 
     /// Compute position and unit tangent at the given distance.
@@ -67,12 +64,7 @@ impl PathMeasure {
 
     /// Compute transformation matrix at the given distance based on flags.
     /// Returns false if no contour or invalid distance.
-    pub fn get_matrix(
-        &self,
-        distance: Scalar,
-        flags: MatrixFlags,
-        matrix: &mut Matrix,
-    ) -> bool {
+    pub fn get_matrix(&self, distance: Scalar, flags: MatrixFlags, matrix: &mut Matrix) -> bool {
         self.contour
             .as_ref()
             .map(|c| {
@@ -80,9 +72,13 @@ impl PathMeasure {
                     distance,
                     matrix,
                     match flags {
-                        MatrixFlags::GetPosition => super::contour_measure::MatrixFlags::GET_POSITION,
+                        MatrixFlags::GetPosition => {
+                            super::contour_measure::MatrixFlags::GET_POSITION
+                        }
                         MatrixFlags::GetTangent => super::contour_measure::MatrixFlags::GET_TANGENT,
-                        MatrixFlags::GetPosAndTan => super::contour_measure::MatrixFlags::GET_POS_AND_TAN,
+                        MatrixFlags::GetPosAndTan => {
+                            super::contour_measure::MatrixFlags::GET_POS_AND_TAN
+                        }
                     },
                 )
             })

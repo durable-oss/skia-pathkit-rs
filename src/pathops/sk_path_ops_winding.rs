@@ -99,7 +99,7 @@ fn get_t_guess(t_try: i32, dir_offset: &mut usize) -> Scalar {
     *dir_offset = (t_try as usize) & 1;
     let mut t_base = (t_try as usize) >> 1;
     let mut t_bits = 0;
-    
+
     if t_base > 0 {
         t_bits += 1;
         while t_base > 1 {
@@ -108,7 +108,7 @@ fn get_t_guess(t_try: i32, dir_offset: &mut usize) -> Scalar {
             t_bits += 1;
         }
     }
-    
+
     if t_bits > 0 {
         let t_index = (t_base - 1) & ((1 << t_bits) - 1);
         t += t * 2.0 * (t_index as Scalar);
@@ -190,8 +190,14 @@ mod tests {
     #[test]
     fn test_approximately_equal() {
         assert!(approximately_equal(1.0, 1.0));
-        assert!(approximately_equal(1.0, 1.0 + (APPROX_EPSILON / 2.0) as Scalar));
-        assert!(!approximately_equal(1.0, 1.0 + (APPROX_EPSILON * 2.0) as Scalar));
+        assert!(approximately_equal(
+            1.0,
+            1.0 + (APPROX_EPSILON / 2.0) as Scalar
+        ));
+        assert!(!approximately_equal(
+            1.0,
+            1.0 + (APPROX_EPSILON * 2.0) as Scalar
+        ));
     }
 
     #[test]

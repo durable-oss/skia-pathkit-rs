@@ -51,12 +51,7 @@ impl SkCubicClipper {
     #[must_use]
     pub fn chop_mono_at_y(pts: &[Point; 4], y: Scalar, t: &mut Scalar) -> bool {
         // Compute y values relative to the target y
-        let ycrv = [
-            pts[0].y - y,
-            pts[1].y - y,
-            pts[2].y - y,
-            pts[3].y - y,
-        ];
+        let ycrv = [pts[0].y - y, pts[1].y - y, pts[2].y - y, pts[3].y - y];
 
         // Check that the endpoints straddle zero
         let (t_neg, t_pos) = if ycrv[0] < 0.0 {
@@ -82,7 +77,7 @@ impl SkCubicClipper {
         // Bisection to find the root
         while iters < max_iters {
             let t_mid = (t_pos + t_neg) * scalar::SCALAR_HALF;
-            
+
             // Evaluate the cubic at t_mid using De Casteljau's algorithm
             let y01 = scalar::interp(ycrv[0], ycrv[1], t_mid);
             let y12 = scalar::interp(ycrv[1], ycrv[2], t_mid);

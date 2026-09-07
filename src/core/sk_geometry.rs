@@ -2,7 +2,7 @@
 //!
 //! Ported from `src/core/SkGeometry.cpp`.
 
-use super::{scalar, scalar::Scalar, point::Point, point::Vector};
+use super::{point::Point, point::Vector, scalar, scalar::Scalar};
 use crate::core::point::Point3;
 
 /// Result of classifying a cubic curve.
@@ -46,7 +46,7 @@ pub fn find_unit_quad_roots(a: Scalar, b: Scalar, c: Scalar, roots: &mut [Scalar
     } else {
         -(b + r) / 2.0
     };
-    
+
     let mut count = 0;
     count += valid_unit_divide(q, a, &mut roots[count..]) as usize;
     count += valid_unit_divide(c, q, &mut roots[count..]) as usize;
@@ -58,7 +58,7 @@ pub fn find_unit_quad_roots(a: Scalar, b: Scalar, c: Scalar, roots: &mut [Scalar
             count = 1;
         }
     }
-    
+
     count
 }
 
@@ -67,11 +67,8 @@ fn valid_unit_divide(numer: Scalar, denom: Scalar, ratio: &mut [Scalar]) -> usiz
     if numer < 0.0 {
         return 0;
     }
-    
-    if scalar::nearly_zero(denom, None) 
-        || scalar::nearly_zero(numer, None) 
-        || numer >= denom 
-    {
+
+    if scalar::nearly_zero(denom, None) || scalar::nearly_zero(numer, None) || numer >= denom {
         return 0;
     }
 
@@ -91,13 +88,13 @@ pub fn eval_quad_at(src: &[Point; 3], t: Scalar) -> Point {
     let p0 = src[0];
     let p1 = src[1];
     let p2 = src[2];
-    
+
     // Quadratic: (1-t)²P0 + 2t(1-t)P1 + t²P2
     let one_minus_t = 1.0 - t;
     let t2 = t * t;
     let one_minus_t2 = one_minus_t * one_minus_t;
     let two_t_one_minus_t = 2.0 * t * one_minus_t;
-    
+
     Point::new(
         one_minus_t2 * p0.x + two_t_one_minus_t * p1.x + t2 * p2.x,
         one_minus_t2 * p0.y + two_t_one_minus_t * p1.y + t2 * p2.y,
@@ -109,17 +106,22 @@ pub fn eval_quad_tangent_at(src: &[Point; 3], t: Scalar) -> Vector {
     let p0 = src[0];
     let p1 = src[1];
     let p2 = src[2];
-    
+
     // Handle degenerate cases where control point equals endpoints
-    if (scalar::nearly_zero(t, None) && scalar::nearly_equal(p0.x, p1.x, None) && scalar::nearly_equal(p0.y, p1.y, None)) ||
-       (scalar::nearly_zero(t - 1.0, None) && scalar::nearly_equal(p1.x, p2.x, None) && scalar::nearly_equal(p1.y, p2.y, None)) {
+    if (scalar::nearly_zero(t, None)
+        && scalar::nearly_equal(p0.x, p1.x, None)
+        && scalar::nearly_equal(p0.y, p1.y, None))
+        || (scalar::nearly_zero(t - 1.0, None)
+            && scalar::nearly_equal(p1.x, p2.x, None)
+            && scalar::nearly_equal(p1.y, p2.y, None))
+    {
         return p2 - p0;
     }
-    
+
     // Derivative: 2 * (B + A*t) where A = P2 - 2*P1 + P0, B = P1 - P0
     let a = p2 - Vector::new(2.0 * p1.x, 2.0 * p1.y) + p0;
     let b = p1 - p0;
-    
+
     Vector::new(2.0 * (b.x + a.x * t), 2.0 * (b.y + a.y * t))
 }
 
@@ -127,24 +129,21 @@ pub fn eval_quad_tangent_at(src: &[Point; 3], t: Scalar) -> Vector {
 /// dst receives 5 points (3 for first quad, 3 for second, with shared middle point).
 pub fn chop_quad_at(src: &[Point; 3], dst: &mut [Point; 5], t: Scalar) {
     let one_minus_t = 1.0 - t;
-    
+
     dst[0] = src[0];
     dst[4] = src[2];
-    
+
     // Linear interpolations
     let ab_x = src[0].x * one_minus_t + src[1].x * t;
     let ab_y = src[0].y * one_minus_t + src[1].y * t;
     dst[1] = Point::new(ab_x, ab_y);
-    
+
     let bc_x = src[1].x * one_minus_t + src[2].x * t;
     let bc_y = src[1].y * one_minus_t + src[2].y * t;
     dst[3] = Point::new(bc_x, bc_y);
-    
+
     // Middle point
-    dst[2] = Point::new(
-        ab_x * one_minus_t + bc_x * t,
-        ab_y * one_minus_t + bc_y * t,
-    );
+    dst[2] = Point::new(ab_x * one_minus_t + bc_x * t, ab_y * one_minus_t + bc_y * t);
 }
 
 /// Chop a quadratic Bezier at t=0.5.
@@ -165,7 +164,7 @@ pub fn chop_quad_at_y_extrema(src: &[Point; 3], dst: &mut [Point; 5]) -> usize {
     let a = src[0].y;
     let mut b = src[1].y;
     let c = src[2].y;
-    
+
     if is_not_monotonic(a, b, c) {
         let mut t_value = 0.0;
         if find_quad_extrema(a, b, c, &mut t_value) {
@@ -177,7 +176,7 @@ pub fn chop_quad_at_y_extrema(src: &[Point; 3], dst: &mut [Point; 5]) -> usize {
         // Force monotonic if we couldn't compute t
         b = if (a - b).abs() < (b - c).abs() { a } else { c };
     }
-    
+
     dst[0] = src[0];
     dst[1] = Point::new(src[1].x, b);
     dst[2] = src[2];
@@ -201,10 +200,10 @@ pub fn find_quad_max_curvature(src: &[Point; 3]) -> Scalar {
     // Bx = P0.x - 2*P1.x + P2.x, By = P0.y - 2*P1.y + P2.y
     let bx = src[0].x - 2.0 * src[1].x + src[2].x;
     let by = src[0].y - 2.0 * src[1].y + src[2].y;
-    
+
     let numer = -(ax * bx + ay * by);
     let denom = bx * bx + by * by;
-    
+
     if denom <= 0.0 || numer <= 0.0 {
         return 0.0;
     }
@@ -234,7 +233,7 @@ pub fn eval_cubic_at(src: &[Point; 4], t: Scalar) -> Point {
     let p1 = src[1];
     let p2 = src[2];
     let p3 = src[3];
-    
+
     // Cubic: (1-t)³P0 + 3t(1-t)²P1 + 3t²(1-t)P2 + t³P3
     let one_minus_t = 1.0 - t;
     let t2 = t * t;
@@ -243,7 +242,7 @@ pub fn eval_cubic_at(src: &[Point; 4], t: Scalar) -> Point {
     let one_minus_t3 = one_minus_t2 * one_minus_t;
     let three_t_one_minus_t2 = 3.0 * t * one_minus_t2;
     let three_t2_one_minus_t = 3.0 * t2 * one_minus_t;
-    
+
     Point::new(
         one_minus_t3 * p0.x + three_t_one_minus_t2 * p1.x + three_t2_one_minus_t * p2.x + t3 * p3.x,
         one_minus_t3 * p0.y + three_t_one_minus_t2 * p1.y + three_t2_one_minus_t * p2.y + t3 * p3.y,
@@ -256,19 +255,21 @@ pub fn eval_cubic_tangent_at(src: &[Point; 4], t: Scalar) -> Vector {
     let p1 = src[1];
     let p2 = src[2];
     let p3 = src[3];
-    
+
     // Handle degenerate cases
-    if scalar::nearly_zero(t, None) && 
-       scalar::nearly_equal(p0.x, p1.x, None) && 
-       scalar::nearly_equal(p0.y, p1.y, None) {
+    if scalar::nearly_zero(t, None)
+        && scalar::nearly_equal(p0.x, p1.x, None)
+        && scalar::nearly_equal(p0.y, p1.y, None)
+    {
         return p2 - p0;
     }
-    if scalar::nearly_zero(t - 1.0, None) &&
-       scalar::nearly_equal(p2.x, p3.x, None) && 
-       scalar::nearly_equal(p2.y, p3.y, None) {
+    if scalar::nearly_zero(t - 1.0, None)
+        && scalar::nearly_equal(p2.x, p3.x, None)
+        && scalar::nearly_equal(p2.y, p3.y, None)
+    {
         return p3 - p1;
     }
-    
+
     // Derivative: 3 * (C + B*t + A*t²) where
     // C = P1 - P0
     // B = P2 - 2*P1 + P0
@@ -276,9 +277,12 @@ pub fn eval_cubic_tangent_at(src: &[Point; 4], t: Scalar) -> Vector {
     let c = p1 - p0;
     let b = p2 - Vector::new(2.0 * p1.x, 2.0 * p1.y) + p0;
     let a = p3 - Vector::new(3.0 * p2.x, 3.0 * p2.y) + Vector::new(3.0 * p1.x, 3.0 * p1.y) - p0;
-    
+
     let t2 = t * t;
-    Vector::new(3.0 * (c.x + b.x * t + a.x * t2), 3.0 * (c.y + b.y * t + a.y * t2))
+    Vector::new(
+        3.0 * (c.x + b.x * t + a.x * t2),
+        3.0 * (c.y + b.y * t + a.y * t2),
+    )
 }
 
 /// Get second derivative of cubic Bezier at parameter t.
@@ -287,26 +291,32 @@ pub fn eval_cubic_2nd_derivative(src: &[Point; 4], t: Scalar) -> Vector {
     let p1 = src[1];
     let p2 = src[2];
     let p3 = src[3];
-    
+
     // Second derivative: 6 * (B + A*t) where
     // A = P3 - 3*P2 + 3*P1 - P0
     // B = P2 - 2*P1 + P0
     let a = p3 - Vector::new(3.0 * p2.x, 3.0 * p2.y) + Vector::new(3.0 * p1.x, 3.0 * p1.y) - p0;
     let b = p2 - Vector::new(2.0 * p1.x, 2.0 * p1.y) + p0;
-    
+
     Vector::new(6.0 * (b.x + a.x * t), 6.0 * (b.y + a.y * t))
 }
 
 /// Find extrema parameters for a cubic curve in one dimension.
-pub fn find_cubic_extrema(a: Scalar, b: Scalar, c: Scalar, d: Scalar, t_values: &mut [Scalar; 2]) -> usize {
+pub fn find_cubic_extrema(
+    a: Scalar,
+    b: Scalar,
+    c: Scalar,
+    d: Scalar,
+    t_values: &mut [Scalar; 2],
+) -> usize {
     // Coefficients of derivative (divided by 3):
     // A = d - a + 3*(b - c)
-    // B = 2*(a - 2b + c)  
+    // B = 2*(a - 2b + c)
     // C = b - a
     let a_coef = d - a + 3.0 * (b - c);
     let b_coef = 2.0 * (a - b - b + c);
     let c_coef = b - a;
-    
+
     find_unit_quad_roots(a_coef, b_coef, c_coef, t_values)
 }
 
@@ -315,7 +325,7 @@ pub fn chop_cubic_at(src: &[Point], dst: &mut [Point], t: Scalar) {
     if src.len() < 4 || dst.len() < 7 {
         return;
     }
-    
+
     if scalar::nearly_zero(t - 1.0, None) {
         dst[0..4].copy_from_slice(&src[0..4]);
         dst[4] = src[3];
@@ -323,9 +333,9 @@ pub fn chop_cubic_at(src: &[Point], dst: &mut [Point], t: Scalar) {
         dst[6] = src[3];
         return;
     }
-    
+
     let one_minus_t = 1.0 - t;
-    
+
     // First level of de Casteljau
     let ab = Point::new(
         src[0].x * one_minus_t + src[1].x * t,
@@ -339,23 +349,17 @@ pub fn chop_cubic_at(src: &[Point], dst: &mut [Point], t: Scalar) {
         src[2].x * one_minus_t + src[3].x * t,
         src[2].y * one_minus_t + src[3].y * t,
     );
-    
+
     // Second level
-    let abc = Point::new(
-        ab.x * one_minus_t + bc.x * t,
-        ab.y * one_minus_t + bc.y * t,
-    );
-    let bcd = Point::new(
-        bc.x * one_minus_t + cd.x * t,
-        bc.y * one_minus_t + cd.y * t,
-    );
-    
+    let abc = Point::new(ab.x * one_minus_t + bc.x * t, ab.y * one_minus_t + bc.y * t);
+    let bcd = Point::new(bc.x * one_minus_t + cd.x * t, bc.y * one_minus_t + cd.y * t);
+
     // Third level (the split point)
     let abcd = Point::new(
         abc.x * one_minus_t + bcd.x * t,
         abc.y * one_minus_t + bcd.y * t,
     );
-    
+
     dst[0] = src[0];
     dst[1] = ab;
     dst[2] = abc;
@@ -378,12 +382,12 @@ pub fn find_cubic_inflections(src: &[Point; 4], t_values: &mut [Scalar; 2]) -> u
     let by = src[2].y - 2.0 * src[1].y + src[0].y;
     let cx = src[3].x + 3.0 * (src[1].x - src[2].x) - src[0].x;
     let cy = src[3].y + 3.0 * (src[1].y - src[2].y) - src[0].y;
-    
+
     // Solve (Bx*Cy - By*Cx)t² + (Ax*Cy - Ay*Cx)t + (Ax*By - Ay*Bx) = 0
     let a_coef = bx * cy - by * cx;
     let b_coef = ax * cy - ay * cx;
     let c_coef = ax * by - ay * bx;
-    
+
     find_unit_quad_roots(a_coef, b_coef, c_coef, t_values)
 }
 
@@ -391,12 +395,12 @@ pub fn find_cubic_inflections(src: &[Point; 4], t_values: &mut [Scalar; 2]) -> u
 pub fn chop_cubic_at_y_extrema(src: &[Point; 4], dst: &mut [Point; 10]) -> usize {
     let mut t_values = [0.0; 2];
     let roots = find_cubic_extrema(src[0].y, src[1].y, src[2].y, src[3].y, &mut t_values);
-    
+
     if roots == 0 {
         dst[0..4].copy_from_slice(src);
         return 0;
     }
-    
+
     chop_cubic_at(src, &mut dst[0..7], t_values[0]);
     if roots == 2 {
         // Use split_at_mut to get two mutable non-overlapping sub-slices
@@ -410,7 +414,7 @@ pub fn chop_cubic_at_y_extrema(src: &[Point; 4], dst: &mut [Point; 10]) -> usize
     }
     // Ensure flat first extremum
     dst[3].y = (dst[2].y + dst[4].y) / 2.0;
-    
+
     roots
 }
 
@@ -421,11 +425,11 @@ pub fn find_cubic_max_curvature(src: &[Point; 4], t_values: &mut [Scalar; 4]) ->
     formulate_f_dot_f2(&src[0].x, &src[1].x, &src[2].x, &src[3].x, &mut coeff);
     let mut coeff_y = [0.0; 4];
     formulate_f_dot_f2(&src[0].y, &src[1].y, &src[2].y, &src[3].y, &mut coeff_y);
-    
+
     for i in 0..4 {
         t_values[i] += coeff_y[i];
     }
-    
+
     solve_cubic_poly(t_values)
 }
 
@@ -434,7 +438,7 @@ fn formulate_f_dot_f2(a: &Scalar, b: &Scalar, c: &Scalar, d: &Scalar, coeff: &mu
     let a_val = *c - *a;
     let b_val = *d - 2.0 * *c + *a;
     let c_val = *d - 3.0 * *c + 3.0 * *b - *a;
-    
+
     coeff[0] = c_val * c_val;
     coeff[1] = 3.0 * b_val * c_val;
     coeff[2] = 2.0 * b_val * b_val + c_val * a_val;
@@ -454,34 +458,36 @@ fn solve_cubic_poly(coeff: &mut [Scalar; 4]) -> usize {
         }
         return count;
     }
-    
+
     // Normalize to monic form
     let inv_a = 1.0 / coeff[0];
     let a = coeff[1] * inv_a;
     let b = coeff[2] * inv_a;
     let c = coeff[3] * inv_a;
-    
+
     let q = (a * a - 3.0 * b) / 9.0;
     let r = (2.0 * a * a * a - 9.0 * a * b + 27.0 * c) / 54.0;
     let q3 = q * q * q;
     let r2_minus_q3 = r * r - q3;
     let a_div3 = a / 3.0;
-    
+
     let mut roots = [0.0; 3];
     let mut count;
-    
+
     if r2_minus_q3 < 0.0 {
         // Three real roots
         let theta = (r / scalar::sqrt(q3)).clamp(-1.0, 1.0).acos();
         let neg2_root_q = -2.0 * scalar::sqrt(q);
-        
+
         roots[0] = (neg2_root_q * (theta / 3.0).cos() - a_div3).clamp(0.0, 1.0);
-        roots[1] = (neg2_root_q * ((theta + 2.0 * scalar::SCALAR_PI) / 3.0).cos() - a_div3).clamp(0.0, 1.0);
-        roots[2] = (neg2_root_q * ((theta - 2.0 * scalar::SCALAR_PI) / 3.0).cos() - a_div3).clamp(0.0, 1.0);
-        
+        roots[1] = (neg2_root_q * ((theta + 2.0 * scalar::SCALAR_PI) / 3.0).cos() - a_div3)
+            .clamp(0.0, 1.0);
+        roots[2] = (neg2_root_q * ((theta - 2.0 * scalar::SCALAR_PI) / 3.0).cos() - a_div3)
+            .clamp(0.0, 1.0);
+
         // Sort roots
         roots.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        
+
         // Remove duplicates
         count = 1;
         for i in 1..3 {
@@ -503,7 +509,7 @@ fn solve_cubic_poly(coeff: &mut [Scalar; 4]) -> usize {
         roots[0] = (a_val - a_div3).clamp(0.0, 1.0);
         count = 1;
     }
-    
+
     // Copy back
     for i in 0..count {
         coeff[i] = roots[i];
@@ -514,26 +520,29 @@ fn solve_cubic_poly(coeff: &mut [Scalar; 4]) -> usize {
 /// Find cusp location for a cubic. Returns parameter t or -1 if no cusp.
 pub fn find_cubic_cusp(src: &[Point; 4]) -> Scalar {
     // Skip if endpoint equals adjacent control point
-    if (scalar::nearly_equal(src[0].x, src[1].x, None) && scalar::nearly_equal(src[0].y, src[1].y, None)) ||
-       (scalar::nearly_equal(src[2].x, src[3].x, None) && scalar::nearly_equal(src[2].y, src[3].y, None)) {
+    if (scalar::nearly_equal(src[0].x, src[1].x, None)
+        && scalar::nearly_equal(src[0].y, src[1].y, None))
+        || (scalar::nearly_equal(src[2].x, src[3].x, None)
+            && scalar::nearly_equal(src[2].y, src[3].y, None))
+    {
         return -1.0;
     }
-    
+
     // Check if line segments cross (necessary for cusp)
     if on_same_side(src, 0, 2) || on_same_side(src, 2, 0) {
         return -1.0;
     }
-    
+
     // Find max curvature points
     let mut max_curvature = [0.0; 4];
     let roots = find_cubic_max_curvature(src, &mut max_curvature);
-    
+
     for i in 0..roots {
         let test_t = max_curvature[i];
         if test_t <= 0.0 || test_t >= 1.0 {
             continue;
         }
-        
+
         // Check if derivative magnitude is near zero at this point
         let derivative = eval_cubic_tangent_at(src, test_t);
         let precision = calc_cubic_precision(src);
@@ -541,7 +550,7 @@ pub fn find_cubic_cusp(src: &[Point; 4]) -> Scalar {
             return test_t;
         }
     }
-    
+
     -1.0
 }
 
@@ -549,12 +558,14 @@ pub fn find_cubic_cusp(src: &[Point; 4]) -> Scalar {
 fn on_same_side(src: &[Point; 4], test_index: usize, line_index: usize) -> bool {
     let origin = src[line_index];
     let line = src[line_index + 1] - origin;
-    
-    let crosses: Vec<Scalar> = (0..2).map(|index| {
-        let test_line = src[test_index + index] - origin;
-        line.cross(test_line)
-    }).collect();
-    
+
+    let crosses: Vec<Scalar> = (0..2)
+        .map(|index| {
+            let test_line = src[test_index + index] - origin;
+            line.cross(test_line)
+        })
+        .collect();
+
     crosses[0] * crosses[1] >= 0.0
 }
 
@@ -572,11 +583,11 @@ pub fn classify_cubic(src: &[Point; 4]) -> CubicType {
     let a1 = calc_dot_cross(src[0], src[3], src[2]);
     let a2 = calc_dot_cross(src[1], src[0], src[3]);
     let a3 = calc_dot_cross(src[2], src[1], src[0]);
-    
+
     let d3 = 3.0 * a3;
     let d2 = d3 - a2;
     let d1 = d2 - a2 + a1;
-    
+
     if !scalar::nearly_zero(d1, None) {
         let discr = 3.0 * d2 * d2 - 4.0 * d1 * d3;
         if discr > 0.0 {
@@ -615,44 +626,59 @@ impl Conic {
     pub fn new(pts: [Point; 3], w: Scalar) -> Self {
         Conic { pts, w }
     }
-    
+
     /// Evaluate conic at parameter t.
     pub fn eval_at(&self, t: Scalar) -> Point {
         let one_minus_t = 1.0 - t;
         let t2 = t * t;
         let one_minus_t2 = one_minus_t * one_minus_t;
         let two_t_one_minus_t = 2.0 * t * one_minus_t;
-        
+
         // Evaluate numerator and denominator separately
         let denom = one_minus_t2 + t2 + two_t_one_minus_t * self.w;
-        let x = (one_minus_t2 * self.pts[0].x + two_t_one_minus_t * self.w * self.pts[1].x + t2 * self.pts[2].x) / denom;
-        let y = (one_minus_t2 * self.pts[0].y + two_t_one_minus_t * self.w * self.pts[1].y + t2 * self.pts[2].y) / denom;
+        let x = (one_minus_t2 * self.pts[0].x
+            + two_t_one_minus_t * self.w * self.pts[1].x
+            + t2 * self.pts[2].x)
+            / denom;
+        let y = (one_minus_t2 * self.pts[0].y
+            + two_t_one_minus_t * self.w * self.pts[1].y
+            + t2 * self.pts[2].y)
+            / denom;
         Point::new(x, y)
     }
-    
+
     /// Get tangent at parameter t.
     pub fn eval_tangent_at(&self, t: Scalar) -> Vector {
         let one_minus_t = 1.0 - t;
         let w = self.w;
-        
+
         // Derivative of rational quadratic
         let p0 = self.pts[0];
         let p1 = self.pts[1];
         let p2 = self.pts[2];
-        
+
         // Handle degenerate cases
-        if (scalar::nearly_zero(t, None) && scalar::nearly_equal(p0.x, p1.x, None) && scalar::nearly_equal(p0.y, p1.y, None)) ||
-           (scalar::nearly_zero(t - 1.0, None) && scalar::nearly_equal(p1.x, p2.x, None) && scalar::nearly_equal(p1.y, p2.y, None)) {
+        if (scalar::nearly_zero(t, None)
+            && scalar::nearly_equal(p0.x, p1.x, None)
+            && scalar::nearly_equal(p0.y, p1.y, None))
+            || (scalar::nearly_zero(t - 1.0, None)
+                && scalar::nearly_equal(p1.x, p2.x, None)
+                && scalar::nearly_equal(p1.y, p2.y, None))
+        {
             return p2 - p0;
         }
-        
+
         // Calculate derivative using quotient rule on rational form
-        let num_x = 2.0 * ((p2.x - p0.x) * w - (p1.x - p0.x) * w * 2.0 + (p1.x - p0.x)) * t * one_minus_t + (p2.x - p0.x) * (1.0 - 2.0 * t) * (w - 1.0);
-        let num_y = 2.0 * ((p2.y - p0.y) * w - (p1.y - p0.y) * w * 2.0 + (p1.y - p0.y)) * t * one_minus_t + (p2.y - p0.y) * (1.0 - 2.0 * t) * (w - 1.0);
-        
+        let num_x =
+            2.0 * ((p2.x - p0.x) * w - (p1.x - p0.x) * w * 2.0 + (p1.x - p0.x)) * t * one_minus_t
+                + (p2.x - p0.x) * (1.0 - 2.0 * t) * (w - 1.0);
+        let num_y =
+            2.0 * ((p2.y - p0.y) * w - (p1.y - p0.y) * w * 2.0 + (p1.y - p0.y)) * t * one_minus_t
+                + (p2.y - p0.y) * (1.0 - 2.0 * t) * (w - 1.0);
+
         Vector::new(num_x, num_y)
     }
-    
+
     /// Chop conic at parameter t. Returns true if successful.
     pub fn chop_at(&self, t: Scalar, dst: &mut [Conic; 2]) -> bool {
         // Map to 3D, interpolate, then project back
@@ -684,29 +710,29 @@ impl Conic {
 
         dst[0].is_finite() && dst[1].is_finite()
     }
-    
+
     /// Check if conic is finite.
     pub fn is_finite(&self) -> bool {
-        scalar::are_finite(self.pts[0].x, self.pts[0].y) &&
-        scalar::are_finite(self.pts[1].x, self.pts[1].y) &&
-        scalar::are_finite(self.pts[2].x, self.pts[2].y)
+        scalar::are_finite(self.pts[0].x, self.pts[0].y)
+            && scalar::are_finite(self.pts[1].x, self.pts[1].y)
+            && scalar::are_finite(self.pts[2].x, self.pts[2].y)
     }
-    
+
     /// Chop conic in half.
     pub fn chop(&self, dst: &mut [Conic; 2]) {
         self.chop_at(0.5, dst);
     }
-    
+
     /// Find Y extremum parameter.
     pub fn find_y_extrema(&self, t: &mut Scalar) -> bool {
         conic_find_extrema(&self.pts[0].y, self.w, t)
     }
-    
+
     /// Find X extremum parameter.
     pub fn find_x_extrema(&self, t: &mut Scalar) -> bool {
         conic_find_extrema(&self.pts[0].x, self.w, t)
     }
-    
+
     /// Chop at Y extremum.
     pub fn chop_at_y_extrema(&self, dst: &mut [Conic; 2]) -> bool {
         let mut t = 0.0;
@@ -721,7 +747,7 @@ impl Conic {
         }
         false
     }
-    
+
     /// Chop at X extremum.
     pub fn chop_at_x_extrema(&self, dst: &mut [Conic; 2]) -> bool {
         let mut t = 0.0;
@@ -735,12 +761,12 @@ impl Conic {
         }
         false
     }
-    
+
     /// Compute tight bounds.
     pub fn compute_tight_bounds(&self) -> (Point, Point) {
         let mut min_pt = self.pts[0];
         let mut max_pt = self.pts[2];
-        
+
         let mut t = 0.0;
         if self.find_x_extrema(&mut t) {
             let pt = self.eval_at(t);
@@ -754,12 +780,12 @@ impl Conic {
         }
         (min_pt, max_pt)
     }
-    
+
     /// Compute fast bounds (just hull).
     pub fn compute_fast_bounds(&self) -> (Point, Point) {
         let mut min_pt = self.pts[0];
         let mut max_pt = self.pts[0];
-        
+
         for pt in &self.pts {
             min_pt.x = min_pt.x.min(pt.x);
             min_pt.y = min_pt.y.min(pt.y);
@@ -768,22 +794,22 @@ impl Conic {
         }
         (min_pt, max_pt)
     }
-    
+
     /// Mid-tangent parameter (for splitting at curvature).
     pub fn find_mid_tangent(&self) -> Scalar {
         let tan0 = self.pts[1] - self.pts[0];
         let tan1 = self.pts[2] - self.pts[1];
         let bisector = find_bisector(tan0, -tan1);
-        
+
         // Solve quadratic: bisector · (A + B*t + C*t²) = 0
         let a = (self.pts[2] - self.pts[0]) * (self.w - 1.0);
         let b = (self.pts[2] - self.pts[0]) - (self.pts[1] - self.pts[0]) * (self.w * 2.0);
         let c = (self.pts[1] - self.pts[0]) * self.w;
-        
+
         let a_coef = bisector.dot(a);
         let b_coef = bisector.dot(b);
         let c_coef = bisector.dot(c);
-        
+
         solve_quadratic_equation_for_midtangent(a_coef, b_coef, c_coef)
     }
 }
@@ -792,10 +818,10 @@ impl Conic {
 pub fn conic_find_extrema(src: &Scalar, w: Scalar, t: &mut Scalar) -> bool {
     let mut coeff = [0.0; 3];
     conic_deriv_coeff(src, w, &mut coeff);
-    
+
     let mut t_values = [0.0; 2];
     let roots = find_unit_quad_roots(coeff[0], coeff[1], coeff[2], &mut t_values);
-    
+
     if roots == 1 {
         *t = t_values[0];
         true
@@ -807,7 +833,7 @@ pub fn conic_find_extrema(src: &Scalar, w: Scalar, t: &mut Scalar) -> bool {
 /// Compute conic derivative coefficients.
 fn conic_deriv_coeff(src: &Scalar, w: Scalar, coeff: &mut [Scalar; 3]) {
     let p20 = src - src; // This would need proper indexing from 3D points
-    // Simplified version - in C++ this operates on 1D array of coordinates
+                         // Simplified version - in C++ this operates on 1D array of coordinates
     coeff[0] = w * p20 - p20;
     coeff[1] = p20 - 2.0 * w * src;
     coeff[2] = w * src;
@@ -851,7 +877,7 @@ fn solve_quadratic_equation_for_midtangent(a: Scalar, b: Scalar, c: Scalar) -> S
     if discr < 0.0 {
         return 0.5;
     }
-    
+
     let q = -0.5 * (b + b.signum() * discr.sqrt());
     let _5qa = -0.5 * q / a;
     let t = if (q * q + _5qa).abs() < (a * c + _5qa).abs() {
@@ -859,7 +885,7 @@ fn solve_quadratic_equation_for_midtangent(a: Scalar, b: Scalar, c: Scalar) -> S
     } else {
         c / q
     };
-    
+
     if t > 0.0 && t < 1.0 {
         t
     } else {
@@ -901,34 +927,43 @@ pub fn build_unit_arc(
 ) -> usize {
     let x = Vector::dot_product(start, stop);
     let y = Vector::cross_product(start, stop);
-    
+
     let abs_y = y.abs();
-    
+
     // Check for coincident vectors
     if abs_y <= scalar::NEARLY_ZERO && x > 0.0 {
-        if (y >= 0.0 && direction == RotationDirection::Cw) ||
-           (y <= 0.0 && direction == RotationDirection::Ccw) {
+        if (y >= 0.0 && direction == RotationDirection::Cw)
+            || (y <= 0.0 && direction == RotationDirection::Ccw)
+        {
             return 0;
         }
     }
-    
+
     let mut y = y;
     if direction == RotationDirection::Ccw {
         y = -y;
     }
-    
+
     // Determine quadrant
     let quadrant = if y == 0.0 {
         2
     } else if x == 0.0 {
-        if y > 0.0 { 1 } else { 3 }
+        if y > 0.0 {
+            1
+        } else {
+            3
+        }
     } else {
         let mut q = 0;
-        if y < 0.0 { q += 2; }
-        if (x < 0.0) != (y < 0.0) { q += 1; }
+        if y < 0.0 {
+            q += 2;
+        }
+        if (x < 0.0) != (y < 0.0) {
+            q += 1;
+        }
         q
     };
-    
+
     let quad_pts = [
         Point::new(1.0, 0.0),
         Point::new(1.0, 1.0),
@@ -939,30 +974,40 @@ pub fn build_unit_arc(
         Point::new(0.0, -1.0),
         Point::new(1.0, -1.0),
     ];
-    
+
     let quad_weight = scalar::SCALAR_ROOT_2_OVER_2;
-    
+
     let mut conic_count = quadrant;
     for i in 0..quadrant {
-        dst[i] = Conic::new([quad_pts[i * 2], quad_pts[i * 2 + 1], quad_pts[(i + 1) * 2]], quad_weight);
+        dst[i] = Conic::new(
+            [quad_pts[i * 2], quad_pts[i * 2 + 1], quad_pts[(i + 1) * 2]],
+            quad_weight,
+        );
     }
-    
+
     // Final partial arc if needed
     let final_p = Point::new(x, y);
     let last_q = quad_pts[quadrant * 2];
-    let dot = Vector::dot_product(last_q - Vector::new(0.0, 0.0), final_p - Vector::new(0.0, 0.0));
-    
+    let dot = Vector::dot_product(
+        last_q - Vector::new(0.0, 0.0),
+        final_p - Vector::new(0.0, 0.0),
+    );
+
     if dot < 1.0 {
         let off_curve = last_q + final_p;
         let cos_theta_over_2 = scalar::sqrt((1.0 + dot) / 2.0);
-        let off_curve = off_curve.scaled_to_length(1.0 / cos_theta_over_2).unwrap_or(off_curve);
-        
-        if !(scalar::nearly_equal(last_q.x, off_curve.x, None) && scalar::nearly_equal(last_q.y, off_curve.y, None)) {
+        let off_curve = off_curve
+            .scaled_to_length(1.0 / cos_theta_over_2)
+            .unwrap_or(off_curve);
+
+        if !(scalar::nearly_equal(last_q.x, off_curve.x, None)
+            && scalar::nearly_equal(last_q.y, off_curve.y, None))
+        {
             dst[conic_count] = Conic::new([last_q, off_curve, final_p], cos_theta_over_2);
             conic_count += 1;
         }
     }
-    
+
     conic_count
 }
 
@@ -979,7 +1024,11 @@ mod tests {
 
     #[test]
     fn test_eval_quad_at() {
-        let quad = [Point::new(0.0, 0.0), Point::new(0.5, 1.0), Point::new(1.0, 0.0)];
+        let quad = [
+            Point::new(0.0, 0.0),
+            Point::new(0.5, 1.0),
+            Point::new(1.0, 0.0),
+        ];
         let t = 0.5;
         let pt = eval_quad_at(&quad, t);
         // Quadratic Bezier at t=0.5 is (P0 + 2*P1 + P2) / 4, not the
@@ -990,10 +1039,14 @@ mod tests {
 
     #[test]
     fn test_chop_quad_at() {
-        let quad = [Point::new(0.0, 0.0), Point::new(0.5, 1.0), Point::new(1.0, 0.0)];
+        let quad = [
+            Point::new(0.0, 0.0),
+            Point::new(0.5, 1.0),
+            Point::new(1.0, 0.0),
+        ];
         let mut dst = [Point::default(); 5];
         chop_quad_at(&quad, &mut dst, 0.5);
-        
+
         assert_eq!(dst[0], quad[0]);
         assert_eq!(dst[4], quad[2]);
         // All points should be finite
@@ -1003,13 +1056,23 @@ mod tests {
     #[test]
     fn test_cubic_classification() {
         // Line
-        let line = [Point::new(0.0, 0.0), Point::new(0.5, 0.5), Point::new(0.5, 0.5), Point::new(1.0, 1.0)];
+        let line = [
+            Point::new(0.0, 0.0),
+            Point::new(0.5, 0.5),
+            Point::new(0.5, 0.5),
+            Point::new(1.0, 1.0),
+        ];
         assert_eq!(classify_cubic(&line), CubicType::LineOrPoint);
 
         // This symmetric control polygon has discriminant 3*d2^2-4*d1*d3
         // == 0 exactly (verified independently), which is the boundary
         // case: a local cusp, not a loop or serpentine curve.
-        let cubic = [Point::new(0.0, 0.0), Point::new(1.0, 1.0), Point::new(0.0, 1.0), Point::new(1.0, 0.0)];
+        let cubic = [
+            Point::new(0.0, 0.0),
+            Point::new(1.0, 1.0),
+            Point::new(0.0, 1.0),
+            Point::new(1.0, 0.0),
+        ];
         let classification = classify_cubic(&cubic);
         assert_eq!(classification, CubicType::LocalCusp);
     }
@@ -1029,13 +1092,17 @@ mod tests {
     #[test]
     fn test_conic_basic() {
         let conic = Conic::new(
-            [Point::new(1.0, 0.0), Point::new(1.0, 1.0), Point::new(0.0, 1.0)],
+            [
+                Point::new(1.0, 0.0),
+                Point::new(1.0, 1.0),
+                Point::new(0.0, 1.0),
+            ],
             scalar::SCALAR_ROOT_2_OVER_2,
         );
-        
+
         let pt = conic.eval_at(0.5);
         assert!(pt.is_finite());
-        
+
         let tangent = conic.eval_tangent_at(0.5);
         assert!(tangent.is_finite());
     }
@@ -1043,10 +1110,14 @@ mod tests {
     #[test]
     fn test_conic_chop() {
         let conic = Conic::new(
-            [Point::new(1.0, 0.0), Point::new(1.0, 1.0), Point::new(0.0, 1.0)],
+            [
+                Point::new(1.0, 0.0),
+                Point::new(1.0, 1.0),
+                Point::new(0.0, 1.0),
+            ],
             scalar::SCALAR_ROOT_2_OVER_2,
         );
-        
+
         let mut dst = [Conic::default(); 2];
         assert!(conic.chop_at(0.5, &mut dst));
         assert!(dst[0].is_finite());
@@ -1067,7 +1138,7 @@ mod tests {
         let start = Vector::new(1.0, 0.0);
         let stop = Vector::new(0.0, 1.0);
         let mut dst = [Conic::default(); 4];
-        
+
         let count = build_unit_arc(start, stop, RotationDirection::Cw, &mut dst);
         assert!(count > 0 && count <= 4);
         assert!(dst.iter().take(count).all(|c| c.is_finite()));

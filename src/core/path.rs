@@ -4,9 +4,9 @@
 
 use super::point::{Point, Vector};
 use super::rect::Rect;
+use super::scalar::{self, Scalar};
 use super::sk_cubic_clipper::SkCubicClipper;
 use super::sk_geometry::{self, Conic};
-use super::scalar::{self, Scalar};
 use super::types::{Direction, FillType, Verb};
 
 /// A 2D path: a sequence of verbs (move/line/quad/conic/cubic/close) with
@@ -221,7 +221,14 @@ impl Path {
 
     /// Appends a conic (rational quadratic) from the last point through
     /// `(x1, y1)` to `(x2, y2)` with weight `w`.
-    pub fn conic_to(&mut self, x1: Scalar, y1: Scalar, x2: Scalar, y2: Scalar, w: Scalar) -> &mut Self {
+    pub fn conic_to(
+        &mut self,
+        x1: Scalar,
+        y1: Scalar,
+        x2: Scalar,
+        y2: Scalar,
+        w: Scalar,
+    ) -> &mut Self {
         if !(w > 0.0) {
             return self.line_to(x2, y2);
         }
@@ -242,7 +249,15 @@ impl Path {
 
     /// Appends a cubic Bezier from the last point through `(x1, y1)` and
     /// `(x2, y2)` to `(x3, y3)`.
-    pub fn cubic_to(&mut self, x1: Scalar, y1: Scalar, x2: Scalar, y2: Scalar, x3: Scalar, y3: Scalar) -> &mut Self {
+    pub fn cubic_to(
+        &mut self,
+        x1: Scalar,
+        y1: Scalar,
+        x2: Scalar,
+        y2: Scalar,
+        x3: Scalar,
+        y3: Scalar,
+    ) -> &mut Self {
         self.inject_move_to_if_needed();
         self.verbs.push(Verb::Cubic);
         self.points.push(Point::new(x1, y1));
@@ -262,7 +277,8 @@ impl Path {
             }
             _ => {}
         }
-        self.last_move_to_index ^= !(self.last_move_to_index >> (8 * std::mem::size_of::<i32>() - 1));
+        self.last_move_to_index ^=
+            !(self.last_move_to_index >> (8 * std::mem::size_of::<i32>() - 1));
         self
     }
 
@@ -370,7 +386,14 @@ impl Path {
     /// `(x2, y2)`, with the given `radius`.
     ///
     /// Mirrors `SkPath::arcTo(x1, y1, x2, y2, radius)`.
-    pub fn arc_to(&mut self, x1: Scalar, y1: Scalar, x2: Scalar, y2: Scalar, radius: Scalar) -> &mut Self {
+    pub fn arc_to(
+        &mut self,
+        x1: Scalar,
+        y1: Scalar,
+        x2: Scalar,
+        y2: Scalar,
+        radius: Scalar,
+    ) -> &mut Self {
         if radius == 0.0 {
             return self.line_to(x1, y1);
         }
@@ -451,7 +474,14 @@ impl Path {
                     let p1 = src.points[pi];
                     let p2 = src.points[pi + 1];
                     let p3 = src.points[pi + 2];
-                    self.cubic_to(p1.x + dx, p1.y + dy, p2.x + dx, p2.y + dy, p3.x + dx, p3.y + dy);
+                    self.cubic_to(
+                        p1.x + dx,
+                        p1.y + dy,
+                        p2.x + dx,
+                        p2.y + dy,
+                        p3.x + dx,
+                        p3.y + dy,
+                    );
                     pi += 3;
                 }
                 Verb::Close => {
@@ -486,8 +516,10 @@ impl Path {
             return Rect::empty();
         }
         let mut b = Rect::from_ltrb(
-            self.points[0].x, self.points[0].y,
-            self.points[0].x, self.points[0].y,
+            self.points[0].x,
+            self.points[0].y,
+            self.points[0].x,
+            self.points[0].y,
         );
         for p in &self.points[1..] {
             b.left = b.left.min(p.x);
@@ -505,14 +537,18 @@ impl Path {
             return Rect::empty();
         }
         // If only lines, control-point bounds are tight.
-        if self.get_segment_masks() == crate::core::types::SEGMENT_MASK_LINE || self.get_segment_masks() == 0 {
+        if self.get_segment_masks() == crate::core::types::SEGMENT_MASK_LINE
+            || self.get_segment_masks() == 0
+        {
             return self.bounds();
         }
 
         // Seed with first point.
         let mut b = Rect::from_ltrb(
-            self.points[0].x, self.points[0].y,
-            self.points[0].x, self.points[0].y,
+            self.points[0].x,
+            self.points[0].y,
+            self.points[0].x,
+            self.points[0].y,
         );
         let mut vi = 0usize;
         let mut pi = 0usize;
@@ -540,7 +576,12 @@ impl Path {
                     wi += 1;
                 }
                 Verb::Cubic => {
-                    let pts = [self.points[pi - 1], self.points[pi], self.points[pi + 1], self.points[pi + 2]];
+                    let pts = [
+                        self.points[pi - 1],
+                        self.points[pi],
+                        self.points[pi + 1],
+                        self.points[pi + 2],
+                    ];
                     b = include_cubic_tight(b, &pts);
                     pi += 3;
                 }
@@ -567,7 +608,12 @@ impl Path {
 
     /// Returns `true` if the path is equivalent to a rectangle.
     #[must_use]
-    pub fn is_rect(&self, rect: Option<&mut Rect>, is_closed: Option<&mut bool>, direction: Option<&mut Direction>) -> bool {
+    pub fn is_rect(
+        &self,
+        rect: Option<&mut Rect>,
+        is_closed: Option<&mut bool>,
+        direction: Option<&mut Direction>,
+    ) -> bool {
         // Check for exactly: Move, Line, Line, Line, Close (5 verbs)
         if self.verbs.len() != 5 {
             return false;
@@ -583,12 +629,20 @@ impl Path {
         if self.points.len() < 4 {
             return false;
         }
-        let pts = [self.points[0], self.points[1], self.points[2], self.points[3]];
+        let pts = [
+            self.points[0],
+            self.points[1],
+            self.points[2],
+            self.points[3],
+        ];
         // Check that the lines form a rectangle: each point is aligned with one other.
         // Rect offset by diagonal: p0.x == p3.x, p0.y == p1.y, p1.x == p2.x, p2.y == p3.y
-        if pts[0].x == pts[3].x && pts[0].y == pts[1].y
-            && pts[1].x == pts[2].x && pts[2].y == pts[3].y
-            && pts[0].x != pts[1].x && pts[0].y != pts[2].y
+        if pts[0].x == pts[3].x
+            && pts[0].y == pts[1].y
+            && pts[1].x == pts[2].x
+            && pts[2].y == pts[3].y
+            && pts[0].x != pts[1].x
+            && pts[0].y != pts[2].y
         {
             if let Some(r) = rect {
                 let left = pts[0].x.min(pts[1].x);
@@ -603,7 +657,11 @@ impl Path {
             if let Some(d) = direction {
                 let cw = (pts[1].x - pts[0].x) * (pts[3].y - pts[0].y)
                     - (pts[1].y - pts[0].y) * (pts[3].x - pts[0].x);
-                *d = if cw > 0.0 { Direction::Cw } else { Direction::Ccw };
+                *d = if cw > 0.0 {
+                    Direction::Cw
+                } else {
+                    Direction::Ccw
+                };
             }
             return true;
         }
@@ -653,11 +711,18 @@ impl Path {
                     last_pt = pts[2];
                 }
                 Verb::Conic => {
-                    w += winding_conic(&[pts[0], pts[1], pts[2]], x, y, weight.unwrap_or(1.0), &mut on_curve_count);
+                    w += winding_conic(
+                        &[pts[0], pts[1], pts[2]],
+                        x,
+                        y,
+                        weight.unwrap_or(1.0),
+                        &mut on_curve_count,
+                    );
                     last_pt = pts[2];
                 }
                 Verb::Cubic => {
-                    w += winding_cubic(&[pts[0], pts[1], pts[2], pts[3]], x, y, &mut on_curve_count);
+                    w +=
+                        winding_cubic(&[pts[0], pts[1], pts[2], pts[3]], x, y, &mut on_curve_count);
                     last_pt = pts[3];
                 }
             }
@@ -705,7 +770,13 @@ impl Path {
                     last_pt = pts[2];
                 }
                 Verb::Conic => {
-                    tangent_conic(&[pts[0], pts[1], pts[2]], x, y, weight.unwrap_or(1.0), &mut tangents);
+                    tangent_conic(
+                        &[pts[0], pts[1], pts[2]],
+                        x,
+                        y,
+                        weight.unwrap_or(1.0),
+                        &mut tangents,
+                    );
                     last_pt = pts[2];
                 }
                 Verb::Cubic => {
@@ -809,7 +880,11 @@ fn winding_mono_cubic(pts: &[Point; 4], x: Scalar, y: Scalar, on_curve_count: &m
             return 0;
         }
     }
-    if xt < x { dir } else { 0 }
+    if xt < x {
+        dir
+    } else {
+        0
+    }
 }
 
 fn winding_cubic(pts: &[Point; 4], x: Scalar, y: Scalar, on_curve_count: &mut i32) -> i32 {
@@ -864,7 +939,10 @@ fn find_conic_unit_roots(a: Scalar, b: Scalar, c: Scalar, roots: &mut [Scalar; 2
     }
 
     let denom = 2.0 * a;
-    for t in [(-b - sqrt_discriminant) / denom, (-b + sqrt_discriminant) / denom] {
+    for t in [
+        (-b - sqrt_discriminant) / denom,
+        (-b + sqrt_discriminant) / denom,
+    ] {
         if t > T_EPSILON
             && t < 1.0 - T_EPSILON
             && !roots[..count]
@@ -914,7 +992,11 @@ fn winding_mono_conic(conic: &Conic, x: Scalar, y: Scalar, on_curve_count: &mut 
     let xt = if n == 0 {
         // Zero roots only happens when y0 == y; pick the start point on the
         // side matching `dir` (mirrors Skia's `pts[1 - dir]` indexing).
-        if dir == 1 { pts[0].x } else { pts[2].x }
+        if dir == 1 {
+            pts[0].x
+        } else {
+            pts[2].x
+        }
     } else {
         let t = roots[0];
         let src_x = [pts[0].x, pts[1].x, pts[2].x];
@@ -926,7 +1008,11 @@ fn winding_mono_conic(conic: &Conic, x: Scalar, y: Scalar, on_curve_count: &mut 
             return 0;
         }
     }
-    if xt < x { dir } else { 0 }
+    if xt < x {
+        dir
+    } else {
+        0
+    }
 }
 
 fn is_mono_quad(y0: Scalar, y1: Scalar, y2: Scalar) -> bool {
@@ -940,11 +1026,23 @@ fn is_mono_quad(y0: Scalar, y1: Scalar, y2: Scalar) -> bool {
     }
 }
 
-fn winding_conic(pts: &[Point; 3], x: Scalar, y: Scalar, weight: Scalar, on_curve_count: &mut i32) -> i32 {
+fn winding_conic(
+    pts: &[Point; 3],
+    x: Scalar,
+    y: Scalar,
+    weight: Scalar,
+    on_curve_count: &mut i32,
+) -> i32 {
     let conic = Conic::new(*pts, weight);
     let mut chopped = [Conic::default(); 2];
-    let is_mono = is_mono_quad(pts[0].y, pts[1].y, pts[2].y) || !conic.chop_at_y_extrema(&mut chopped);
-    let mut w = winding_mono_conic(if is_mono { &conic } else { &chopped[0] }, x, y, on_curve_count);
+    let is_mono =
+        is_mono_quad(pts[0].y, pts[1].y, pts[2].y) || !conic.chop_at_y_extrema(&mut chopped);
+    let mut w = winding_mono_conic(
+        if is_mono { &conic } else { &chopped[0] },
+        x,
+        y,
+        on_curve_count,
+    );
     if !is_mono {
         w += winding_mono_conic(&chopped[1], x, y, on_curve_count);
     }
@@ -979,7 +1077,11 @@ fn winding_mono_quad(pts: &[Point; 3], x: Scalar, y: Scalar, on_curve_count: &mu
         &mut roots,
     );
     let xt = if n == 0 {
-        if dir == 1 { pts[0].x } else { pts[2].x }
+        if dir == 1 {
+            pts[0].x
+        } else {
+            pts[2].x
+        }
     } else {
         let t = roots[0];
         let c = pts[0].x;
@@ -993,7 +1095,11 @@ fn winding_mono_quad(pts: &[Point; 3], x: Scalar, y: Scalar, on_curve_count: &mu
             return 0;
         }
     }
-    if xt < x { dir } else { 0 }
+    if xt < x {
+        dir
+    } else {
+        0
+    }
 }
 
 fn winding_quad(pts: &[Point; 3], x: Scalar, y: Scalar, on_curve_count: &mut i32) -> i32 {
@@ -1048,10 +1154,16 @@ fn winding_line(pts: &[Point; 2], x: Scalar, y: Scalar, on_curve_count: &mut i32
 }
 
 fn tangent_cubic(pts: &[Point; 4], x: Scalar, y: Scalar, tangents: &mut Vec<Vector>) {
-    if !between(pts[0].y, y, pts[1].y) && !between(pts[1].y, y, pts[2].y) && !between(pts[2].y, y, pts[3].y) {
+    if !between(pts[0].y, y, pts[1].y)
+        && !between(pts[1].y, y, pts[2].y)
+        && !between(pts[2].y, y, pts[3].y)
+    {
         return;
     }
-    if !between(pts[0].x, x, pts[1].x) && !between(pts[1].x, x, pts[2].x) && !between(pts[2].x, x, pts[3].x) {
+    if !between(pts[0].x, x, pts[1].x)
+        && !between(pts[1].x, x, pts[2].x)
+        && !between(pts[2].x, x, pts[3].x)
+    {
         return;
     }
     let mut dst = [Point::default(); 10];
@@ -1170,7 +1282,11 @@ impl<'a> Iterator for PathIter<'a> {
             Verb::Move => {
                 let pt = *self.points.next()?;
                 self.last_point = Some(pt);
-                (verb, [pt, Point::default(), Point::default(), Point::default()], None)
+                (
+                    verb,
+                    [pt, Point::default(), Point::default(), Point::default()],
+                    None,
+                )
             }
             Verb::Line => {
                 let pt = *self.points.next()?;
@@ -1247,8 +1363,10 @@ fn eval_quad_at(pts: &[Point; 3], t: Scalar) -> Point {
     let a = mt * mt;
     let b = 2.0 * mt * t;
     let c = t * t;
-    Point::new(a * pts[0].x + b * pts[1].x + c * pts[2].x,
-               a * pts[0].y + b * pts[1].y + c * pts[2].y)
+    Point::new(
+        a * pts[0].x + b * pts[1].x + c * pts[2].x,
+        a * pts[0].y + b * pts[1].y + c * pts[2].y,
+    )
 }
 
 fn include_quad_tight(mut b: Rect, pts: &[Point; 3]) -> Rect {
@@ -1290,7 +1408,11 @@ fn find_unit_quad_roots(a: Scalar, b: Scalar, c: Scalar) -> Vec<Scalar> {
         return vec![];
     }
     let sqrt_disc = disc.sqrt();
-    let q = if b < 0.0 { -(b - sqrt_disc) / 2.0 } else { -(b + sqrt_disc) / 2.0 };
+    let q = if b < 0.0 {
+        -(b - sqrt_disc) / 2.0
+    } else {
+        -(b + sqrt_disc) / 2.0
+    };
     let mut roots = Vec::new();
     let t1 = q / a;
     if t1 > 0.0 && t1 < 1.0 {
@@ -1311,8 +1433,10 @@ fn eval_cubic_at(pts: &[Point; 4], t: Scalar) -> Point {
     let b = 3.0 * mt * mt * t;
     let c = 3.0 * mt * t * t;
     let d = t * t * t;
-    Point::new(a * pts[0].x + b * pts[1].x + c * pts[2].x + d * pts[3].x,
-               a * pts[0].y + b * pts[1].y + c * pts[2].y + d * pts[3].y)
+    Point::new(
+        a * pts[0].x + b * pts[1].x + c * pts[2].x + d * pts[3].x,
+        a * pts[0].y + b * pts[1].y + c * pts[2].y + d * pts[3].y,
+    )
 }
 
 fn include_cubic_tight(mut b: Rect, pts: &[Point; 4]) -> Rect {
@@ -1486,7 +1610,10 @@ mod tests {
         p.line_to(1.0, 1.0);
         assert_eq!(p.get_segment_masks(), crate::core::types::SEGMENT_MASK_LINE);
         p.cubic_to(2.0, 2.0, 3.0, 3.0, 4.0, 4.0);
-        assert_eq!(p.get_segment_masks(), crate::core::types::SEGMENT_MASK_LINE | crate::core::types::SEGMENT_MASK_CUBIC);
+        assert_eq!(
+            p.get_segment_masks(),
+            crate::core::types::SEGMENT_MASK_LINE | crate::core::types::SEGMENT_MASK_CUBIC
+        );
     }
 
     #[test]
@@ -1632,7 +1759,9 @@ mod contains_debug2 {
         let mut oc = 0;
         for (verb, pts, w) in p.iter() {
             let contrib = match verb {
-                Verb::Conic => winding_conic(&[pts[0], pts[1], pts[2]], 9.0, 9.0, w.unwrap(), &mut oc),
+                Verb::Conic => {
+                    winding_conic(&[pts[0], pts[1], pts[2]], 9.0, 9.0, w.unwrap(), &mut oc)
+                }
                 _ => 0,
             };
             println!("{:?} {:?} w={:?} contrib={}", verb, pts, w, contrib);

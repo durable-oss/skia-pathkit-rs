@@ -107,7 +107,6 @@ impl SkOpSpan {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

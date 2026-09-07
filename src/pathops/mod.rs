@@ -5,32 +5,32 @@
 //!
 //! Source: `old/pathkit/include/pathops/SkPathOps.h`.
 
-use crate::core::{Path, Rect, FillType};
+use crate::core::{FillType, Path, Rect};
 use crate::error::PathKitError;
 
-pub mod sk_path_ops_as_winding;
-pub mod sk_path_ops_conic;
-pub mod sk_path_ops_cubic;
-pub mod sk_path_ops_point;
-pub mod sk_path_ops_quad;
-pub mod sk_path_ops_types;
-pub mod sk_path_ops_winding;
-pub mod sk_reduce_order;
-pub mod sk_path_ops_line;
-pub mod sk_path_ops_rect;
+pub mod sk_intersection_helper;
 pub mod sk_op_angle;
 pub mod sk_op_coincidence;
 pub mod sk_op_contour;
 pub mod sk_op_edge_builder;
 pub mod sk_op_segment;
 pub mod sk_op_span;
-pub mod sk_intersection_helper;
+pub mod sk_path_ops_as_winding;
 pub mod sk_path_ops_common;
+pub mod sk_path_ops_conic;
+pub mod sk_path_ops_cubic;
 pub mod sk_path_ops_debug;
-pub mod sk_path_writer;
+pub mod sk_path_ops_line;
+pub mod sk_path_ops_point;
+pub mod sk_path_ops_quad;
+pub mod sk_path_ops_rect;
 pub mod sk_path_ops_simplify;
 pub mod sk_path_ops_tight_bounds;
 pub mod sk_path_ops_tsect;
+pub mod sk_path_ops_types;
+pub mod sk_path_ops_winding;
+pub mod sk_path_writer;
+pub mod sk_reduce_order;
 
 /// A boolean operation to perform between two paths via [`op`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,8 +147,7 @@ fn is_simple_rect(path: &Path) -> Option<Rect> {
 /// Reduces `path` to an equivalent path built from non-overlapping
 /// contours.
 pub fn simplify(path: &Path) -> Result<Path, PathKitError> {
-    crate::pathops::sk_path_ops_simplify::simplify(path)
-        .map_err(|_| PathKitError::OperationFailed)
+    crate::pathops::sk_path_ops_simplify::simplify(path).map_err(|_| PathKitError::OperationFailed)
 }
 
 /// Computes the exact (curve-aware) bounding box of `path`.
@@ -157,8 +156,7 @@ pub fn simplify(path: &Path) -> Result<Path, PathKitError> {
 /// extrema. For well-behaved paths (no inflection points), this falls back
 /// to the native bounds() method for better performance.
 pub fn tight_bounds(path: &Path) -> Result<Rect, PathKitError> {
-    sk_path_ops_tight_bounds::tight_bounds(path)
-        .ok_or(PathKitError::OperationFailed)
+    sk_path_ops_tight_bounds::tight_bounds(path).ok_or(PathKitError::OperationFailed)
 }
 
 /// Returns a path equivalent in filled area to `path`, but with

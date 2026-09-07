@@ -91,7 +91,7 @@ impl SkSafeMath {
     /// Multiply two u64 values, checking for overflow.
     fn mul64(&mut self, x: u64, y: u64) -> u64 {
         const MAX_U64: u64 = u64::MAX;
-        
+
         if x <= (MAX_U64 >> 32) && y <= (MAX_U64 >> 32) {
             x * y
         } else {
@@ -107,7 +107,7 @@ impl SkSafeMath {
             result = result.saturating_add(lx_ly);
             result = result.saturating_add(hx_ly << 32);
             result = result.saturating_add(lx_hy << 32);
-            
+
             self.f_ok &= (hx_hy + (hx_ly >> 32) + (lx_hy >> 32)) == 0;
             result
         }
@@ -144,14 +144,22 @@ impl SkSafeMath {
     pub fn safe_add(x: usize, y: usize) -> usize {
         let mut tmp = SkSafeMath::new();
         let sum = tmp.add(x, y);
-        if tmp.ok() { sum } else { usize::MAX }
+        if tmp.ok() {
+            sum
+        } else {
+            usize::MAX
+        }
     }
 
     /// Static function: Multiply two size_t values, returning SIZE_MAX on overflow.
     pub fn safe_mul(x: usize, y: usize) -> usize {
         let mut tmp = SkSafeMath::new();
         let prod = tmp.mul(x, y);
-        if tmp.ok() { prod } else { usize::MAX }
+        if tmp.ok() {
+            prod
+        } else {
+            usize::MAX
+        }
     }
 
     /// Static function: Align x up to 4-byte boundary.
@@ -221,7 +229,7 @@ mod tests {
     fn test_sk_safe_math_add() {
         let mut math = SkSafeMath::new();
         assert!(math.ok());
-        
+
         let result = math.add(10, 20);
         assert_eq!(result, 30);
         assert!(math.ok());
@@ -231,7 +239,7 @@ mod tests {
     fn test_sk_safe_math_mul() {
         let mut math = SkSafeMath::new();
         assert!(math.ok());
-        
+
         let result = math.mul(10, 20);
         assert_eq!(result, 200);
         assert!(math.ok());
@@ -243,7 +251,7 @@ mod tests {
         let mut math = SkSafeMath::new();
         let _ = math.add(usize::MAX, 1);
         assert!(!math.ok());
-        
+
         // Test multiplication overflow
         let mut math = SkSafeMath::new();
         let _ = math.mul(usize::MAX, 2);
@@ -261,10 +269,10 @@ mod tests {
     fn test_sk_floats_are_unit() {
         let arr = [0.0, 0.5, 1.0];
         assert!(sk_floats_are_unit(&arr, 3));
-        
+
         let arr = [0.0, 1.5, 1.0];
         assert!(!sk_floats_are_unit(&arr, 3));
-        
+
         let arr = [-0.5, 0.5, 1.0];
         assert!(!sk_floats_are_unit(&arr, 3));
     }

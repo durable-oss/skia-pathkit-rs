@@ -206,13 +206,13 @@ pub fn almost_less_or_equal_ulps(a: f32, b: f32) -> bool {
 pub fn ulps_distance(a: f32, b: f32) -> i32 {
     let a_bits = float_as_2s_complement(a);
     let b_bits = float_as_2s_complement(b);
-    
+
     // Different signs means they do not match
     if (a_bits < 0) != (b_bits < 0) {
         // Check for equality to make sure +0 == -0
         return if a == b { 0 } else { i32::MAX };
     }
-    
+
     (a_bits - b_bits).abs()
 }
 
@@ -469,8 +469,7 @@ pub fn roughly_between(a: f64, b: f64, c: f64) -> bool {
     if a > c {
         return roughly_between(c, b, a);
     }
-    approximately_negative(a - b) && approximately_negative(b - c)
-        || approximately_equal(a, c)
+    approximately_negative(a - b) && approximately_negative(b - c) || approximately_equal(a, c)
 }
 
 /// True if `x < 0`, allowing `FLT_EPSILON` of slack (an alias for
@@ -500,8 +499,14 @@ mod tests {
         assert!(almost_bequal_ulps(1.0, 1.0));
         // 1 ULP apart is within the 2-ULP tolerance; 2 ULPs apart is not
         // (the epsilon check is a strict `<`, so it excludes the boundary).
-        assert!(almost_bequal_ulps(1.0, f32::from_bits(1.0f32.to_bits() + 1)));
-        assert!(!almost_bequal_ulps(1.0, f32::from_bits(1.0f32.to_bits() + 2)));
+        assert!(almost_bequal_ulps(
+            1.0,
+            f32::from_bits(1.0f32.to_bits() + 1)
+        ));
+        assert!(!almost_bequal_ulps(
+            1.0,
+            f32::from_bits(1.0f32.to_bits() + 2)
+        ));
         assert!(!almost_bequal_ulps(1.0, 2.0));
     }
 
@@ -523,10 +528,10 @@ mod tests {
     fn test_d_cbrt() {
         let result = d_cbrt(27.0);
         assert!((result - 3.0).abs() < 1e-6);
-        
+
         let result = d_cbrt(-27.0);
         assert!((result - (-3.0)).abs() < 1e-6);
-        
+
         assert_eq!(d_cbrt(0.0), 0.0);
     }
 

@@ -95,7 +95,11 @@ impl Paint {
 
     /// Sets the style to stroke if true, or fill if false.
     pub fn set_stroke(&mut self, is_stroke: bool) {
-        self.style = if is_stroke { Style::Stroke } else { Style::Fill };
+        self.style = if is_stroke {
+            Style::Stroke
+        } else {
+            Style::Fill
+        };
     }
 
     // --- Width ---

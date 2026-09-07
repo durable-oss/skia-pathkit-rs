@@ -244,7 +244,10 @@ impl PathBuilder {
 
         self.move_to(oval_pts[0]);
         for i in 0..4 {
-            let rect_idx = (i + match dir { Direction::Cw => 0, Direction::Ccw => 1 }) % 4;
+            let rect_idx = (i + match dir {
+                Direction::Cw => 0,
+                Direction::Ccw => 1,
+            }) % 4;
             let oval_idx = (i + 1) % 4;
             self.conic_to(rect_pts[rect_idx], oval_pts[oval_idx], w);
         }
@@ -252,9 +255,20 @@ impl PathBuilder {
     }
 
     /// Adds a circle centered at `(center_x, center_y)` with `radius`.
-    pub fn add_circle(&mut self, center_x: f32, center_y: f32, radius: f32, dir: Direction) -> &mut Self {
+    pub fn add_circle(
+        &mut self,
+        center_x: f32,
+        center_y: f32,
+        radius: f32,
+        dir: Direction,
+    ) -> &mut Self {
         if radius >= 0.0 {
-            let rect = Rect::from_ltrb(center_x - radius, center_y - radius, center_x + radius, center_y + radius);
+            let rect = Rect::from_ltrb(
+                center_x - radius,
+                center_y - radius,
+                center_x + radius,
+                center_y + radius,
+            );
             self.add_oval(rect, dir, 0);
         }
         self
@@ -278,7 +292,13 @@ impl PathBuilder {
     pub fn add_path(&mut self, path: &Path) -> &mut Self {
         for (i, &verb) in path.verbs().iter().enumerate() {
             let pt_count = verb.point_count();
-            let start_idx = path.points().len().saturating_sub(path.verbs().iter().skip(i + 1).map(|v| v.point_count()).sum());
+            let start_idx = path.points().len().saturating_sub(
+                path.verbs()
+                    .iter()
+                    .skip(i + 1)
+                    .map(|v| v.point_count())
+                    .sum(),
+            );
             match verb {
                 Verb::Move => {
                     if !path.points().is_empty() {
@@ -298,12 +318,20 @@ impl PathBuilder {
                 Verb::Conic => {
                     if start_idx + 2 < path.points().len() {
                         let w = path.conic_weights().get(0).copied().unwrap_or(1.0);
-                        self.conic_to(path.points()[start_idx + 1], path.points()[start_idx + 2], w);
+                        self.conic_to(
+                            path.points()[start_idx + 1],
+                            path.points()[start_idx + 2],
+                            w,
+                        );
                     }
                 }
                 Verb::Cubic => {
                     if start_idx + 3 < path.points().len() {
-                        self.cubic_to(path.points()[start_idx + 1], path.points()[start_idx + 2], path.points()[start_idx + 3]);
+                        self.cubic_to(
+                            path.points()[start_idx + 1],
+                            path.points()[start_idx + 2],
+                            path.points()[start_idx + 3],
+                        );
                     }
                 }
                 Verb::Close => {
@@ -405,7 +433,11 @@ mod tests {
     fn cubic_to() {
         let mut b = PathBuilder::new();
         b.move_to(Point::new(0.0, 0.0));
-        b.cubic_to(Point::new(10.0, 20.0), Point::new(30.0, 40.0), Point::new(50.0, 60.0));
+        b.cubic_to(
+            Point::new(10.0, 20.0),
+            Point::new(30.0, 40.0),
+            Point::new(50.0, 60.0),
+        );
         assert_eq!(b.verbs[1], Verb::Cubic);
         assert_eq!(b.points.len(), 4);
     }
@@ -480,10 +512,13 @@ mod tests {
     #[test]
     fn add_polygon() {
         let mut b = PathBuilder::new();
-        let pts = [Point::new(0.0, 0.0), Point::new(10.0, 0.0), Point::new(5.0, 10.0)];
+        let pts = [
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            Point::new(5.0, 10.0),
+        ];
         b.add_polygon(&pts, true);
         assert_eq!(b.verbs.len(), 4);
         assert_eq!(b.verbs[3], Verb::Close);
     }
 }
-

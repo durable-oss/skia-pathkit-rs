@@ -183,7 +183,12 @@ struct DRect {
 
 impl DRect {
     fn new(left: Scalar, top: Scalar, right: Scalar, bottom: Scalar) -> Self {
-        Self { left, top, right, bottom }
+        Self {
+            left,
+            top,
+            right,
+            bottom,
+        }
     }
 
     fn empty() -> Self {
@@ -450,8 +455,18 @@ impl TSpan {
             while let Some(curr) = current {
                 let span_ref = curr.borrow();
                 if span_ref.bounded.borrow().start_t != to_remove.start_t {
-                    found_start = found_start || between(span_ref.bounded.borrow().start_t, self.coin_start.perp_t, span_ref.bounded.borrow().end_t);
-                    found_end = found_end || between(span_ref.bounded.borrow().start_t, self.coin_end.perp_t, span_ref.bounded.borrow().end_t);
+                    found_start = found_start
+                        || between(
+                            span_ref.bounded.borrow().start_t,
+                            self.coin_start.perp_t,
+                            span_ref.bounded.borrow().end_t,
+                        );
+                    found_end = found_end
+                        || between(
+                            span_ref.bounded.borrow().start_t,
+                            self.coin_end.perp_t,
+                            span_ref.bounded.borrow().end_t,
+                        );
                 }
                 current = span_ref.next.clone();
             }
@@ -531,7 +546,12 @@ impl TSpan {
         work.end_t = t;
 
         // Reset bounds
-        self.bounds.set_bounds(&Curve::new([self.point_first(), self.point_first(), self.point_first(), self.point_first()]));
+        self.bounds.set_bounds(&Curve::new([
+            self.point_first(),
+            self.point_first(),
+            self.point_first(),
+            self.point_first(),
+        ]));
 
         true
     }
@@ -655,7 +675,9 @@ impl TSect {
         let result = self.add_one();
         result.borrow_mut().start_t = prior.as_ref().map_or(0.0, |p| p.borrow().end_t);
 
-        let next = prior.as_ref().and_then(|p| p.borrow().next.clone())
+        let next = prior
+            .as_ref()
+            .and_then(|p| p.borrow().next.clone())
             .or_else(|| self.head.clone());
 
         result.borrow_mut().end_t = next.as_ref().map_or(1.0, |n| n.borrow().start_t);
@@ -692,7 +714,9 @@ impl TSect {
             let t_collapsed = t.borrow().collapsed;
             if let Some(ref l) = largest {
                 let l_collapsed = l.borrow().collapsed;
-                if (l_collapsed && !t_collapsed) || (l_collapsed == t_collapsed && l.borrow().bounds_max < t.borrow().bounds_max) {
+                if (l_collapsed && !t_collapsed)
+                    || (l_collapsed == t_collapsed && l.borrow().bounds_max < t.borrow().bounds_max)
+                {
                     largest = Some(Rc::clone(&t));
                 }
             }

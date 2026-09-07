@@ -2,8 +2,8 @@
 //!
 //! Port of Skia's SkOpEdgeBuilder.{h,cpp}
 
-use crate::core::{Path, Point, Scalar, Verb};
 use super::sk_op_contour::{SkOpContourBuilder, SkOpContourHead};
+use crate::core::{Path, Point, Scalar, Verb};
 
 /// Path ops mask values (matching Skia's constants)
 const EVENODD_PATH_OPS_MASK: u32 = 0x02;
@@ -15,8 +15,16 @@ const SMALL_THRESHOLD: Scalar = 1e-10;
 /// Force very small coordinate values to zero for numerical stability
 fn force_small_to_zero(pt: Point) -> Point {
     Point {
-        x: if pt.x.abs() < SMALL_THRESHOLD { 0.0 } else { pt.x },
-        y: if pt.y.abs() < SMALL_THRESHOLD { 0.0 } else { pt.y },
+        x: if pt.x.abs() < SMALL_THRESHOLD {
+            0.0
+        } else {
+            pt.x
+        },
+        y: if pt.y.abs() < SMALL_THRESHOLD {
+            0.0
+        } else {
+            pt.y
+        },
     }
 }
 
@@ -98,7 +106,7 @@ impl SkOpEdgeBuilder {
         let mut curve_start = Point::new(0.0, 0.0);
         let mut curve = [Point::new(0.0, 0.0); 4];
         let mut last_curve = false;
-        
+
         let mut pt_iter = path.points().iter().copied();
         let mut weight_iter = path.conic_weights().iter().copied();
 
@@ -124,7 +132,9 @@ impl SkOpEdgeBuilder {
                 Verb::Quad => {
                     curve[1] = force_small_to_zero(pt_iter.next().unwrap_or(Point::new(0.0, 0.0)));
                     curve[2] = force_small_to_zero(pt_iter.next().unwrap_or(Point::new(0.0, 0.0)));
-                    if approximately_equal(curve[0], curve[1]) && approximately_equal(curve[1], curve[2]) {
+                    if approximately_equal(curve[0], curve[1])
+                        && approximately_equal(curve[1], curve[2])
+                    {
                         continue; // degenerate
                     }
                 }
@@ -132,7 +142,9 @@ impl SkOpEdgeBuilder {
                     curve[1] = force_small_to_zero(pt_iter.next().unwrap_or(Point::new(0.0, 0.0)));
                     curve[2] = force_small_to_zero(pt_iter.next().unwrap_or(Point::new(0.0, 0.0)));
                     let _weight = weight_iter.next().unwrap_or(1.0);
-                    if approximately_equal(curve[0], curve[1]) && approximately_equal(curve[1], curve[2]) {
+                    if approximately_equal(curve[0], curve[1])
+                        && approximately_equal(curve[1], curve[2])
+                    {
                         continue; // degenerate
                     }
                 }
@@ -140,9 +152,10 @@ impl SkOpEdgeBuilder {
                     curve[1] = force_small_to_zero(pt_iter.next().unwrap_or(Point::new(0.0, 0.0)));
                     curve[2] = force_small_to_zero(pt_iter.next().unwrap_or(Point::new(0.0, 0.0)));
                     curve[3] = force_small_to_zero(pt_iter.next().unwrap_or(Point::new(0.0, 0.0)));
-                    if approximately_equal(curve[0], curve[1]) 
-                        && approximately_equal(curve[1], curve[2]) 
-                        && approximately_equal(curve[2], curve[3]) {
+                    if approximately_equal(curve[0], curve[1])
+                        && approximately_equal(curve[1], curve[2])
+                        && approximately_equal(curve[2], curve[3])
+                    {
                         continue; // degenerate
                     }
                 }
@@ -152,19 +165,19 @@ impl SkOpEdgeBuilder {
                     continue;
                 }
             }
-            
+
             self.f_path_verbs.push(*verb);
             let pt_count = verb.point_count();
             for i in 0..pt_count {
                 self.f_path_pts.push(curve[i + 1]);
             }
-            
+
             if matches!(verb, Verb::Conic) {
                 if let Some(w) = weight_iter.next() {
                     self.f_weights.push(w);
                 }
             }
-            
+
             curve[0] = curve[pt_count];
             last_curve = true;
         }
@@ -172,7 +185,7 @@ impl SkOpEdgeBuilder {
         if !self.f_allow_open_contours && last_curve {
             self.close_contour(curve[0], curve_start);
         }
-        
+
         self.f_path_verbs.len()
     }
 
@@ -185,8 +198,8 @@ impl SkOpEdgeBuilder {
             let verb_count = self.f_path_verbs.len();
             let pts_count = self.f_path_pts.len();
             if verb_count > 0 && pts_count >= 2 {
-                if self.f_path_verbs[verb_count - 1] == Verb::Line 
-                    && self.f_path_pts[pts_count - 2] == curve_start 
+                if self.f_path_verbs[verb_count - 1] == Verb::Line
+                    && self.f_path_pts[pts_count - 2] == curve_start
                 {
                     self.f_path_verbs.pop();
                     self.f_path_pts.pop();
@@ -232,16 +245,34 @@ mod tests {
 
     #[test]
     fn test_force_small_to_zero() {
-        assert_eq!(force_small_to_zero(Point::new(0.0, 0.0)), Point::new(0.0, 0.0));
-        assert_eq!(force_small_to_zero(Point::new(1e-11, 1e-11)), Point::new(0.0, 0.0));
-        assert_eq!(force_small_to_zero(Point::new(1.0, 2.0)), Point::new(1.0, 2.0));
+        assert_eq!(
+            force_small_to_zero(Point::new(0.0, 0.0)),
+            Point::new(0.0, 0.0)
+        );
+        assert_eq!(
+            force_small_to_zero(Point::new(1e-11, 1e-11)),
+            Point::new(0.0, 0.0)
+        );
+        assert_eq!(
+            force_small_to_zero(Point::new(1.0, 2.0)),
+            Point::new(1.0, 2.0)
+        );
     }
 
     #[test]
     fn test_approximately_equal() {
-        assert!(approximately_equal(Point::new(0.0, 0.0), Point::new(0.0, 0.0)));
-        assert!(approximately_equal(Point::new(1e-11, 1e-11), Point::new(0.0, 0.0)));
-        assert!(!approximately_equal(Point::new(1.0, 0.0), Point::new(0.0, 0.0)));
+        assert!(approximately_equal(
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 0.0)
+        ));
+        assert!(approximately_equal(
+            Point::new(1e-11, 1e-11),
+            Point::new(0.0, 0.0)
+        ));
+        assert!(!approximately_equal(
+            Point::new(1.0, 0.0),
+            Point::new(0.0, 0.0)
+        ));
     }
 
     #[test]

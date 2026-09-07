@@ -9,8 +9,8 @@
 //! constructors are stubbed pending the stroking engine port
 //! (`src/core/SkStroke.cpp`, `src/core/SkStrokerPriv.cpp`).
 
-use super::scalar::Scalar;
 use super::path::Path;
+use super::scalar::Scalar;
 
 /// How the ends of an open contour are drawn when stroked.
 ///

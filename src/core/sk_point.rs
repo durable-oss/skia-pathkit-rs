@@ -2,9 +2,9 @@
 //!
 //! Ported from `src/core/SkPoint.cpp`.
 
+use super::point::{Point, Vector};
 use super::scalar::{self, Scalar};
 use super::sk_math::sk_ieee_float_divide;
-use super::point::{Point, Vector};
 
 /// Side of a line: left, right, or on the line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,7 +51,7 @@ pub fn length(dx: Scalar, dy: Scalar) -> Scalar {
 /// Set point to `(x, y)` scaled to the given length. Returns `true` if successful.
 pub fn set_length_to(pt: &mut Point, x: Scalar, y: Scalar, length: Scalar) -> bool {
     let mag2 = x * x + y * y;
-    
+
     // Check for overflow to infinity
     if !scalar::is_finite(mag2) {
         // Fall back to double-precision computation
@@ -59,13 +59,13 @@ pub fn set_length_to(pt: &mut Point, x: Scalar, y: Scalar, length: Scalar) -> bo
         let yy = y as f64;
         let dmag = (xx * xx + yy * yy).sqrt();
         let dscale = sk_ieee_float_divide(length as f64, dmag);
-        
+
         let new_x = (xx * dscale) as Scalar;
         let new_y = (yy * dscale) as Scalar;
-        
+
         pt.x = new_x;
         pt.y = new_y;
-        
+
         // Check for validity
         if !scalar::is_finite(pt.x) || !scalar::is_finite(pt.y) || (pt.x == 0.0 && pt.y == 0.0) {
             pt.x = 0.0;
@@ -74,19 +74,19 @@ pub fn set_length_to(pt: &mut Point, x: Scalar, y: Scalar, length: Scalar) -> bo
         }
         return true;
     }
-    
+
     let mag = mag2.sqrt();
-    
+
     if scalar::nearly_zero(mag, None) {
         pt.x = 0.0;
         pt.y = 0.0;
         return false;
     }
-    
+
     let scale = length / mag;
     pt.x = x * scale;
     pt.y = y * scale;
-    
+
     true
 }
 
@@ -100,10 +100,10 @@ pub fn distance_to_line_between_sqd(
 ) -> Scalar {
     let u = Vector::new(b.x - a.x, b.y - a.y);
     let v = Vector::new(pt.x - a.x, pt.y - a.y);
-    
+
     let u_length_sqd = Vector::length_squared(u);
     let det = u.cross(v);
-    
+
     if let Some(s) = side {
         *s = if det > 0.0 {
             Side::Left
@@ -113,9 +113,9 @@ pub fn distance_to_line_between_sqd(
             Side::OnLine
         };
     }
-    
+
     let temp = sk_ieee_float_divide(det as f64, u_length_sqd as f64) as Scalar * det;
-    
+
     if !scalar::is_finite(temp) {
         Vector::length_squared(v)
     } else {
@@ -127,10 +127,10 @@ pub fn distance_to_line_between_sqd(
 pub fn distance_to_line_segment_between_sqd(pt: &Point, a: &Point, b: &Point) -> Scalar {
     let u = Vector::new(b.x - a.x, b.y - a.y);
     let v = Vector::new(pt.x - a.x, pt.y - a.y);
-    
+
     let u_length_sqd = Vector::length_squared(u);
     let u_dot_v = u.dot(v);
-    
+
     // Closest point is A
     if u_dot_v <= 0.0 {
         Vector::length_squared(v)
@@ -141,7 +141,7 @@ pub fn distance_to_line_segment_between_sqd(pt: &Point, a: &Point, b: &Point) ->
     } else {
         let det = u.cross(v);
         let temp = sk_ieee_float_divide(det as f64, u_length_sqd as f64) as Scalar * det;
-        
+
         if !scalar::is_finite(temp) {
             Vector::length_squared(v)
         } else {
@@ -164,19 +164,19 @@ impl PointExt for Point {
     fn scale_to(&self, scale: Scalar, dst: &mut Point) {
         scale_point(self, scale, dst);
     }
-    
+
     fn normalize(&mut self) -> bool {
         set_length_to(self, self.x, self.y, scalar::SCALAR_1)
     }
-    
+
     fn set_length(&mut self, length: Scalar) -> bool {
         set_length_to(self, self.x, self.y, length)
     }
-    
+
     fn length(&self) -> Scalar {
         Point::distance_to_origin(self.x, self.y)
     }
-    
+
     fn scaled_to_length(&self, length: Scalar) -> Option<Point> {
         if set_length_to(&mut Point::new(self.x, self.y), self.x, self.y, length) {
             Some(Point::new(self.x, self.y))
@@ -184,7 +184,7 @@ impl PointExt for Point {
             None
         }
     }
-    
+
     fn is_finite(&self) -> bool {
         scalar::are_finite(self.x, self.y)
     }
@@ -195,7 +195,7 @@ impl Vector {
     pub fn length_squared(self) -> Scalar {
         self.x * self.x + self.y * self.y
     }
-    
+
     /// Squared distance between two points.
     pub fn distance_squared(a: &Point, b: &Point) -> Scalar {
         let dx = b.x - a.x;
@@ -223,7 +223,7 @@ mod tests {
         assert!(pt.normalize());
         assert!((pt.x - 0.6).abs() < 1e-6);
         assert!((pt.y - 0.8).abs() < 1e-6);
-        
+
         let mut zero = Point::new(0.0, 0.0);
         assert!(!zero.normalize());
     }
@@ -239,7 +239,7 @@ mod tests {
         let mut pt = Point::new(3.0, 4.0);
         assert!(set_length_to(&mut pt, 3.0, 4.0, 10.0));
         assert_eq!(pt.length(), 10.0);
-        
+
         let mut zero = Point::new(0.0, 0.0);
         assert!(!set_length_to(&mut zero, 0.0, 0.0, 5.0));
     }
@@ -249,7 +249,7 @@ mod tests {
         let pt = Point::new(0.0, 1.0);
         let a = Point::new(0.0, 0.0);
         let b = Point::new(1.0, 0.0);
-        
+
         // Point is 1 unit from the line y=0
         let dist_sqd = distance_to_line_between_sqd(&pt, &a, &b, None);
         assert!((dist_sqd - 1.0).abs() < 1e-6);
@@ -263,13 +263,13 @@ mod tests {
         let b = Point::new(1.0, 0.0);
         let dist_sqd = distance_to_line_segment_between_sqd(&pt, &a, &b);
         assert!((dist_sqd - 1.0).abs() < 1e-6);
-        
+
         // Point projects beyond B
         let pt = Point::new(2.0, 1.0);
         let dist_sqd = distance_to_line_segment_between_sqd(&pt, &a, &b);
         // Distance to B is sqrt(1^2 + 1^2) = sqrt(2), squared = 2
         assert!((dist_sqd - 2.0).abs() < 1e-6);
-        
+
         // Point projects before A
         let pt = Point::new(-1.0, 1.0);
         let dist_sqd = distance_to_line_segment_between_sqd(&pt, &a, &b);
@@ -284,14 +284,14 @@ mod tests {
         let pt_on = Point::new(0.5, 0.0);
         let a = Point::new(0.0, 0.0);
         let b = Point::new(1.0, 0.0);
-        
+
         let mut side = Side::OnLine;
         distance_to_line_between_sqd(&pt_left, &a, &b, Some(&mut side));
         assert_eq!(side, Side::Left);
-        
+
         distance_to_line_between_sqd(&pt_right, &a, &b, Some(&mut side));
         assert_eq!(side, Side::Right);
-        
+
         distance_to_line_between_sqd(&pt_on, &a, &b, Some(&mut side));
         assert_eq!(side, Side::OnLine);
     }

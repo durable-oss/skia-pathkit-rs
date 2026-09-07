@@ -17,9 +17,7 @@ pub enum PathEffect {
         phase: Scalar,
     },
     /// Rounds sharp corners with the given radius.
-    Corner {
-        radius: Scalar,
-    },
+    Corner { radius: Scalar },
     /// Composes two effects: outer(inner(path)).
     Compose {
         outer: Box<PathEffect>,
@@ -112,10 +110,7 @@ impl PathEffect {
     #[must_use]
     pub fn filter(&self, src: &Path, stroke_rec: &StrokeRec) -> Option<Path> {
         match self {
-            PathEffect::Dash {
-                intervals,
-                phase,
-            } => {
+            PathEffect::Dash { intervals, phase } => {
                 if stroke_rec.style() == StrokeStyle::Fill
                     || stroke_rec.style() == StrokeStyle::StrokeAndFill
                 {
@@ -128,7 +123,15 @@ impl PathEffect {
                     return None;
                 }
                 let mut dst = Path::new();
-                if !dash_path_segments(src, &mut dst, intervals, count, initial_dash_length, initial_dash_index, interval_length) {
+                if !dash_path_segments(
+                    src,
+                    &mut dst,
+                    intervals,
+                    count,
+                    initial_dash_length,
+                    initial_dash_index,
+                    interval_length,
+                ) {
                     return None;
                 }
                 if dst.is_empty() {
@@ -227,7 +230,17 @@ fn dash_path_segments(
             Verb::Line => {
                 let end = src.points[pi];
                 let start = current_pt;
-                dash_line_segment(start, end, dst, initial_dash_length, initial_dash_index, _interval_length, _intervals, _count, &mut contour_start);
+                dash_line_segment(
+                    start,
+                    end,
+                    dst,
+                    initial_dash_length,
+                    initial_dash_index,
+                    _interval_length,
+                    _intervals,
+                    _count,
+                    &mut contour_start,
+                );
                 current_pt = end;
                 pi += 1;
             }
@@ -235,14 +248,34 @@ fn dash_path_segments(
                 // For simplicity, approximate quad with line segments.
                 let end = src.points[pi + 1];
                 let start = current_pt;
-                dash_line_segment(start, end, dst, initial_dash_length, initial_dash_index, _interval_length, _intervals, _count, &mut contour_start);
+                dash_line_segment(
+                    start,
+                    end,
+                    dst,
+                    initial_dash_length,
+                    initial_dash_index,
+                    _interval_length,
+                    _intervals,
+                    _count,
+                    &mut contour_start,
+                );
                 current_pt = end;
                 pi += 2;
             }
             Verb::Conic => {
                 let end = src.points[pi + 1];
                 let start = current_pt;
-                dash_line_segment(start, end, dst, initial_dash_length, initial_dash_index, _interval_length, _intervals, _count, &mut contour_start);
+                dash_line_segment(
+                    start,
+                    end,
+                    dst,
+                    initial_dash_length,
+                    initial_dash_index,
+                    _interval_length,
+                    _intervals,
+                    _count,
+                    &mut contour_start,
+                );
                 current_pt = end;
                 pi += 2;
                 wi += 1;
@@ -250,7 +283,17 @@ fn dash_path_segments(
             Verb::Cubic => {
                 let end = src.points[pi + 2];
                 let start = current_pt;
-                dash_line_segment(start, end, dst, initial_dash_length, initial_dash_index, _interval_length, _intervals, _count, &mut contour_start);
+                dash_line_segment(
+                    start,
+                    end,
+                    dst,
+                    initial_dash_length,
+                    initial_dash_index,
+                    _interval_length,
+                    _intervals,
+                    _count,
+                    &mut contour_start,
+                );
                 current_pt = end;
                 pi += 3;
             }
@@ -258,7 +301,17 @@ fn dash_path_segments(
                 // Close by dashing back to contour start
                 if current_pt != contour_start {
                     let start = current_pt;
-                    dash_line_segment(start, contour_start, dst, initial_dash_length, initial_dash_index, _interval_length, _intervals, _count, &mut contour_start);
+                    dash_line_segment(
+                        start,
+                        contour_start,
+                        dst,
+                        initial_dash_length,
+                        initial_dash_index,
+                        _interval_length,
+                        _intervals,
+                        _count,
+                        &mut contour_start,
+                    );
                     current_pt = contour_start;
                 }
                 dst.close();
@@ -396,10 +449,16 @@ mod tests {
     fn make_compose_none_cases() {
         let dash = PathEffect::dash(&[10.0, 10.0], 0.0).unwrap();
         let corner = PathEffect::corner(5.0);
-        
+
         assert_eq!(PathEffect::make_compose(None, None), None);
-        assert_eq!(PathEffect::make_compose(Some(dash.clone()), None), Some(dash.clone()));
-        assert_eq!(PathEffect::make_compose(None, Some(corner.clone())), Some(corner.clone()));
+        assert_eq!(
+            PathEffect::make_compose(Some(dash.clone()), None),
+            Some(dash.clone())
+        );
+        assert_eq!(
+            PathEffect::make_compose(None, Some(corner.clone())),
+            Some(corner.clone())
+        );
     }
 
     #[test]
@@ -420,10 +479,16 @@ mod tests {
     fn make_sum_none_cases() {
         let dash = PathEffect::dash(&[10.0, 10.0], 0.0).unwrap();
         let corner = PathEffect::corner(5.0);
-        
+
         assert_eq!(PathEffect::make_sum(None, None), None);
-        assert_eq!(PathEffect::make_sum(Some(dash.clone()), None), Some(dash.clone()));
-        assert_eq!(PathEffect::make_sum(None, Some(corner.clone())), Some(corner.clone()));
+        assert_eq!(
+            PathEffect::make_sum(Some(dash.clone()), None),
+            Some(dash.clone())
+        );
+        assert_eq!(
+            PathEffect::make_sum(None, Some(corner.clone())),
+            Some(corner.clone())
+        );
     }
 
     #[test]

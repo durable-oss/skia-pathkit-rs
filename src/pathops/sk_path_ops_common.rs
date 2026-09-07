@@ -39,20 +39,24 @@ pub fn sort_contour_list(
     if contour_list.is_empty() {
         return false;
     }
-    
+
     // Sort by position (top, then left)
     contour_list.sort_by(|a, b| {
         let a_top = a.bounds().top;
         let b_top = b.bounds().top;
         if (a_top - b_top).abs() > 1e-10 {
-            a_top.partial_cmp(&b_top).unwrap_or(std::cmp::Ordering::Equal)
+            a_top
+                .partial_cmp(&b_top)
+                .unwrap_or(std::cmp::Ordering::Equal)
         } else {
             let a_left = a.bounds().left;
             let b_left = b.bounds().left;
-            a_left.partial_cmp(&b_left).unwrap_or(std::cmp::Ordering::Equal)
+            a_left
+                .partial_cmp(&b_left)
+                .unwrap_or(std::cmp::Ordering::Equal)
         }
     });
-    
+
     true
 }
 
@@ -86,13 +90,13 @@ pub fn sort_angles(contour_list: &mut [SkOpContour]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_sort_contour_list_empty() {
         let mut contours: Vec<SkOpContour> = vec![];
         assert!(!sort_contour_list(&mut contours, false, false));
     }
-    
+
     #[test]
     fn test_sort_contour_list_single() {
         let mut contours = vec![SkOpContour::new()];

@@ -2,7 +2,7 @@
 //!
 //! Port of Skia's SkPathOpsDebug.h/cpp
 
-use crate::core::{Point};
+use crate::core::Point;
 
 /// Debug flags for controlling verbose output
 pub struct DebugFlags {
@@ -154,9 +154,11 @@ impl CoinDict {
 
     pub fn add(&mut self, entry: CoinDictEntry) {
         // Check if entry with same iteration and line already exists
-        if let Some(existing) = self.entries.iter_mut().find(|e| {
-            e.iteration == entry.iteration && e.line_number == entry.line_number
-        }) {
+        if let Some(existing) = self
+            .entries
+            .iter_mut()
+            .find(|e| e.iteration == entry.iteration && e.line_number == entry.line_number)
+        {
             // Only set glitch type if uninitialized
             if existing.glitch_type == GlitchType::Uninitialized {
                 existing.glitch_type = entry.glitch_type;
@@ -246,11 +248,7 @@ impl GlitchLog {
         self.glitches.last_mut().unwrap()
     }
 
-    pub fn record_with_base(
-        &mut self,
-        glitch_type: GlitchType,
-        base_id: i32,
-    ) -> &mut SpanGlitch {
+    pub fn record_with_base(&mut self, glitch_type: GlitchType, base_id: i32) -> &mut SpanGlitch {
         let glitch = self.record(glitch_type);
         glitch.base_id = Some(base_id);
         glitch
@@ -437,10 +435,7 @@ mod tests {
         assert_eq!(SkPathOpsDebug::op_str(PathOp::Difference), "diff");
         assert_eq!(SkPathOpsDebug::op_str(PathOp::Intersect), "sect");
         assert_eq!(SkPathOpsDebug::op_str(PathOp::Xor), "xor");
-        assert_eq!(
-            SkPathOpsDebug::op_str(PathOp::ReverseDifference),
-            "rdiff"
-        );
+        assert_eq!(SkPathOpsDebug::op_str(PathOp::ReverseDifference), "rdiff");
     }
 
     #[test]

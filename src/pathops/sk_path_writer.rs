@@ -52,7 +52,8 @@ impl<'a> SkPathWriter<'a> {
 
     /// Adds a cubic segment
     pub fn cubic_to(&mut self, pt1: Point, pt2: Point, pt3: Point) {
-        self.current.cubic_to(pt1.x, pt1.y, pt2.x, pt2.y, pt3.x, pt3.y);
+        self.current
+            .cubic_to(pt1.x, pt1.y, pt2.x, pt2.y, pt3.x, pt3.y);
     }
 
     /// Defers a line point, returns false if the point is degenerate
@@ -207,7 +208,7 @@ impl<'a> SkPathWriter<'a> {
 
         let defer = self.defer[0].unwrap();
         let defer_pt = self.defer[1].unwrap();
-        
+
         let defer_dx = defer_pt.x - defer.x;
         let defer_dy = defer_pt.y - defer.y;
         let line_dx = pt.x - defer_pt.x;
@@ -309,11 +310,11 @@ impl<'a> SkPathWriter<'a> {
             }
         }
 
-            // Build final path from linked contours
-            let mut r_idx = 0;
-            while r_idx < link_count {
-                let forward = true;
-                let mut first = true;
+        // Build final path from linked contours
+        let mut r_idx = 0;
+        while r_idx < link_count {
+            let forward = true;
+            let mut first = true;
 
             let s_idx = match s_link[r_idx].take() {
                 Some(v) => v,
@@ -357,7 +358,10 @@ impl<'a> SkPathWriter<'a> {
                         first = false;
                     }
 
-                    let close_now = s_idx == r_idx || s_idx == (r_idx + link_count) || e_idx == r_idx || e_idx == (r_idx + link_count);
+                    let close_now = s_idx == r_idx
+                        || s_idx == (r_idx + link_count)
+                        || e_idx == r_idx
+                        || e_idx == (r_idx + link_count);
                     if close_now {
                         self.path_ptr.close();
                         break;
@@ -407,24 +411,38 @@ impl<'a> SkPathWriter<'a> {
             crate::core::Verb::Quad => {
                 if let Some(pt) = contour.point(verb_idx as usize) {
                     self.path_ptr.quad_to(
-                        pt.x, pt.y,
-                        contour.point(verb_idx as usize + 1).unwrap_or(Point::new(0.0, 0.0)).x,
-                        contour.point(verb_idx as usize + 1).unwrap_or(Point::new(0.0, 0.0)).y,
+                        pt.x,
+                        pt.y,
+                        contour
+                            .point(verb_idx as usize + 1)
+                            .unwrap_or(Point::new(0.0, 0.0))
+                            .x,
+                        contour
+                            .point(verb_idx as usize + 1)
+                            .unwrap_or(Point::new(0.0, 0.0))
+                            .y,
                     );
                 }
             }
             crate::core::Verb::Conic => {
                 if let Some(pt) = contour.point(verb_idx as usize) {
-                    let pt2 = contour.point(verb_idx as usize + 1).unwrap_or(Point::new(0.0, 0.0));
+                    let pt2 = contour
+                        .point(verb_idx as usize + 1)
+                        .unwrap_or(Point::new(0.0, 0.0));
                     let weight = contour.conic_weights().get(0).copied().unwrap_or(1.0);
                     self.path_ptr.conic_to(pt.x, pt.y, pt2.x, pt2.y, weight);
                 }
             }
             crate::core::Verb::Cubic => {
                 if let Some(pt) = contour.point(verb_idx as usize) {
-                    let pt2 = contour.point(verb_idx as usize + 1).unwrap_or(Point::new(0.0, 0.0));
-                    let pt3 = contour.point(verb_idx as usize + 2).unwrap_or(Point::new(0.0, 0.0));
-                    self.path_ptr.cubic_to(pt.x, pt.y, pt2.x, pt2.y, pt3.x, pt3.y);
+                    let pt2 = contour
+                        .point(verb_idx as usize + 1)
+                        .unwrap_or(Point::new(0.0, 0.0));
+                    let pt3 = contour
+                        .point(verb_idx as usize + 2)
+                        .unwrap_or(Point::new(0.0, 0.0));
+                    self.path_ptr
+                        .cubic_to(pt.x, pt.y, pt2.x, pt2.y, pt3.x, pt3.y);
                 }
             }
             crate::core::Verb::Close => {
@@ -637,7 +655,7 @@ mod tests {
         // Setup: 0,0 -> 5,5
         writer.defer[0] = Some(Point::new(0.0, 0.0));
         writer.defer[1] = Some(Point::new(5.0, 5.0));
-        
+
         // Next point changes slope - should trigger lineTo
         let result = writer.deferred_line(Point::new(10.0, 0.0));
         assert!(result);

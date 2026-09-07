@@ -114,7 +114,11 @@ pub struct Vertex {
 
 impl Vertex {
     pub fn new(point: Point, alpha: u8) -> Self {
-        Self { point, alpha, synthetic: false }
+        Self {
+            point,
+            alpha,
+            synthetic: false,
+        }
     }
 }
 
@@ -134,7 +138,13 @@ impl Edge {
             (top.point.x - bottom.point.x) as f64,
             top.point.y as f64 * bottom.point.x as f64 - top.point.x as f64 * bottom.point.y as f64,
         );
-        Self { top, bottom, winding, edge_type, line }
+        Self {
+            top,
+            bottom,
+            winding,
+            edge_type,
+            line,
+        }
     }
 }
 
@@ -145,7 +155,9 @@ pub struct VertexList {
 
 impl VertexList {
     pub fn new() -> Self {
-        Self { vertices: Vec::new() }
+        Self {
+            vertices: Vec::new(),
+        }
     }
 
     pub fn count(&self) -> usize {
@@ -221,7 +233,11 @@ pub struct Poly {
 
 impl Poly {
     pub fn new(winding: i32) -> Self {
-        Self { vertices: Vec::new(), winding, count: 0 }
+        Self {
+            vertices: Vec::new(),
+            winding,
+            count: 0,
+        }
     }
 }
 
@@ -234,7 +250,11 @@ pub struct SSEdge {
 
 impl SSEdge {
     pub fn new(edge: Option<Edge>, prev_index: usize, next_index: usize) -> Self {
-        Self { edge, prev_index, next_index }
+        Self {
+            edge,
+            prev_index,
+            next_index,
+        }
     }
 }
 
@@ -247,7 +267,11 @@ pub struct SSVertex {
 
 impl SSVertex {
     pub fn new(vertex_index: usize) -> Self {
-        Self { vertex_index, prev_index: usize::MAX, next_index: usize::MAX }
+        Self {
+            vertex_index,
+            prev_index: usize::MAX,
+            next_index: usize::MAX,
+        }
     }
 }
 
@@ -260,7 +284,11 @@ pub struct Event {
 
 impl Event {
     pub fn new(edge_index: usize, point: Point, alpha: u8) -> Self {
-        Self { edge_index, point, alpha }
+        Self {
+            edge_index,
+            point,
+            alpha,
+        }
     }
 }
 
@@ -337,38 +365,34 @@ impl GrAATriangulator {
     /// This implements stage 5c of the AA triangulation algorithm. It
     /// detects vertices whose adjacent edge normals point in opposite directions
     /// and whose adjacent vertices are less than a quarter pixel from an edge.
-    pub fn simplify_boundary(
-        &self,
-        boundary: &mut EdgeList,
-        comparator: &Comparator,
-    ) -> EdgeList {
+    pub fn simplify_boundary(&self, boundary: &mut EdgeList, comparator: &Comparator) -> EdgeList {
         let mut result = EdgeList::new();
-        
+
         while let Some(edge) = boundary.edges.pop() {
             // Check for pointy vertices
             if let Some(prev) = result.tail() {
                 let normal = get_edge_normal(&edge);
                 let prev_normal = get_edge_normal(prev);
-                
+
                 // Check if normals point in opposite directions
                 let dot = normal.dot(prev_normal);
                 if dot < 0.0 {
                     // Check distance threshold
                     let prev_point = prev.bottom.point;
                     let next_point = edge.top.point;
-                    let dist = ((prev_point.x - next_point.x) as f64).powi(2) 
-                             + ((prev_point.y - next_point.y) as f64).powi(2);
-                    
+                    let dist = ((prev_point.x - next_point.x) as f64).powi(2)
+                        + ((prev_point.y - next_point.y) as f64).powi(2);
+
                     if dist <= K_QUARTER_PIXEL_SQ {
                         // Skip this edge - it will be merged
                         continue;
                     }
                 }
             }
-            
+
             result.append(edge);
         }
-        
+
         result
     }
 
@@ -387,21 +411,21 @@ impl GrAATriangulator {
 
         for edge in &boundary.edges {
             let normal = get_edge_normal(edge);
-            
+
             // Displace inward
             let inner_point = Point::new(
                 edge.top.point.x - normal.x as f32 * K_HALF_PIXEL as f32,
                 edge.top.point.y - normal.y as f32 * K_HALF_PIXEL as f32,
             );
             let inner_vertex = Vertex::new(inner_point, 255);
-            
+
             // Displace outward
             let outer_point = Point::new(
                 edge.top.point.x + normal.x as f32 * K_HALF_PIXEL as f32,
                 edge.top.point.y + normal.y as f32 * K_HALF_PIXEL as f32,
             );
             let outer_vertex = Vertex::new(outer_point, 0);
-            
+
             inner_vertices.append(inner_vertex);
             outer_vertices.append(outer_vertex);
         }
@@ -413,11 +437,7 @@ impl GrAATriangulator {
     ///
     /// This handles complex meshes where filled regions overlap. It
     /// uses a sweep-line algorithm to find and collapse intersection points.
-    pub fn collapse_overlap_regions(
-        &self,
-        mesh: &VertexList,
-        comparator: &Comparator,
-    ) -> bool {
+    pub fn collapse_overlap_regions(&self, mesh: &VertexList, comparator: &Comparator) -> bool {
         // Simplified version - actual implementation requires full mesh manipulation
         //
         // In the full algorithm:
@@ -425,7 +445,7 @@ impl GrAATriangulator {
         // 2. Create SSEdge structures for tracking the skeleton
         // 3. Process events in priority queue order to collapse edges
         // 4. Create connector edges between collapsed vertices
-        
+
         // Check if there are complex overlaps
         let mut has_overlaps = false;
         for vertex in mesh.iter() {
@@ -434,7 +454,7 @@ impl GrAATriangulator {
                 break;
             }
         }
-        
+
         has_overlaps
     }
 }
@@ -455,8 +475,8 @@ mod tests {
 
     #[test]
     fn test_line_intersection() {
-        let line1 = Line::new(1.0, -1.0, 0.0);  // y = x
-        let line2 = Line::new(1.0, 1.0, 0.0);   // y = -x
+        let line1 = Line::new(1.0, -1.0, 0.0); // y = x
+        let line2 = Line::new(1.0, 1.0, 0.0); // y = -x
         let intersection = line1.intersect(&line2);
         assert!(intersection.is_some());
         let point = intersection.unwrap();
@@ -467,7 +487,7 @@ mod tests {
     #[test]
     fn test_line_parallel() {
         let line1 = Line::new(1.0, 1.0, 0.0);
-        let line2 = Line::new(1.0, 1.0, 5.0);  // Parallel, different offset
+        let line2 = Line::new(1.0, 1.0, 5.0); // Parallel, different offset
         assert!(line1.near_parallel(&line2));
     }
 
@@ -502,17 +522,17 @@ mod tests {
     fn test_event_list() {
         let comparator = EventComparator::new(EventOp::LessThan);
         let mut list = EventList::new(comparator);
-        
+
         list.push(Event::new(0, Point::new(0.0, 0.0), 100));
         list.push(Event::new(1, Point::new(1.0, 1.0), 50));
         list.push(Event::new(2, Point::new(2.0, 2.0), 200));
-        
+
         assert_eq!(list.size(), 3);
-        
+
         // Pop returns the last element in the vector
         let event1 = list.pop().unwrap();
-        assert_eq!(event1.alpha, 200);  // Last in sorted order
-        
+        assert_eq!(event1.alpha, 200); // Last in sorted order
+
         let event2 = list.pop().unwrap();
         assert_eq!(event2.alpha, 100);
     }
@@ -524,7 +544,7 @@ mod tests {
         let bottom = Vertex::new(Point::new(0.0, 10.0), 255);
         let edge = Edge::new(top, bottom, 1, EdgeType::Outer);
         boundary.append(edge);
-        
+
         let comparator = Comparator::new(ComparatorDirection::Vertical);
         let result = GrAATriangulator::new().simplify_boundary(&mut boundary, &comparator);
         assert!(result.count() >= 0);
@@ -537,7 +557,7 @@ mod tests {
         let bottom = Vertex::new(Point::new(10.0, 10.0), 255);
         let edge = Edge::new(top, bottom, 1, EdgeType::Outer);
         boundary.append(edge);
-        
+
         let comparator = Comparator::new(ComparatorDirection::Vertical);
         let (inner, outer) = GrAATriangulator::new().stroke_boundary(&boundary, &comparator);
         assert_eq!(inner.count(), 1);
@@ -554,10 +574,10 @@ mod tests {
     #[test]
     fn test_comparator_vertical() {
         let comparator = Comparator::new(ComparatorDirection::Vertical);
-        
+
         // Same Y, different X
         assert!(comparator.sweep_lt(Point::new(0.0, 0.0), Point::new(1.0, 0.0)));
-        
+
         // Different Y
         assert!(comparator.sweep_lt(Point::new(0.0, 0.0), Point::new(0.0, 1.0)));
         assert!(!comparator.sweep_lt(Point::new(0.0, 1.0), Point::new(0.0, 0.0)));
@@ -566,10 +586,10 @@ mod tests {
     #[test]
     fn test_comparator_horizontal() {
         let comparator = Comparator::new(ComparatorDirection::Horizontal);
-        
+
         // Same X, different Y
         assert!(comparator.sweep_lt(Point::new(0.0, 1.0), Point::new(0.0, 0.0)));
-        
+
         // Different X
         assert!(comparator.sweep_lt(Point::new(0.0, 0.0), Point::new(1.0, 0.0)));
         assert!(!comparator.sweep_lt(Point::new(1.0, 0.0), Point::new(0.0, 0.0)));
@@ -594,9 +614,9 @@ mod tests {
     fn test_collapse_overlap_regions() {
         let mut mesh = VertexList::new();
         mesh.append(Vertex::new(Point::new(0.0, 0.0), 255));
-        
+
         let comparator = Comparator::new(ComparatorDirection::Vertical);
         let result = GrAATriangulator::new().collapse_overlap_regions(&mesh, &comparator);
-        assert!(!result);  // No synthetic vertices
+        assert!(!result); // No synthetic vertices
     }
 }

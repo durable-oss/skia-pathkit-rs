@@ -5,10 +5,10 @@
 //! needed because the pathops engine accumulates many chained subdivisions
 //! and root-finding steps, where `f32`'s precision would compound error.
 
-use crate::core::Point;
 use super::sk_path_ops_types::{
     almost_dequal_ulps, almost_pequal_ulps, approximately_equal, roughly_equal_ulps,
 };
+use crate::core::Point;
 
 /// A double-precision 2D vector (displacement, not position).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

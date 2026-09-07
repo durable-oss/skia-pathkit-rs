@@ -3,10 +3,7 @@
 //! Port of Skia's SkIntersectionHelper.h
 
 use crate::core::{Point, Scalar};
-use crate::pathops::{
-    sk_op_contour::SkOpContour,
-    sk_op_segment::SkOpSegment,
-};
+use crate::pathops::{sk_op_contour::SkOpContour, sk_op_segment::SkOpSegment};
 
 /// Helper class for accessing segment data during intersection tests
 pub struct SkIntersectionHelper {
@@ -169,15 +166,24 @@ mod tests {
     #[test]
     fn test_bounds_intersects() {
         let a = SkPathOpsBounds {
-            left: 0.0, top: 0.0, right: 10.0, bottom: 10.0,
+            left: 0.0,
+            top: 0.0,
+            right: 10.0,
+            bottom: 10.0,
         };
         let b = SkPathOpsBounds {
-            left: 5.0, top: 5.0, right: 15.0, bottom: 15.0,
+            left: 5.0,
+            top: 5.0,
+            right: 15.0,
+            bottom: 15.0,
         };
         assert!(SkPathOpsBounds::intersects(&a, &b));
 
         let c = SkPathOpsBounds {
-            left: 20.0, top: 20.0, right: 30.0, bottom: 30.0,
+            left: 20.0,
+            top: 20.0,
+            right: 30.0,
+            bottom: 30.0,
         };
         assert!(!SkPathOpsBounds::intersects(&a, &c));
     }

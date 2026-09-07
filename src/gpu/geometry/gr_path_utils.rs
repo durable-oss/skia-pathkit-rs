@@ -37,29 +37,29 @@ fn cubic_log2(precision: f32, points: &[[f32; 2]; 4]) -> u32 {
     // Wang's formula for cubics: sqrt(sqrt(max_length * precision^2 * 3^4 / 64))
     // We compute this in log2 space to avoid overflow and get the number of chops
     let (p0, p1, p2, p3) = (points[0], points[1], points[2], points[3]);
-    
+
     // Compute the second difference: v = p0 - 2*p1 + p2 for each dimension
     // Then take the max of the squared lengths
     let v0 = p0[0] - 2.0 * p1[0] + p2[0];
     let v1 = p0[1] - 2.0 * p1[1] + p2[1];
     let v2 = p1[0] - 2.0 * p2[0] + p3[0];
     let v3 = p1[1] - 2.0 * p2[1] + p3[1];
-    
+
     // maxLength = max(v0^2 + v1^2, v2^2 + v3^2)
     let length0 = v0 * v0 + v1 * v1;
     let length1 = v2 * v2 + v3 * v3;
     let max_length = length0.max(length1);
-    
+
     // Wang's formula: sqrt(maxLength * precision * n*(n-1)/8) where n=3
     // For cubics: sqrt(maxLength * precision * 3*2/8) = sqrt(maxLength * precision * 0.75)
     // But we need log2 of this, and the C++ uses nextlog16 which is ceil(log2(x^(1/4)))
-    
+
     // Actually, looking at the C++ code more carefully:
     // cubic_pow4 computes: maxLength * length_term_pow2<3>(precision)
     // where length_term_pow2<3>(precision) = (3*3 * 2*2 / 64) * precision^2 = (9*4/64)*precision^2 = 0.5625*precision^2
     // So cubic_pow4 = maxLength * 0.5625 * precision^2
     // Then nextlog16(cubic_pow4) = ceil(log2((cubic_pow4)^(1/4))) = ceil(log2(sqrt(sqrt(cubic_pow4))))
-    
+
     let pow4 = max_length * 0.5625 * precision * precision;
     nextlog16(pow4)
 }
@@ -71,7 +71,7 @@ fn nextlog16(x: f32) -> u32 {
     if x <= 0.0 {
         return 0;
     }
-    
+
     let log2_x = x.log2();
     // (log2_x + 3) / 4 with ceiling
     ((log2_x + 3.0).ceil() as i32 / 4) as u32
@@ -141,7 +141,7 @@ mod tests {
     #[test]
     fn test_cubic_point_count_with_various_tolerances() {
         let points = [[0.0, 0.0], [1.0, 1.0], [2.0, 1.0], [3.0, 0.0]];
-        
+
         // Tighter tolerance should require more points
         let count_tight = cubic_point_count(&points, 0.1);
         let count_loose = cubic_point_count(&points, 0.5);

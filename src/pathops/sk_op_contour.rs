@@ -2,9 +2,9 @@
 //!
 //! Port of Skia's SkOpContour.{h,cpp}
 
-use crate::core::{Point, Scalar};
-use super::sk_op_segment::{SkOpSegment, SkOpSpan, Verb};
 use super::sk_intersection_helper::SkPathOpsBounds;
+use super::sk_op_segment::{SkOpSegment, SkOpSpan, Verb};
+use crate::core::{Point, Scalar};
 
 /// Direction for ray checking (matches Skia's SkOpRayDir)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -383,9 +383,15 @@ impl SkOpContour {
     /// Compares contours for sorting (by top, then left)
     pub fn compare_for_sort(&self, other: &SkOpContour) -> std::cmp::Ordering {
         if self.f_bounds.top != other.f_bounds.top {
-            self.f_bounds.top.partial_cmp(&other.f_bounds.top).unwrap_or(std::cmp::Ordering::Equal)
+            self.f_bounds
+                .top
+                .partial_cmp(&other.f_bounds.top)
+                .unwrap_or(std::cmp::Ordering::Equal)
         } else {
-            self.f_bounds.left.partial_cmp(&other.f_bounds.left).unwrap_or(std::cmp::Ordering::Equal)
+            self.f_bounds
+                .left
+                .partial_cmp(&other.f_bounds.left)
+                .unwrap_or(std::cmp::Ordering::Equal)
         }
     }
 
@@ -402,7 +408,10 @@ impl SkOpContour {
 
     /// Dump contour for debugging
     pub fn dump(&self) {
-        println!("Contour: count={}, bounds={:?}", self.f_count, self.f_bounds);
+        println!(
+            "Contour: count={}, bounds={:?}",
+            self.f_count, self.f_bounds
+        );
     }
 }
 
@@ -644,11 +653,11 @@ mod tests {
     #[test]
     fn test_builder_line_batching() {
         let mut builder = SkOpContourBuilder::new_empty();
-        
+
         // Add back-to-back lines that cancel
         builder.add_line([Point::new(0.0, 0.0), Point::new(10.0, 0.0)]);
         builder.add_line([Point::new(10.0, 0.0), Point::new(0.0, 0.0)]);
-        
+
         builder.flush();
         assert_eq!(builder.last_is_line, false);
     }

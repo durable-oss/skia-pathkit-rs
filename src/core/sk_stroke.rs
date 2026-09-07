@@ -395,7 +395,14 @@ impl SkPathStroker {
         let prev_x = self.prev_pt.x;
         let prev_y = self.prev_pt.y;
 
-        if !Self::set_normal_unitnormal(self.prev_pt, curr_pt, self.res_scale, self.radius, normal, unit_normal) {
+        if !Self::set_normal_unitnormal(
+            self.prev_pt,
+            curr_pt,
+            self.res_scale,
+            self.radius,
+            normal,
+            unit_normal,
+        ) {
             if self.radius == 0.0 {
                 return false;
             }
@@ -409,7 +416,8 @@ impl SkPathStroker {
             self.first_outer_pt.x = prev_x + normal.x;
             self.first_outer_pt.y = prev_y + normal.y;
 
-            self.outer.move_to(self.first_outer_pt.x, self.first_outer_pt.y);
+            self.outer
+                .move_to(self.first_outer_pt.x, self.first_outer_pt.y);
             self.inner.move_to(prev_x - normal.x, prev_y - normal.y);
         } else {
             // Join segments - would call joiner function here
@@ -444,11 +452,19 @@ impl SkPathStroker {
     }
 
     fn line_to_with_normal(&mut self, curr_pt: Point, normal: Vector) {
-        self.outer.line_to(curr_pt.x + normal.x, curr_pt.y + normal.y);
-        self.inner.line_to(curr_pt.x - normal.x, curr_pt.y - normal.y);
+        self.outer
+            .line_to(curr_pt.x + normal.x, curr_pt.y + normal.y);
+        self.inner
+            .line_to(curr_pt.x - normal.x, curr_pt.y - normal.y);
     }
 
-    fn init(&mut self, stroke_type: StrokeType, quad_pts: &mut SkQuadConstruct, t_start: Scalar, t_end: Scalar) {
+    fn init(
+        &mut self,
+        stroke_type: StrokeType,
+        quad_pts: &mut SkQuadConstruct,
+        t_start: Scalar,
+        t_end: Scalar,
+    ) {
         self.stroke_type = stroke_type;
         self.found_tangents = false;
         quad_pts.init(t_start, t_end);
@@ -512,7 +528,7 @@ impl SkPathStroker {
         let mut outer2 = 1;
 
         for i in 0..2 {
-            for j in i+1..3 {
+            for j in i + 1..3 {
                 let diff = quad[j] - quad[i];
                 let test_max = diff.x.abs().max(diff.y.abs());
                 if test_max > pt_max {
@@ -550,7 +566,10 @@ impl SkPathStroker {
         Self::check_quad_linear(&conic.pts, reduction)
     }
 
-    fn check_cubic_linear<'a>(cubic: &'a [Point; 4], reduction: &'a mut [Point; 3]) -> Option<&'a Point> {
+    fn check_cubic_linear<'a>(
+        cubic: &'a [Point; 4],
+        reduction: &'a mut [Point; 3],
+    ) -> Option<&'a Point> {
         let degenerate_ab = (cubic[1] - cubic[0]).length_squared() < 1e-10;
         let degenerate_bc = (cubic[2] - cubic[1]).length_squared() < 1e-10;
         let degenerate_cd = (cubic[3] - cubic[2]).length_squared() < 1e-10;
@@ -579,8 +598,17 @@ impl SkPathStroker {
         let result_type = self.compare_quad_quad(quad, quad_pts);
 
         if result_type == ResultType::Quad {
-            let path = if self.stroke_type == StrokeType::Outer { &mut self.outer } else { &mut self.inner };
-            path.quad_to(quad_pts.quad[1].x, quad_pts.quad[1].y, quad_pts.quad[2].x, quad_pts.quad[2].y);
+            let path = if self.stroke_type == StrokeType::Outer {
+                &mut self.outer
+            } else {
+                &mut self.inner
+            };
+            path.quad_to(
+                quad_pts.quad[1].x,
+                quad_pts.quad[1].y,
+                quad_pts.quad[2].x,
+                quad_pts.quad[2].y,
+            );
             return true;
         }
 
@@ -622,8 +650,17 @@ impl SkPathStroker {
         let result_type = self.compare_quad_conic(conic, quad_pts);
 
         if result_type == ResultType::Quad {
-            let path = if self.stroke_type == StrokeType::Outer { &mut self.outer } else { &mut self.inner };
-            path.quad_to(quad_pts.quad[1].x, quad_pts.quad[1].y, quad_pts.quad[2].x, quad_pts.quad[2].y);
+            let path = if self.stroke_type == StrokeType::Outer {
+                &mut self.outer
+            } else {
+                &mut self.inner
+            };
+            path.quad_to(
+                quad_pts.quad[1].x,
+                quad_pts.quad[1].y,
+                quad_pts.quad[2].x,
+                quad_pts.quad[2].y,
+            );
             return true;
         }
 
@@ -669,8 +706,17 @@ impl SkPathStroker {
             let result_type = self.compare_quad_cubic(cubic, quad_pts);
 
             if result_type == ResultType::Quad {
-                let path = if self.stroke_type == StrokeType::Outer { &mut self.outer } else { &mut self.inner };
-                path.quad_to(quad_pts.quad[1].x, quad_pts.quad[1].y, quad_pts.quad[2].x, quad_pts.quad[2].y);
+                let path = if self.stroke_type == StrokeType::Outer {
+                    &mut self.outer
+                } else {
+                    &mut self.inner
+                };
+                path.quad_to(
+                    quad_pts.quad[1].x,
+                    quad_pts.quad[1].y,
+                    quad_pts.quad[2].x,
+                    quad_pts.quad[2].y,
+                );
                 return true;
             }
 
@@ -710,11 +756,19 @@ impl SkPathStroker {
     }
 
     fn add_degenerate_line(&mut self, quad_pts: &SkQuadConstruct) {
-        let path = if self.stroke_type == StrokeType::Outer { &mut self.outer } else { &mut self.inner };
+        let path = if self.stroke_type == StrokeType::Outer {
+            &mut self.outer
+        } else {
+            &mut self.inner
+        };
         path.line_to(quad_pts.quad[2].x, quad_pts.quad[2].y);
     }
 
-    fn compare_quad_quad(&mut self, quad: &[Point; 3], quad_pts: &mut SkQuadConstruct) -> ResultType {
+    fn compare_quad_quad(
+        &mut self,
+        quad: &[Point; 3],
+        quad_pts: &mut SkQuadConstruct,
+    ) -> ResultType {
         self.conic_quad_ends(quad, quad_pts);
         let result_type = self.intersect_ray(quad_pts);
 
@@ -738,7 +792,11 @@ impl SkPathStroker {
         self.stroke_close_enough(&quad_pts.quad, &ray)
     }
 
-    fn compare_quad_cubic(&mut self, cubic: &[Point; 4], quad_pts: &mut SkQuadConstruct) -> ResultType {
+    fn compare_quad_cubic(
+        &mut self,
+        cubic: &[Point; 4],
+        quad_pts: &mut SkQuadConstruct,
+    ) -> ResultType {
         self.conic_quad_ends(cubic, quad_pts);
         let result_type = self.intersect_ray(quad_pts);
 
@@ -757,14 +815,22 @@ impl SkPathStroker {
 
     fn conic_quad_ends(&mut self, pts: &[Point], quad_pts: &mut SkQuadConstruct) {
         if !quad_pts.start_set {
-            let start = if quad_pts.start_t == 0.0 { pts[0] } else { pts[pts.len() - 1] };
+            let start = if quad_pts.start_t == 0.0 {
+                pts[0]
+            } else {
+                pts[pts.len() - 1]
+            };
             quad_pts.quad[0] = start;
             quad_pts.tangent_start = start;
             quad_pts.start_set = true;
         }
 
         if !quad_pts.end_set {
-            let end = if quad_pts.end_t == 0.0 { pts[0] } else { pts[pts.len() - 1] };
+            let end = if quad_pts.end_t == 0.0 {
+                pts[0]
+            } else {
+                pts[pts.len() - 1]
+            };
             quad_pts.quad[2] = end;
             quad_pts.tangent_end = end;
             quad_pts.end_set = true;
@@ -836,7 +902,10 @@ impl SkPathStroker {
 
     fn cubic_perp_ray(&self, cubic: &[Point; 4], t: Scalar) -> [Point; 2] {
         let pt = eval_cubic_at(cubic, t);
-        let tangent = Vector::new(3.0 * (cubic[1].x - cubic[0].x + (cubic[2].x - 2.0 * cubic[1].x + cubic[0].x) * t), 3.0 * (cubic[1].y - cubic[0].y + (cubic[2].y - 2.0 * cubic[1].y + cubic[0].y) * t));
+        let tangent = Vector::new(
+            3.0 * (cubic[1].x - cubic[0].x + (cubic[2].x - 2.0 * cubic[1].x + cubic[0].x) * t),
+            3.0 * (cubic[1].y - cubic[0].y + (cubic[2].y - 2.0 * cubic[1].y + cubic[0].y) * t),
+        );
         [pt, pt + tangent]
     }
 
@@ -870,20 +939,41 @@ mod tests {
 
     #[test]
     fn test_path_stroker_creation() {
-        let stroker = SkPathStroker::new(2.0, 4.0, crate::core::Cap::Round, crate::core::Join::Round, 1.0, false);
+        let stroker = SkPathStroker::new(
+            2.0,
+            4.0,
+            crate::core::Cap::Round,
+            crate::core::Join::Round,
+            1.0,
+            false,
+        );
         assert!((stroker.get_res_scale() - 1.0).abs() < 1e-6);
     }
 
     #[test]
     fn test_move_to() {
-        let mut stroker = SkPathStroker::new(2.0, 4.0, crate::core::Cap::Round, crate::core::Join::Round, 1.0, false);
+        let mut stroker = SkPathStroker::new(
+            2.0,
+            4.0,
+            crate::core::Cap::Round,
+            crate::core::Join::Round,
+            1.0,
+            false,
+        );
         stroker.move_to(Point::new(0.0, 0.0));
         assert_eq!(stroker.move_to_pt(), Some(Point::new(0.0, 0.0)));
     }
 
     #[test]
     fn test_line_to() {
-        let mut stroker = SkPathStroker::new(2.0, 4.0, crate::core::Cap::Round, crate::core::Join::Round, 1.0, false);
+        let mut stroker = SkPathStroker::new(
+            2.0,
+            4.0,
+            crate::core::Cap::Round,
+            crate::core::Join::Round,
+            1.0,
+            false,
+        );
         stroker.move_to(Point::new(0.0, 0.0));
         stroker.line_to(Point::new(10.0, 0.0));
         let result = stroker.done(false);
@@ -892,7 +982,14 @@ mod tests {
 
     #[test]
     fn test_quad_to() {
-        let mut stroker = SkPathStroker::new(2.0, 4.0, crate::core::Cap::Round, crate::core::Join::Round, 1.0, false);
+        let mut stroker = SkPathStroker::new(
+            2.0,
+            4.0,
+            crate::core::Cap::Round,
+            crate::core::Join::Round,
+            1.0,
+            false,
+        );
         stroker.move_to(Point::new(0.0, 0.0));
         stroker.quad_to(Point::new(5.0, 10.0), Point::new(10.0, 0.0));
         let result = stroker.done(false);
@@ -901,7 +998,14 @@ mod tests {
 
     #[test]
     fn test_conic_to() {
-        let mut stroker = SkPathStroker::new(2.0, 4.0, crate::core::Cap::Round, crate::core::Join::Round, 1.0, false);
+        let mut stroker = SkPathStroker::new(
+            2.0,
+            4.0,
+            crate::core::Cap::Round,
+            crate::core::Join::Round,
+            1.0,
+            false,
+        );
         stroker.move_to(Point::new(0.0, 0.0));
         stroker.conic_to(Point::new(5.0, 10.0), Point::new(10.0, 0.0), 0.707);
         let result = stroker.done(false);
@@ -910,9 +1014,20 @@ mod tests {
 
     #[test]
     fn test_cubic_to() {
-        let mut stroker = SkPathStroker::new(2.0, 4.0, crate::core::Cap::Round, crate::core::Join::Round, 1.0, false);
+        let mut stroker = SkPathStroker::new(
+            2.0,
+            4.0,
+            crate::core::Cap::Round,
+            crate::core::Join::Round,
+            1.0,
+            false,
+        );
         stroker.move_to(Point::new(0.0, 0.0));
-        stroker.cubic_to(Point::new(0.0, 10.0), Point::new(10.0, 10.0), Point::new(10.0, 0.0));
+        stroker.cubic_to(
+            Point::new(0.0, 10.0),
+            Point::new(10.0, 10.0),
+            Point::new(10.0, 0.0),
+        );
         let result = stroker.done(false);
         assert!(result.count_points() > 0);
     }

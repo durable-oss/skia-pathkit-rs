@@ -33,10 +33,10 @@ type FooterAction = unsafe fn(*mut u8) -> *mut u8;
 /// The first 47 Fibonacci numbers. Fib(47) is the largest value < 2³².
 /// Used by `FibBlockSizes` to grow block sizes.
 const SK_FIBONACCI_47: [u32; 47] = [
-    1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597, 2584, 4181, 6765,
-    10946, 17711, 28657, 46368, 75025, 121393, 196418, 317811, 514229, 832040, 1346269,
-    2178309, 3524578, 5702887, 9227465, 14930352, 24157817, 39088169, 63245986, 102334155,
-    165580141, 267914296, 433494437, 701408733, 1134903170, 1836311903, 2971215073,
+    1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597, 2584, 4181, 6765, 10946,
+    17711, 28657, 46368, 75025, 121393, 196418, 317811, 514229, 832040, 1346269, 2178309, 3524578,
+    5702887, 9227465, 14930352, 24157817, 39088169, 63245986, 102334155, 165580141, 267914296,
+    433494437, 701408733, 1134903170, 1836311903, 2971215073,
 ];
 
 /// The number of bytes a `Footer` occupies: a function-pointer-sized
@@ -103,7 +103,11 @@ unsafe fn end_chain(_footer_end: *mut u8) -> *mut u8 {
 unsafe fn skip_pod(footer_end: *mut u8) -> *mut u8 {
     let obj_end = footer_end.sub(FOOTER_SIZE + mem::size_of::<i32>());
     let mut skip: i32 = 0;
-    ptr::copy_nonoverlapping(obj_end, &mut skip as *mut i32 as *mut u8, mem::size_of::<i32>());
+    ptr::copy_nonoverlapping(
+        obj_end,
+        &mut skip as *mut i32 as *mut u8,
+        mem::size_of::<i32>(),
+    );
     obj_end.sub(skip as usize)
 }
 
@@ -145,11 +149,7 @@ unsafe fn run_dtors_on_block(mut footer_end: *mut u8) {
             &mut action as *mut FooterAction as *mut u8,
             mem::size_of::<FooterAction>(),
         );
-        ptr::copy_nonoverlapping(
-            footer_end.sub(1),
-            &mut padding as *mut u8,
-            1,
-        );
+        ptr::copy_nonoverlapping(footer_end.sub(1), &mut padding as *mut u8, 1);
 
         footer_end = action(footer_end).sub(padding as usize);
     }
@@ -189,10 +189,7 @@ impl ArenaAlloc {
             } else {
                 unsafe { block.add(block_size) }
             },
-            fib_progression: FibBlockSizes::new(
-                to_u32(block_size),
-                to_u32(first_heap_allocation),
-            ),
+            fib_progression: FibBlockSizes::new(to_u32(block_size), to_u32(first_heap_allocation)),
         };
 
         if block_size < FOOTER_SIZE {
@@ -357,18 +354,17 @@ impl ArenaAlloc {
                 continue;
             }
 
-            let obj_start =
-                (((self.cursor as usize).wrapping_add(skip_overhead).wrapping_add(mask)) & !mask)
-                    as *mut u8;
+            let obj_start = (((self.cursor as usize)
+                .wrapping_add(skip_overhead)
+                .wrapping_add(mask))
+                & !mask) as *mut u8;
 
             if total_size > (self.end as usize as isize).wrapping_sub(obj_start as isize) as usize {
                 self.ensure_space(size_including_footer, alignment);
                 continue;
             }
 
-            debug_assert!(
-                total_size <= (self.end as usize).wrapping_sub(obj_start as usize)
-            );
+            debug_assert!(total_size <= (self.end as usize).wrapping_sub(obj_start as usize));
 
             // Install a skip footer if needed (terminating a run of POD data).
             if self.cursor != self.dtor_cursor {
@@ -475,7 +471,11 @@ unsafe fn destroy_object<T>(obj_end: *mut u8) -> *mut u8 {
 unsafe fn destroy_array<T>(footer_end: *mut u8) -> *mut u8 {
     let obj_end = footer_end.sub(FOOTER_SIZE + mem::size_of::<u32>());
     let mut count: u32 = 0;
-    ptr::copy_nonoverlapping(obj_end, &mut count as *mut u32 as *mut u8, mem::size_of::<u32>());
+    ptr::copy_nonoverlapping(
+        obj_end,
+        &mut count as *mut u32 as *mut u8,
+        mem::size_of::<u32>(),
+    );
     let obj_start = obj_end.sub(count as usize * mem::size_of::<T>());
     let slice = ptr::slice_from_raw_parts_mut(obj_start as *mut T, count as usize);
     ptr::drop_in_place(slice);
@@ -670,8 +670,7 @@ mod tests {
             let p = arena.make(42i32);
             assert_eq!(*p, 42);
             // The object should be inside the static block.
-            let block_range =
-                block.as_ptr() as usize..block.as_ptr() as usize + block.len();
+            let block_range = block.as_ptr() as usize..block.as_ptr() as usize + block.len();
             assert!(block_range.contains(&(p as usize)));
         }
     }
