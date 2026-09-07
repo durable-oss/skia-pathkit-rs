@@ -1,13 +1,15 @@
 //! Boolean path operations: union, intersect, difference, xor.
 //!
-//! Port status: basic `op` (union of identical paths, simple rect union)
-//! is implemented. The full pathops engine is not yet ported.
+//! [`op`] handles empty/identical paths directly, then runs a flatten-split-
+//! classify boolean. The full Skia pathops engine is not yet the public
+//! implementation.
 //!
 //! Source: `old/pathkit/include/pathops/SkPathOps.h`.
 
 use crate::core::{FillType, Path, Rect};
 use crate::error::PathKitError;
 
+mod boolean;
 pub mod sk_intersection_helper;
 pub mod sk_op_angle;
 pub mod sk_op_coincidence;
@@ -49,99 +51,36 @@ pub enum PathOp {
 
 /// Combines `one` and `two` with `op`, returning the resulting path.
 ///
-/// For basic cases (identical paths, rect intersection), this is
-/// implemented directly. Complex cases return
-/// [`PathKitError::Unimplemented`].
+/// Empty and identical paths are handled directly. Everything else is
+/// flattened, split at intersections, and classified with
+/// [`Path::contains`].
+///
+/// # Errors
+///
+/// Returns [`PathKitError::OperationFailed`] if the inputs are non-finite.
 pub fn op(one: &Path, two: &Path, op: PathOp) -> Result<Path, PathKitError> {
-    match op {
-        PathOp::Union => {
-            if one == two {
-                return Ok(one.clone());
-            }
-            // Try rect union.
-            let mut one_rect = Rect::empty();
-            let mut two_rect = Rect::empty();
-            let mut one_closed = false;
-            let mut two_closed = false;
-            let one_is_rect = one.is_rect(Some(&mut one_rect), Some(&mut one_closed), None);
-            let two_is_rect = two.is_rect(Some(&mut two_rect), Some(&mut two_closed), None);
-            if one_is_rect && two_is_rect && one_closed && two_closed {
-                let mut result = Path::new();
-                result.add_rect_simple(Rect::from_ltrb(
-                    one_rect.left.min(two_rect.left),
-                    one_rect.top.min(two_rect.top),
-                    one_rect.right.max(two_rect.right),
-                    one_rect.bottom.max(two_rect.bottom),
-                ));
-                return Ok(result);
-            }
-            // Fallback: combine points into a bounding rect.
-            if one.points().is_empty() {
-                return Ok(two.clone());
-            }
-            if two.points().is_empty() {
-                return Ok(one.clone());
-            }
-            let mut b = one.bounds();
-            let b2 = two.bounds();
-            b.left = b.left.min(b2.left);
-            b.top = b.top.min(b2.top);
-            b.right = b.right.max(b2.right);
-            b.bottom = b.bottom.max(b2.bottom);
-            let mut result = Path::new();
-            result.add_rect_simple(b);
-            Ok(result)
-        }
-        PathOp::Intersect => {
-            if one == two {
-                return Ok(one.clone());
-            }
-            // Simple rect intersection.
-            let mut one_rect = Rect::empty();
-            let mut two_rect = Rect::empty();
-            let mut one_closed = false;
-            let mut two_closed = false;
-            let one_is_rect = one.is_rect(Some(&mut one_rect), Some(&mut one_closed), None);
-            let two_is_rect = two.is_rect(Some(&mut two_rect), Some(&mut two_closed), None);
-            if one_is_rect && two_is_rect && one_closed && two_closed {
-                if let Some(intersection) = Rect::intersection(&one_rect, &two_rect) {
-                    let mut result = Path::new();
-                    result.add_rect_simple(intersection);
-                    return Ok(result);
-                }
-                return Err(PathKitError::OperationFailed);
-            }
-            Err(PathKitError::Unimplemented(
-                "op(Intersect) — only rect-rect intersection is implemented",
-            ))
-        }
-        PathOp::Difference | PathOp::Xor | PathOp::ReverseDifference => {
-            if one == two {
-                match op {
-                    PathOp::Difference | PathOp::ReverseDifference => {
-                        return Ok(Path::new());
-                    }
-                    PathOp::Xor => {
-                        return Ok(Path::new());
-                    }
-                    _ => unreachable!(),
-                }
-            }
-            Err(PathKitError::Unimplemented(
-                "op — see old/pathkit/src/pathops/SkPathOpsOp.cpp",
-            ))
-        }
+    if !one.is_finite() || !two.is_finite() {
+        return Err(PathKitError::OperationFailed);
     }
-}
-
-/// Returns `true` if `path` is equivalent to a rectangle.
-fn is_simple_rect(path: &Path) -> Option<Rect> {
-    let mut r = Rect::empty();
-    if path.is_rect(Some(&mut r), None, None) {
-        Some(r)
-    } else {
-        None
+    if one.is_empty() {
+        return Ok(match op {
+            PathOp::Union | PathOp::Xor | PathOp::ReverseDifference => two.clone(),
+            PathOp::Intersect | PathOp::Difference => Path::new(),
+        });
     }
+    if two.is_empty() {
+        return Ok(match op {
+            PathOp::Union | PathOp::Xor | PathOp::Difference => one.clone(),
+            PathOp::Intersect | PathOp::ReverseDifference => Path::new(),
+        });
+    }
+    if one == two {
+        return Ok(match op {
+            PathOp::Union | PathOp::Intersect => one.clone(),
+            PathOp::Difference | PathOp::Xor | PathOp::ReverseDifference => Path::new(),
+        });
+    }
+    boolean::path_op(one, two, op)
 }
 
 /// Reduces `path` to an equivalent path built from non-overlapping
@@ -224,13 +163,11 @@ mod tests {
         let mut b = Path::new();
         b.add_rect_simple(Rect::from_ltrb(5.0, 5.0, 15.0, 15.0));
         let result = op(&a, &b, PathOp::Union).unwrap();
-        let result_rect = is_simple_rect(&result);
-        assert!(result_rect.is_some());
-        let r = result_rect.unwrap();
-        assert!((r.left - 0.0).abs() < 1e-6);
-        assert!((r.top - 0.0).abs() < 1e-6);
-        assert!((r.right - 15.0).abs() < 1e-6);
-        assert!((r.bottom - 15.0).abs() < 1e-6);
+        assert!(result.contains(1.0, 1.0));
+        assert!(result.contains(14.0, 14.0));
+        assert!(result.contains(7.0, 7.0));
+        assert!(!result.contains(1.0, 14.0));
+        assert!(!result.contains(14.0, 1.0));
     }
 
     #[test]
@@ -240,20 +177,20 @@ mod tests {
         let mut b = Path::new();
         b.add_rect_simple(Rect::from_ltrb(5.0, 5.0, 15.0, 15.0));
         let result = op(&a, &b, PathOp::Intersect).unwrap();
-        let r = is_simple_rect(&result).unwrap();
-        assert!((r.left - 5.0).abs() < 1e-6);
-        assert!((r.top - 5.0).abs() < 1e-6);
-        assert!((r.right - 10.0).abs() < 1e-6);
-        assert!((r.bottom - 10.0).abs() < 1e-6);
+        assert!(result.contains(7.0, 7.0));
+        assert!(!result.contains(2.0, 2.0));
+        assert!(!result.contains(12.0, 12.0));
+        assert!(!result.contains(2.0, 12.0));
     }
 
     #[test]
-    fn intersect_disjoint_rects_fails() {
+    fn intersect_disjoint_rects_is_empty() {
         let mut a = Path::new();
         a.add_rect_simple(Rect::from_ltrb(0.0, 0.0, 1.0, 1.0));
         let mut b = Path::new();
         b.add_rect_simple(Rect::from_ltrb(10.0, 10.0, 11.0, 11.0));
-        assert!(op(&a, &b, PathOp::Intersect).is_err());
+        let result = op(&a, &b, PathOp::Intersect).unwrap();
+        assert!(result.is_empty());
     }
 
     #[test]
@@ -266,9 +203,10 @@ mod tests {
         builder.add(a, PathOp::Union);
         builder.add(b, PathOp::Union);
         let result = builder.resolve().unwrap();
-        let r = is_simple_rect(&result).unwrap();
-        assert!((r.left - 0.0).abs() < 1e-6);
-        assert!((r.right - 10.0).abs() < 1e-6);
+        assert!(result.contains(1.0, 1.0));
+        assert!(result.contains(9.0, 9.0));
+        assert!(result.contains(4.0, 4.0));
+        assert!(!result.contains(1.0, 9.0));
     }
 
     #[test]
