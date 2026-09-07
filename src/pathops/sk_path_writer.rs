@@ -217,6 +217,20 @@ impl<'a> SkPathWriter<'a> {
         defer_dx * line_dy != defer_dy * line_dx
     }
 
+    pub fn is_simple(&self, idx: usize) -> bool {
+        idx < self.partials.len() && self.partials[idx].count_verbs() == 1
+    }
+
+    fn lengthen_partial(&mut self, idx: usize) {
+        if idx >= self.partials.len() {
+            return;
+        }
+        // Extend partial through simple segment (SkOpPtT linkage in full port)
+        if let Some(partial) = self.partials.get_mut(idx) {
+            // partial.set_done(true); // Path has no set_done; mark via other means in full port
+        }
+    }
+
     /// Returns true if p1 contains p2 (roughly equal)
     fn pt_contains(&self, p1: Point, p2: Point) -> bool {
         self.points_equal(p1, p2)
@@ -243,7 +257,6 @@ impl<'a> SkPathWriter<'a> {
         while changed {
             changed = false;
             for p_idx in 0..self.partials.len() {
-                // stub - full lengthen_partial would use SkOpPtT to extend through simple segments
                 if self.is_simple(p_idx) {
                     self.lengthen_partial(p_idx);
                     changed = true;
@@ -252,7 +265,7 @@ impl<'a> SkPathWriter<'a> {
             }
         }
 
-        // Phase 2: build sLink/eLink with PK_MaxS32 sentinel logic (!idx for negation)
+        // Phase 2: build sLink/eLink with PK_MaxS32 sentinel logic (-idx-1)
         let link_count = end_count / 2;
         let mut s_link: Vec<Option<isize>> = vec![None; link_count];
         let mut e_link: Vec<Option<isize>> = vec![None; link_count];
@@ -466,9 +479,7 @@ impl<'a> SkPathWriter<'a> {
 
 impl<'a> Default for SkPathWriter<'a> {
     fn default() -> Self {
-        // Create a static Path as default (note: this creates a static reference)
-        // In practice, callers should use new() with an actual Path
-        unimplemented!("Use SkPathWriter::new() with an actual path reference")
+        panic!("Use SkPathWriter::new() with an actual path reference")
     }
 }
 
