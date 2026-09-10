@@ -439,6 +439,29 @@ pub struct SkDConic {
     pub fWeight: Scalar,
 }
 
+/// Numerator of a conic's coordinate at `t`, in homogeneous form.
+///
+/// Port of `conic_eval_numerator`. `src` holds one coordinate of the three
+/// control points.
+fn conic_eval_numerator(src: &[Scalar; 3], w: Scalar, t: Scalar) -> Scalar {
+    debug_assert!((0.0..=1.0).contains(&t));
+    let src1w = src[1] * w;
+    let c = src[0];
+    let a = src[2] - 2.0 * src1w + c;
+    let b = 2.0 * (src1w - c);
+    (a * t + b) * t + c
+}
+
+/// Denominator of a conic at `t`, in homogeneous form.
+///
+/// Port of `conic_eval_denominator`.
+fn conic_eval_denominator(w: Scalar, t: Scalar) -> Scalar {
+    let b = 2.0 * (w - 1.0);
+    let c = 1.0;
+    let a = -b;
+    (a * t + b) * t + c
+}
+
 impl SkDConic {
     pub const K_POINT_COUNT: usize = 3;
     pub const K_POINT_LAST: usize = Self::K_POINT_COUNT - 1;
@@ -521,32 +544,62 @@ impl SkDConic {
         }
     }
 
-    /// Subdivide the conic at t1 and t2.
+    /// Returns the piece of this conic between `t1` and `t2`.
+    ///
+    /// Port of `SkDConic::subDivide(double, double)`. The endpoints are
+    /// evaluated in homogeneous form and the control point is recovered from
+    /// the midpoint, which keeps the result on the original curve. Subdividing
+    /// with plain de Casteljau on the projected points does not: the weight
+    /// has to travel with the coordinates.
     pub fn sub_divide(&self, t1: Scalar, t2: Scalar) -> SkDConic {
-        // Use de Casteljau's algorithm for conics
-        let p0 = self.fPts.point(0);
-        let p1 = self.fPts.point(1);
-        let p2 = self.fPts.point(2);
+        let xs = [self.fPts.point(0).fX, self.fPts.point(1).fX, self.fPts.point(2).fX];
+        let ys = [self.fPts.point(0).fY, self.fPts.point(1).fY, self.fPts.point(2).fY];
         let w = self.fWeight;
 
-        // First level
-        let q0 = p0;
-        let q1 = p0 + (p1 - p0) * t1;
-        let q2 = p1 + (p2 - p1) * t1;
-        let w0 = 1.0;
-        let w1 = (w + t1) / 2.0;
-        let w2 = (1.0 + t1) / 2.0;
+        let (ax, ay, az) = if t1 == 0.0 {
+            (xs[0], ys[0], 1.0)
+        } else if t1 != 1.0 {
+            (
+                conic_eval_numerator(&xs, w, t1),
+                conic_eval_numerator(&ys, w, t1),
+                conic_eval_denominator(w, t1),
+            )
+        } else {
+            (xs[2], ys[2], 1.0)
+        };
 
-        // Second level
-        let r0 = q0 + (q1 - q0) * ((t2 - t1) / (1.0 - t1));
-        let r1 = q1 + (q2 - q1) * ((t2 - t1) / (1.0 - t1));
-        let w0_new = w0;
-        let w1_new = (w0 + w1) / 2.0;
-        let w2_new = (w1 + w2) / 2.0;
+        let mid_t = (t1 + t2) / 2.0;
+        let dx = conic_eval_numerator(&xs, w, mid_t);
+        let dy = conic_eval_numerator(&ys, w, mid_t);
+        let dz = conic_eval_denominator(w, mid_t);
+
+        let (cx, cy, cz) = if t2 == 1.0 {
+            (xs[2], ys[2], 1.0)
+        } else if t2 != 0.0 {
+            (
+                conic_eval_numerator(&xs, w, t2),
+                conic_eval_numerator(&ys, w, t2),
+                conic_eval_denominator(w, t2),
+            )
+        } else {
+            (xs[0], ys[0], 1.0)
+        };
+
+        let bx = 2.0 * dx - (ax + cx) / 2.0;
+        let by = 2.0 * dy - (ay + cy) / 2.0;
+        let mut bz = 2.0 * dz - (az + cz) / 2.0;
+        if bz == 0.0 {
+            // Weight is 0, so the control point has no effect: any value does.
+            bz = 1.0;
+        }
 
         SkDConic {
-            fPts: SkDQuad::from_points([r0, r1, r1]),
-            fWeight: w1_new,
+            fPts: SkDQuad::from_points([
+                SkDPoint::new(ax / az, ay / az),
+                SkDPoint::new(bx / bz, by / bz),
+                SkDPoint::new(cx / cz, cy / cz),
+            ]),
+            fWeight: bz / (az * cz).sqrt(),
         }
     }
 }
@@ -1077,5 +1130,76 @@ mod tests {
         assert_eq!(Verb::Quad.point_count(), 3);
         assert_eq!(Verb::Conic.point_count(), 3);
         assert_eq!(Verb::Cubic.point_count(), 4);
+    }
+
+    #[test]
+    fn conic_sub_divide_stays_on_the_curve() {
+        // A quarter circle arc: the weight matters, so a subdivision that
+        // ignores it drifts off the curve.
+        let w = std::f32::consts::FRAC_1_SQRT_2;
+        let conic = SkDConic {
+            fPts: SkDQuad::from_points([
+                SkDPoint::new(0.0, 0.0),
+                SkDPoint::new(100.0, 0.0),
+                SkDPoint::new(100.0, 100.0),
+            ]),
+            fWeight: w,
+        };
+
+        // Every point of the sub-conic must lie on the original arc, at the
+        // t value the subdivision maps to.
+        let (t1, t2) = (0.25, 0.75);
+        let piece = conic.sub_divide(t1, t2);
+        for i in 0..=10 {
+            let s = i as f32 / 10.0;
+            let got = piece.pt_at_t(s);
+            let want = conic.pt_at_t(t1 + (t2 - t1) * s);
+            assert!(
+                (got.fX - want.fX).abs() < 0.05 && (got.fY - want.fY).abs() < 0.05,
+                "at s={s}: got ({}, {}), want ({}, {})",
+                got.fX,
+                got.fY,
+                want.fX,
+                want.fY
+            );
+        }
+    }
+
+    #[test]
+    fn conic_sub_divide_over_the_whole_range_is_the_original() {
+        let w = std::f32::consts::FRAC_1_SQRT_2;
+        let conic = SkDConic {
+            fPts: SkDQuad::from_points([
+                SkDPoint::new(0.0, 0.0),
+                SkDPoint::new(100.0, 0.0),
+                SkDPoint::new(100.0, 100.0),
+            ]),
+            fWeight: w,
+        };
+        let whole = conic.sub_divide(0.0, 1.0);
+        assert!((whole.fWeight - w).abs() < 1e-5);
+        for i in 0..3 {
+            let a = whole.fPts.point(i);
+            let b = conic.fPts.point(i);
+            assert!((a.fX - b.fX).abs() < 1e-3, "point {i} x");
+            assert!((a.fY - b.fY).abs() < 1e-3, "point {i} y");
+        }
+    }
+
+    #[test]
+    fn conic_eval_helpers_match_the_rational_form() {
+        // At t = 0 and t = 1 the numerator is the first and last coordinate,
+        // and the denominator is 1 at both ends.
+        let xs = [0.0, 100.0, 100.0];
+        let w = 0.5;
+        assert!((conic_eval_numerator(&xs, w, 0.0) - 0.0).abs() < 1e-6);
+        assert!((conic_eval_numerator(&xs, w, 1.0) - 100.0).abs() < 1e-6);
+        assert!((conic_eval_denominator(w, 0.0) - 1.0).abs() < 1e-6);
+        assert!((conic_eval_denominator(w, 1.0) - 1.0).abs() < 1e-6);
+        // A weight of 1 makes the denominator 1 everywhere: a plain quad.
+        for i in 0..=10 {
+            let t = i as f32 / 10.0;
+            assert!((conic_eval_denominator(1.0, t) - 1.0).abs() < 1e-6);
+        }
     }
 }

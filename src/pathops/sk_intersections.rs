@@ -313,9 +313,16 @@ impl SkIntersections {
         result
     }
 
+    /// Removes the intersection at `index`, shifting the rest down.
+    ///
+    /// Port of `SkIntersections::removeOne`. Note that the count drops even
+    /// when the removed entry was the last one and nothing needs shifting -
+    /// returning early without decrementing leaves the caller looping over an
+    /// entry it just asked to have deleted.
     pub fn remove_one(&mut self, index: usize) {
-        let remaining = self.f_used as usize - index - 1;
-        if remaining <= 0 {
+        self.f_used -= 1;
+        let remaining = self.f_used as usize - index;
+        if remaining == 0 {
             return;
         }
         for i in 0..remaining {
@@ -323,7 +330,14 @@ impl SkIntersections {
             self.f_t[0][index + i] = self.f_t[0][index + i + 1];
             self.f_t[1][index + i] = self.f_t[1][index + i + 1];
         }
-        self.f_used -= 1;
+        // Shift the coincidence bits above `index` down by one, dropping the
+        // bit that belonged to the removed entry.
+        let keep_mask = !((1u16 << index) - 1);
+        for side in 0..2 {
+            let co_bit = self.f_is_coincident[side] & (1 << index);
+            self.f_is_coincident[side] = self.f_is_coincident[side]
+                .wrapping_sub(((self.f_is_coincident[side] >> 1) & keep_mask) + co_bit);
+        }
     }
 }
 
@@ -468,6 +482,43 @@ mod tests {
 
         assert_eq!(ts.used(), 2);
         assert!((ts.t(0, 1) - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn remove_one_drops_the_last_entry() {
+        // Removing the final entry shifts nothing, but the count must still
+        // fall. Returning early here leaves the caller looking at an entry it
+        // just deleted, which is what hung check_coincident.
+        let mut ts = SkIntersections::new();
+        ts.set_max(13);
+        let _ = ts.insert(0.25, 0.25, Point::new(0.5, 0.5));
+        let _ = ts.insert(0.75, 0.75, Point::new(1.5, 1.5));
+        assert_eq!(ts.used(), 2);
+
+        ts.remove_one(1);
+        assert_eq!(ts.used(), 1);
+        assert!((ts.t(0, 0) - 0.25).abs() < 1e-6);
+
+        ts.remove_one(0);
+        assert_eq!(ts.used(), 0);
+    }
+
+    #[test]
+    fn remove_one_shifts_the_coincident_bits_down() {
+        let mut ts = SkIntersections::new();
+        ts.set_max(13);
+        let _ = ts.insert(0.25, 0.25, Point::new(0.5, 0.5));
+        let _ = ts.insert(0.5, 0.5, Point::new(1.0, 1.0));
+        let _ = ts.insert(0.75, 0.75, Point::new(1.5, 1.5));
+        // Mark the last one coincident, then drop the first.
+        ts.set_coincident(2);
+        assert!(ts.is_coincident(2));
+
+        ts.remove_one(0);
+        assert_eq!(ts.used(), 2);
+        // The flag follows its entry down to index 1.
+        assert!(ts.is_coincident(1));
+        assert!(!ts.is_coincident(0));
     }
 
     #[test]

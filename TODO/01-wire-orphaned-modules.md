@@ -109,3 +109,22 @@ caught before, because none of it was compiled:
 
 `monotonic_in_x` / `monotonic_in_y` are built on (3), so they were answering
 incorrectly for any cubic whose extrema the broken formula missed.
+
+Two more, found by clippy once the files compiled:
+
+4. **`SkIntersections::remove_one` did not always decrement.** C++ is
+   `int remaining = --fUsed - index;` — the count drops first, then the early
+   return. The port computed `used() - index - 1` and returned before
+   decrementing, so removing the *last* entry did nothing at all. This is the
+   direct cause of bug (1): `check_coincident` asked for a removal, got none,
+   and looped. It also never shifted the `fIsCoincident` bitmask, so coincidence
+   flags stayed attached to the wrong entries after any removal.
+
+5. **`SkDConic::sub_divide` was not a subdivision.** It ran de Casteljau on the
+   projected points, ignoring the weight, and emitted `[r0, r1, r1]` with the
+   control point duplicated as the endpoint. `SkDConic::subDivide`
+   (`SkPathOpsConic.cpp:125`) evaluates both ends in homogeneous form and
+   recovers the control point from the midpoint. Replaced with the real port,
+   plus `conic_eval_numerator` / `conic_eval_denominator`. Tests check that the
+   sub-conic lies on the original arc and that subdividing over `0..1` returns
+   the original.
