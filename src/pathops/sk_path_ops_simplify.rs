@@ -1,51 +1,627 @@
-//! SkPathOpsSimplify - simplifies paths by removing overlaps and redundant contours
+//! Path simplification: rewrites a path so its contours no longer overlap or
+//! self-intersect, while filling exactly the same region.
 //!
-//! Port of Skia's SkPathOpsSimplify.cpp
+//! Port of Skia's `SkPathOpsSimplify.cpp`.
 //!
-//! This module provides path simplification that:
-//! - Removes redundant overlapping segments
-//! - Handles both winding and even-odd fill types
-//! - Preserves the visual shape while reducing path complexity
+//! The result always uses an even-odd fill rule (inverse-even-odd for inverse
+//! input), matching Skia. Because the output contours are disjoint and
+//! non-self-intersecting, even-odd and winding agree on it anyway; even-odd is
+//! what Skia promises, so that is what we set.
+//!
+//! # Relationship to the C++ original
+//!
+//! Skia's `SimplifyDebug` drives its op-segment engine: `SkOpEdgeBuilder`
+//! converts the path to contours, `AddIntersectTs` finds every crossing,
+//! `HandleCoincidence` resolves overlapping runs, and then `bridgeWinding` (for
+//! winding-masked input) or `bridgeXor` (for even-odd input) walks the segment
+//! graph emitting closed contours.
+//!
+//! That engine is not yet ported in this crate (see `sk_op_segment`,
+//! `sk_op_coincidence`), so the same pipeline is realized here on the flattened
+//! edge representation that [`super::boolean`] uses: curves are flattened,
+//! every edge is split at all intersections, each resulting piece is kept only
+//! if it lies on the boundary of the filled region, and the survivors are
+//! walked into closed contours. The staging mirrors the original —
+//! convex fast path, build, intersect, classify by fill mask, bridge, assemble
+//! leftovers — and `bridge_winding` / `bridge_xor` correspond to the two
+//! branches Skia selects on `builder.xorMask()`.
 
-use crate::core::{FillType, Path};
+use crate::core::{FillType, Path, Point, Verb};
 
-/// Simplify a path - removes redundant and overlapping segments
+/// Flatness tolerance, in path units, for subdividing curves into line
+/// segments.
+const FLAT_TOL: f32 = 0.1;
+
+/// Maximum recursion depth when flattening a curve.
+const MAX_FLAT_DEPTH: u32 = 16;
+
+/// Edges shorter than this are dropped as degenerate.
+const MIN_EDGE: f32 = 1e-4;
+
+/// Distance to step perpendicular to an edge when sampling which side is
+/// inside the filled region.
+const OFFSET: f32 = 0.25;
+
+/// Parametric tolerance for merging near-duplicate split points.
+const T_EPS: f32 = 1e-6;
+
+/// Quantization step for matching endpoints when assembling contours.
+const WELD: f32 = 256.0;
+
+/// Simplifies `path`, returning a path that fills the same region with
+/// non-overlapping, non-self-intersecting contours.
 ///
-/// This function transforms a path to remove overlapping segments and
-/// redundant contours while preserving the visual shape.
+/// Corresponds to Skia's `Simplify(const SkPath&, SkPath*)`.
 ///
-/// For convex paths, this simply sets the appropriate fill type.
-/// For non-convex paths, the full pathops simplification would be applied.
+/// The returned path uses [`FillType::EvenOdd`], or
+/// [`FillType::InverseEvenOdd`] when `path` has an inverse fill type. Convex
+/// paths are returned unchanged apart from that fill type, since a convex
+/// contour cannot self-intersect.
 ///
-/// # Arguments
-/// * `path` - The path to simplify
+/// # Errors
 ///
-/// # Returns
-/// * `Result<Path, String>` - The simplified path, or an error message
+/// Returns `Err` if `path` contains non-finite coordinates. Paths that the
+/// engine cannot fully resolve do not error; they degrade to a partially
+/// assembled result, as in Skia.
+///
+/// # Examples
+///
+/// ```
+/// use pathkit::core::Path;
+/// use pathkit::pathops::sk_path_ops_simplify::simplify;
+///
+/// // A bowtie: one contour that crosses itself.
+/// let mut path = Path::new();
+/// path.move_to(0.0, 0.0);
+/// path.line_to(10.0, 10.0);
+/// path.line_to(10.0, 0.0);
+/// path.line_to(0.0, 10.0);
+/// path.close();
+///
+/// let simplified = simplify(&path).unwrap();
+/// // The two lobes lie left and right of the crossing at (5, 5).
+/// assert!(simplified.contains(1.0, 5.0));
+/// assert!(simplified.contains(9.0, 5.0));
+/// assert!(!simplified.contains(5.0, 1.0));
+/// ```
 pub fn simplify(path: &Path) -> Result<Path, String> {
-    // For paths with known good geometry, return as-is with correct fill type
-    let mut result = path.clone();
+    let mut result = Path::new();
+    if simplify_debug(path, &mut result, None) {
+        Ok(result)
+    } else {
+        Err("simplify failed".to_string())
+    }
+}
+
+/// Simplifies `path` into `result`, returning whether the operation succeeded.
+///
+/// Corresponds to Skia's `SimplifyDebug`. `test_name` is accepted for parity
+/// with the C++ debug parameter and is used only in failure messages.
+///
+/// Unlike [`simplify`], this reports failure through its return value and
+/// leaves a best-effort path in `result`.
+pub fn simplify_debug(path: &Path, result: &mut Path, _test_name: Option<&str>) -> bool {
+    // Returns even-odd for normal fills and inverse-even-odd for inverse
+    // fills, regardless of whether the input was winding or even-odd.
     let fill_type = if path.is_inverse_fill_type() {
         FillType::InverseEvenOdd
     } else {
         FillType::EvenOdd
     };
+
+    if !path.is_finite() {
+        return false;
+    }
+
+    // A convex contour never crosses itself and never overlaps another, so
+    // there is nothing to resolve. Skia takes the same shortcut.
+    if is_convex(path) {
+        *result = path.clone();
+        result.set_fill_type(fill_type);
+        return true;
+    }
+
+    // Turn the path into a list of edges. Stands in for SkOpEdgeBuilder.
+    let edges = build_edges(path);
+    if edges.is_empty() {
+        result.reset();
+        result.set_fill_type(fill_type);
+        return true;
+    }
+
+    // Find all intersections between edges and split there, so that no two
+    // pieces cross except at shared endpoints. Stands in for AddIntersectTs
+    // plus HandleCoincidence.
+    let pieces = split_at_intersections(&edges);
+    if pieces.is_empty() {
+        result.reset();
+        result.set_fill_type(fill_type);
+        return true;
+    }
+
+    // Construct closed contours. Which fill mask the input used decides how a
+    // piece is judged to be on the boundary, exactly as Skia picks between
+    // bridgeWinding and bridgeXor on the edge builder's xor mask.
+    result.reset();
     result.set_fill_type(fill_type);
-    Ok(result)
+
+    let boundary = if path.fill_type().is_even_odd() {
+        bridge_xor(&pieces, path)
+    } else {
+        bridge_winding(&pieces, path)
+    };
+
+    if boundary.is_empty() {
+        return true;
+    }
+
+    *result = assemble(&boundary, fill_type);
+    true
 }
 
-/// Debug version of simplify with assertions and verification
+/// A directed boundary edge of the simplified result.
 ///
-/// Used in debug builds to verify the simplification algorithm.
-#[cfg(debug_assertions)]
-pub fn simplify_debug(path: &Path, result: &mut Path, _test_name: Option<&str>) -> bool {
-    // This is a placeholder - the full debug implementation would include:
-    // - Assertions to validate intermediate state
-    // - Logging of simplification steps
-    // - Verification that output preserves semantics
+/// The direction is chosen so the filled region lies to the edge's left, which
+/// is what lets [`assemble`] chain edges into consistently wound contours.
+#[derive(Clone, Copy, Debug)]
+struct Edge {
+    /// Start point.
+    from: Point,
+    /// End point.
+    to: Point,
+}
 
-    *result = simplify(path).unwrap_or_else(|_| Path::new());
+/// Returns true if every turn in `path` has the same sign and the path has a
+/// single contour, i.e. the path is convex.
+///
+/// Stands in for Skia's `SkPath::isConvex()`, which this crate's `Path` does
+/// not expose. Curves are flattened first so control-point turns count.
+fn is_convex(path: &Path) -> bool {
+    let mut contours = 0;
+    for (verb, _, _) in path.iter() {
+        if verb == Verb::Move {
+            contours += 1;
+            if contours > 1 {
+                return false;
+            }
+        }
+    }
+    if contours == 0 {
+        // An empty path is trivially convex; Skia reports the same.
+        return true;
+    }
+
+    let pts = contour_points(path);
+    if pts.len() < 3 {
+        return true;
+    }
+
+    let n = pts.len();
+    let mut sign = 0i32;
+    for i in 0..n {
+        let a = pts[i];
+        let b = pts[(i + 1) % n];
+        let c = pts[(i + 2) % n];
+        let cross = (b - a).cross(c - b);
+        if cross.abs() <= 1e-9 {
+            continue;
+        }
+        let s = if cross > 0.0 { 1 } else { -1 };
+        if sign == 0 {
+            sign = s;
+        } else if sign != s {
+            return false;
+        }
+    }
     true
+}
+
+/// Collects the vertices of a single-contour path, flattening any curves.
+fn contour_points(path: &Path) -> Vec<Point> {
+    let mut pts: Vec<Point> = Vec::new();
+    let mut push = |p: Point| {
+        if pts.last().is_none_or(|last| Point::distance(*last, p) >= MIN_EDGE) {
+            pts.push(p);
+        }
+    };
+
+    for (verb, p, _) in path.iter() {
+        match verb {
+            Verb::Move => push(p[0]),
+            Verb::Line => push(p[1]),
+            Verb::Quad | Verb::Conic => {
+                push(p[1]);
+                push(p[2]);
+            }
+            Verb::Cubic => {
+                push(p[1]);
+                push(p[2]);
+                push(p[3]);
+            }
+            Verb::Close => {}
+        }
+    }
+
+    // Drop a trailing duplicate of the start point; the wrap-around in
+    // is_convex covers the closing turn already.
+    if pts.len() >= 2 {
+        let first = pts[0];
+        if Point::distance(*pts.last().unwrap(), first) < MIN_EDGE {
+            pts.pop();
+        }
+    }
+    pts
+}
+
+/// Converts `path` into a flat list of line segments, closing every contour.
+///
+/// Stands in for `SkOpEdgeBuilder::finish()`: open contours are implicitly
+/// closed, because a fill region is defined by closed boundaries.
+fn build_edges(path: &Path) -> Vec<[Point; 2]> {
+    let mut segs = Vec::new();
+    let mut contour_start = Point::default();
+    let mut last = Point::default();
+    let mut started = false;
+
+    let mut close_contour = |segs: &mut Vec<[Point; 2]>, last: Point, start: Point| {
+        push_seg(segs, last, start);
+    };
+
+    for (verb, pts, _weight) in path.iter() {
+        match verb {
+            Verb::Move => {
+                if started {
+                    close_contour(&mut segs, last, contour_start);
+                }
+                contour_start = pts[0];
+                last = pts[0];
+                started = true;
+            }
+            Verb::Line => {
+                push_seg(&mut segs, pts[0], pts[1]);
+                last = pts[1];
+            }
+            Verb::Quad | Verb::Conic => {
+                flatten_quad(pts[0], pts[1], pts[2], MAX_FLAT_DEPTH, &mut segs);
+                last = pts[2];
+            }
+            Verb::Cubic => {
+                flatten_cubic(pts[0], pts[1], pts[2], pts[3], MAX_FLAT_DEPTH, &mut segs);
+                last = pts[3];
+            }
+            Verb::Close => {
+                if started {
+                    close_contour(&mut segs, last, contour_start);
+                    last = contour_start;
+                }
+            }
+        }
+    }
+    if started {
+        close_contour(&mut segs, last, contour_start);
+    }
+    segs
+}
+
+/// Appends `a`-`b` to `segs` unless it is degenerately short.
+fn push_seg(segs: &mut Vec<[Point; 2]>, a: Point, b: Point) {
+    if Point::distance(a, b) >= MIN_EDGE {
+        segs.push([a, b]);
+    }
+}
+
+/// Recursively subdivides a quadratic until it is flat enough to replace with
+/// a chord.
+fn flatten_quad(p0: Point, p1: Point, p2: Point, depth: u32, out: &mut Vec<[Point; 2]>) {
+    if depth == 0 || dist_to_line(p1, p0, p2) <= FLAT_TOL {
+        push_seg(out, p0, p2);
+        return;
+    }
+    let p01 = mid(p0, p1);
+    let p12 = mid(p1, p2);
+    let p012 = mid(p01, p12);
+    flatten_quad(p0, p01, p012, depth - 1, out);
+    flatten_quad(p012, p12, p2, depth - 1, out);
+}
+
+/// Recursively subdivides a cubic until it is flat enough to replace with a
+/// chord.
+fn flatten_cubic(p0: Point, p1: Point, p2: Point, p3: Point, depth: u32, out: &mut Vec<[Point; 2]>) {
+    if depth == 0 || (dist_to_line(p1, p0, p3) <= FLAT_TOL && dist_to_line(p2, p0, p3) <= FLAT_TOL) {
+        push_seg(out, p0, p3);
+        return;
+    }
+    let p01 = mid(p0, p1);
+    let p12 = mid(p1, p2);
+    let p23 = mid(p2, p3);
+    let p012 = mid(p01, p12);
+    let p123 = mid(p12, p23);
+    let p0123 = mid(p012, p123);
+    flatten_cubic(p0, p01, p012, p0123, depth - 1, out);
+    flatten_cubic(p0123, p123, p23, p3, depth - 1, out);
+}
+
+/// Returns the midpoint of `a` and `b`.
+fn mid(a: Point, b: Point) -> Point {
+    Point::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5)
+}
+
+/// Returns the perpendicular distance from `p` to the line through `a` and
+/// `b`.
+fn dist_to_line(p: Point, a: Point, b: Point) -> f32 {
+    let ab = b - a;
+    let len = ab.length();
+    if len < 1e-12 {
+        return Point::distance(p, a);
+    }
+    ab.cross(p - a).abs() / len
+}
+
+/// Splits every segment at each point where it meets another, so the returned
+/// pieces intersect only at shared endpoints.
+///
+/// Stands in for `AddIntersectTs` followed by `HandleCoincidence`: collinear
+/// overlaps are handled by projecting each segment's endpoints onto the other,
+/// which splits coincident runs at their shared boundaries.
+fn split_at_intersections(segs: &[[Point; 2]]) -> Vec<[Point; 2]> {
+    let n = segs.len();
+    let mut params: Vec<Vec<f32>> = vec![vec![0.0, 1.0]; n];
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let (ti, tj) = split_params(segs[i], segs[j]);
+            params[i].extend(ti);
+            params[j].extend(tj);
+        }
+    }
+
+    let mut out = Vec::new();
+    for (seg, mut ts) in segs.iter().zip(params) {
+        ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        ts.dedup_by(|a, b| (*a - *b).abs() < T_EPS);
+        for w in ts.windows(2) {
+            let a = lerp(seg[0], seg[1], w[0]);
+            let b = lerp(seg[0], seg[1], w[1]);
+            push_seg(&mut out, a, b);
+        }
+    }
+    out
+}
+
+/// Returns the interior parametric split points that `a` and `b` induce on
+/// each other.
+fn split_params(a: [Point; 2], b: [Point; 2]) -> (Vec<f32>, Vec<f32>) {
+    let mut ta = Vec::new();
+    let mut tb = Vec::new();
+    let da = a[1] - a[0];
+    let db = b[1] - b[0];
+    let denom = da.cross(db);
+    let ab = b[0] - a[0];
+    if denom.abs() > 1e-12 {
+        let t = ab.cross(db) / denom;
+        let u = ab.cross(da) / denom;
+        if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u) {
+            if t > T_EPS && t < 1.0 - T_EPS {
+                ta.push(t);
+            }
+            if u > T_EPS && u < 1.0 - T_EPS {
+                tb.push(u);
+            }
+        }
+    } else if da.cross(ab).abs() <= 1e-4 * da.length().max(1.0) {
+        // Collinear: split each segment wherever the other one starts or ends.
+        for &p in &[b[0], b[1]] {
+            if let Some(t) = project_t(a, p) {
+                if t > T_EPS && t < 1.0 - T_EPS {
+                    ta.push(t);
+                }
+            }
+        }
+        for &p in &[a[0], a[1]] {
+            if let Some(u) = project_t(b, p) {
+                if u > T_EPS && u < 1.0 - T_EPS {
+                    tb.push(u);
+                }
+            }
+        }
+    }
+    (ta, tb)
+}
+
+/// Returns the parametric position of `p` projected onto `seg`.
+fn project_t(seg: [Point; 2], p: Point) -> Option<f32> {
+    let d = seg[1] - seg[0];
+    let len2 = d.dot(d);
+    if len2 < 1e-16 {
+        return None;
+    }
+    Some((p - seg[0]).dot(d) / len2)
+}
+
+/// Linearly interpolates between `a` and `b`.
+fn lerp(a: Point, b: Point, t: f32) -> Point {
+    Point::new(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
+}
+
+/// Keeps the pieces that bound the region filled under the winding rule,
+/// orienting each so the filled side is on its left.
+///
+/// Corresponds to Skia's `bridgeWinding`.
+fn bridge_winding(pieces: &[[Point; 2]], path: &Path) -> Vec<Edge> {
+    collect_boundary(pieces, path, false)
+}
+
+/// Keeps the pieces that bound the region filled under the even-odd rule,
+/// orienting each so the filled side is on its left.
+///
+/// Corresponds to Skia's `bridgeXor`.
+fn bridge_xor(pieces: &[[Point; 2]], path: &Path) -> Vec<Edge> {
+    collect_boundary(pieces, path, true)
+}
+
+/// Selects the pieces whose two sides disagree about being inside the fill.
+///
+/// A piece with fill on both sides is interior to the region and a piece with
+/// fill on neither is exterior; only pieces that separate the two are part of
+/// the simplified outline. This replaces the winding-sum bookkeeping that
+/// Skia's segment graph performs.
+fn collect_boundary(pieces: &[[Point; 2]], path: &Path, even_odd: bool) -> Vec<Edge> {
+    // Sample against a copy carrying the requested rule, with any inverse
+    // stripped: the boundary is the same curve either way, and testing the
+    // non-inverted region keeps the left-is-inside convention below correct.
+    let mut probe = path.clone();
+    probe.set_fill_type(if even_odd {
+        FillType::EvenOdd
+    } else {
+        FillType::Winding
+    });
+
+    let mut edges = Vec::new();
+    for &seg in pieces {
+        let dir = seg[1] - seg[0];
+        let len = dir.length();
+        if len < MIN_EDGE {
+            continue;
+        }
+        // Step perpendicular to the piece, scaled down for very short pieces
+        // so the sample points stay near this edge rather than landing across
+        // a neighbouring one.
+        let step = OFFSET.min(len * 0.5);
+        let n = Point::new(-dir.y / len * step, dir.x / len * step);
+        let mid_pt = mid(seg[0], seg[1]);
+        let in_left = probe.contains((mid_pt + n).x, (mid_pt + n).y);
+        let in_right = probe.contains((mid_pt - n).x, (mid_pt - n).y);
+        if in_left == in_right {
+            continue;
+        }
+        if in_left {
+            edges.push(Edge {
+                from: seg[0],
+                to: seg[1],
+            });
+        } else {
+            edges.push(Edge {
+                from: seg[1],
+                to: seg[0],
+            });
+        }
+    }
+    dedup_coincident(edges)
+}
+
+/// Collapses coincident boundary edges down to one edge each.
+///
+/// Two contours that share an edge produce two pieces occupying the same
+/// space; both pass the boundary test, and emitting both would yield
+/// duplicated contours that cancel under the even-odd output rule. Skia folds
+/// these together in `HandleCoincidence` before bridging; this does the
+/// equivalent on the split pieces.
+///
+/// Edges that coincide but run in opposite directions are dropped entirely:
+/// they are back-to-back boundaries of regions that both turned out to be
+/// filled, so the shared edge is interior to the result.
+fn dedup_coincident(edges: Vec<Edge>) -> Vec<Edge> {
+    let mut seen: std::collections::HashMap<((i32, i32), (i32, i32)), usize> =
+        std::collections::HashMap::new();
+    let mut keep = vec![true; edges.len()];
+
+    for (i, e) in edges.iter().enumerate() {
+        let fwd = (key(e.from), key(e.to));
+        let rev = (fwd.1, fwd.0);
+        if let Some(&j) = seen.get(&rev) {
+            // Opposing pair: neither edge bounds the result.
+            keep[i] = false;
+            keep[j] = false;
+            seen.remove(&rev);
+        } else if let Some(&j) = seen.get(&fwd) {
+            // Same-direction duplicate: keep only the first.
+            let _ = j;
+            keep[i] = false;
+        } else {
+            seen.insert(fwd, i);
+        }
+    }
+
+    edges
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(e, k)| k.then_some(e))
+        .collect()
+}
+
+/// Quantizes a point so endpoints that should coincide compare equal.
+fn key(p: Point) -> (i32, i32) {
+    ((p.x * WELD).round() as i32, (p.y * WELD).round() as i32)
+}
+
+/// Chains boundary edges into closed contours and writes them to a path.
+///
+/// At each vertex the most sharply left-turning unused edge is taken, which
+/// walks the outline of the region rather than cutting across it. Edges that
+/// cannot be closed into a contour are dropped, mirroring the leftover
+/// handling in Skia's `SkPathWriter::assemble`.
+fn assemble(edges: &[Edge], fill_type: FillType) -> Path {
+    let n = edges.len();
+    let mut outgoing: std::collections::HashMap<(i32, i32), Vec<usize>> =
+        std::collections::HashMap::new();
+    for (i, e) in edges.iter().enumerate() {
+        outgoing.entry(key(e.from)).or_default().push(i);
+    }
+
+    let mut used = vec![false; n];
+    let mut path = Path::new();
+    path.set_fill_type(fill_type);
+
+    for start in 0..n {
+        if used[start] {
+            continue;
+        }
+        let mut idx = start;
+        let origin = edges[idx].from;
+        let mut verts: Vec<Point> = vec![origin];
+        let mut incoming = edges[idx].to - edges[idx].from;
+        let mut closed = false;
+        loop {
+            used[idx] = true;
+            let cur = edges[idx].to;
+            if key(cur) == key(origin) && verts.len() >= 3 {
+                closed = true;
+                break;
+            }
+            verts.push(cur);
+            let Some(cands) = outgoing.get(&key(cur)) else {
+                break;
+            };
+            let mut best: Option<(usize, f32)> = None;
+            for &j in cands {
+                if used[j] {
+                    continue;
+                }
+                let out = edges[j].to - edges[j].from;
+                let ang = incoming.cross(out).atan2(incoming.dot(out));
+                if best.is_none_or(|(_, a)| ang > a) {
+                    best = Some((j, ang));
+                }
+            }
+            let Some((next, _)) = best else {
+                break;
+            };
+            incoming = edges[next].to - edges[next].from;
+            idx = next;
+            if verts.len() > n + 2 {
+                break;
+            }
+        }
+        if !closed || verts.len() < 3 {
+            continue;
+        }
+        path.move_to(verts[0].x, verts[0].y);
+        for v in verts.iter().skip(1) {
+            path.line_to(v.x, v.y);
+        }
+        path.close();
+    }
+
+    path
 }
 
 #[cfg(test)]
@@ -66,6 +642,8 @@ mod tests {
 
         let result = simplify(&path).unwrap();
         assert!(!result.is_empty());
+        assert!(result.contains(5.0, 5.0));
+        assert!(!result.contains(15.0, 5.0));
     }
 
     #[test]
@@ -88,8 +666,14 @@ mod tests {
         path.add_rect_simple(crate::core::Rect::from_ltrb(5.0, 5.0, 15.0, 15.0));
 
         let result = simplify(&path).unwrap();
-        // Should be simplified but still contain data
         assert!(!result.is_empty());
+        // The union region survives, including the overlap, which under the
+        // input's default winding rule was filled.
+        assert!(result.contains(2.0, 2.0));
+        assert!(result.contains(7.0, 7.0));
+        assert!(result.contains(12.0, 12.0));
+        assert!(!result.contains(12.0, 2.0));
+        assert!(!result.contains(2.0, 12.0));
     }
 
     #[test]
@@ -104,6 +688,7 @@ mod tests {
 
         let result = simplify(&path).unwrap();
         assert!(!result.is_empty());
+        assert_eq!(result.fill_type(), FillType::InverseEvenOdd);
     }
 
     #[test]
@@ -132,6 +717,7 @@ mod tests {
 
         let result = simplify(&path).unwrap();
         assert!(!result.is_empty());
+        assert_eq!(result.fill_type(), FillType::EvenOdd);
     }
 
     #[test]
@@ -148,6 +734,11 @@ mod tests {
 
         let result = simplify(&path).unwrap();
         assert!(!result.is_empty());
+        // The notch stays empty and the arms stay filled.
+        assert!(result.contains(2.0, 2.0));
+        assert!(result.contains(8.0, 2.0));
+        assert!(result.contains(2.0, 8.0));
+        assert!(!result.contains(8.0, 8.0));
     }
 
     #[test]
@@ -156,15 +747,171 @@ mod tests {
         path.add_rect_simple(crate::core::Rect::from_ltrb(0.0, 0.0, 10.0, 10.0));
 
         let mut result = Path::new();
-        #[cfg(debug_assertions)]
-        {
-            let success = simplify_debug(&path, &mut result, Some("test"));
-            assert!(success);
-            assert!(!result.is_empty());
+        let success = simplify_debug(&path, &mut result, Some("test"));
+        assert!(success);
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn simplify_result_is_even_odd() {
+        let mut path = Path::new();
+        path.add_rect_simple(crate::core::Rect::from_ltrb(0.0, 0.0, 10.0, 10.0));
+        path.set_fill_type(FillType::Winding);
+        let result = simplify(&path).unwrap();
+        assert_eq!(result.fill_type(), FillType::EvenOdd);
+    }
+
+    #[test]
+    fn simplify_self_intersecting_bowtie() {
+        // A bowtie crosses itself at (5, 5). Simplified, it becomes two
+        // triangles and the crossing point is no longer interior to an edge.
+        let mut path = Path::new();
+        path.move_to(0.0, 0.0);
+        path.line_to(10.0, 10.0);
+        path.line_to(10.0, 0.0);
+        path.line_to(0.0, 10.0);
+        path.close();
+
+        let result = simplify(&path).unwrap();
+        assert!(!result.is_empty());
+        // This winding order puts the two lobes left and right of the
+        // crossing, so those are the filled regions.
+        assert!(result.contains(1.0, 5.0));
+        assert!(result.contains(9.0, 5.0));
+        // Above and below the crossing is outside the bowtie.
+        assert!(!result.contains(5.0, 1.5));
+        assert!(!result.contains(5.0, 8.5));
+    }
+
+    #[test]
+    fn simplify_nested_rects_winding_fills_hole() {
+        // Same-direction nested rectangles: under winding both wind +1 and
+        // +2, so the whole outer rect is filled and the inner ring vanishes.
+        let mut path = Path::new();
+        path.add_rect_simple(crate::core::Rect::from_ltrb(0.0, 0.0, 30.0, 30.0));
+        path.add_rect_simple(crate::core::Rect::from_ltrb(10.0, 10.0, 20.0, 20.0));
+        path.set_fill_type(FillType::Winding);
+
+        let result = simplify(&path).unwrap();
+        assert!(result.contains(5.0, 5.0));
+        assert!(result.contains(15.0, 15.0));
+        assert!(!result.contains(35.0, 15.0));
+    }
+
+    #[test]
+    fn simplify_nested_rects_even_odd_keeps_hole() {
+        // The same geometry under even-odd is a frame with a hole, and
+        // simplify must preserve the hole.
+        let mut path = Path::new();
+        path.add_rect_simple(crate::core::Rect::from_ltrb(0.0, 0.0, 30.0, 30.0));
+        path.add_rect_simple(crate::core::Rect::from_ltrb(10.0, 10.0, 20.0, 20.0));
+        path.set_fill_type(FillType::EvenOdd);
+
+        let result = simplify(&path).unwrap();
+        assert!(result.contains(5.0, 5.0));
+        assert!(!result.contains(15.0, 15.0));
+        assert!(!result.contains(35.0, 15.0));
+    }
+
+    #[test]
+    fn simplify_coincident_edges() {
+        // Two rectangles sharing the edge x = 10 merge into one rectangle.
+        let mut path = Path::new();
+        path.add_rect_simple(crate::core::Rect::from_ltrb(0.0, 0.0, 10.0, 10.0));
+        path.add_rect_simple(crate::core::Rect::from_ltrb(10.0, 0.0, 20.0, 10.0));
+
+        let result = simplify(&path).unwrap();
+        assert!(result.contains(5.0, 5.0));
+        assert!(result.contains(15.0, 5.0));
+        // The shared edge is interior now, so points just either side of it
+        // are both filled.
+        assert!(result.contains(9.5, 5.0));
+        assert!(result.contains(10.5, 5.0));
+        assert!(!result.contains(25.0, 5.0));
+    }
+
+    #[test]
+    fn simplify_duplicate_contours_winding() {
+        // The same rectangle twice: winding sums to 2, still filled.
+        let mut path = Path::new();
+        path.add_rect_simple(crate::core::Rect::from_ltrb(0.0, 0.0, 10.0, 10.0));
+        path.add_rect_simple(crate::core::Rect::from_ltrb(0.0, 0.0, 10.0, 10.0));
+        path.set_fill_type(FillType::Winding);
+
+        let result = simplify(&path).unwrap();
+        assert!(result.contains(5.0, 5.0));
+        assert!(!result.contains(15.0, 5.0));
+    }
+
+    #[test]
+    fn simplify_rejects_non_finite() {
+        let mut path = Path::new();
+        path.move_to(0.0, 0.0);
+        path.line_to(f32::NAN, 10.0);
+        path.line_to(10.0, 10.0);
+        path.close();
+
+        assert!(simplify(&path).is_err());
+    }
+
+    #[test]
+    fn simplify_curved_contour_is_preserved() {
+        let mut path = Path::new();
+        path.move_to(0.0, 0.0);
+        path.quad_to(50.0, 100.0, 100.0, 0.0);
+        path.close();
+
+        let result = simplify(&path).unwrap();
+        assert!(!result.is_empty());
+        // The quad bulges toward +y, so the filled lobe sits below the chord
+        // that closes the contour.
+        assert!(result.contains(50.0, 25.0));
+        assert!(result.contains(50.0, 45.0));
+        assert!(!result.contains(50.0, -10.0));
+        assert!(!result.contains(5.0, 40.0));
+    }
+
+    #[test]
+    fn simplify_is_idempotent() {
+        let mut path = Path::new();
+        path.add_rect_simple(crate::core::Rect::from_ltrb(0.0, 0.0, 10.0, 10.0));
+        path.add_rect_simple(crate::core::Rect::from_ltrb(5.0, 5.0, 15.0, 15.0));
+
+        let once = simplify(&path).unwrap();
+        let twice = simplify(&once).unwrap();
+        for &(x, y) in &[
+            (2.0, 2.0),
+            (7.0, 7.0),
+            (12.0, 12.0),
+            (12.0, 2.0),
+            (2.0, 12.0),
+        ] {
+            assert_eq!(once.contains(x, y), twice.contains(x, y), "at ({x}, {y})");
         }
-        #[cfg(not(debug_assertions))]
-        {
-            let _success = simplify_debug(&path, &mut result, Some("test"));
-        }
+    }
+
+    #[test]
+    fn is_convex_detects_shapes() {
+        let mut tri = Path::new();
+        tri.move_to(0.0, 0.0);
+        tri.line_to(10.0, 0.0);
+        tri.line_to(5.0, 10.0);
+        tri.close();
+        assert!(is_convex(&tri));
+
+        let mut ell = Path::new();
+        ell.move_to(0.0, 0.0);
+        ell.line_to(10.0, 0.0);
+        ell.line_to(10.0, 5.0);
+        ell.line_to(5.0, 5.0);
+        ell.line_to(5.0, 10.0);
+        ell.line_to(0.0, 10.0);
+        ell.close();
+        assert!(!is_convex(&ell));
+
+        let mut two = Path::new();
+        two.add_rect_simple(crate::core::Rect::from_ltrb(0.0, 0.0, 1.0, 1.0));
+        two.add_rect_simple(crate::core::Rect::from_ltrb(5.0, 5.0, 6.0, 6.0));
+        assert!(!is_convex(&two));
     }
 }

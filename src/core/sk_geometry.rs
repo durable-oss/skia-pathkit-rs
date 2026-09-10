@@ -63,17 +63,24 @@ pub fn find_unit_quad_roots(a: Scalar, b: Scalar, c: Scalar, roots: &mut [Scalar
 }
 
 /// Helper: check if division produces a valid unit interval result.
-fn valid_unit_divide(numer: Scalar, denom: Scalar, ratio: &mut [Scalar]) -> usize {
+fn valid_unit_divide(mut numer: Scalar, mut denom: Scalar, ratio: &mut [Scalar]) -> usize {
+    // Negating both keeps the ratio unchanged while letting the comparisons
+    // below assume a non-negative numerator.
     if numer < 0.0 {
-        return 0;
+        numer = -numer;
+        denom = -denom;
     }
 
-    if scalar::nearly_zero(denom, None) || scalar::nearly_zero(numer, None) || numer >= denom {
+    if denom == 0.0 || numer == 0.0 || numer >= denom {
         return 0;
     }
 
     let r = numer / denom;
-    if !scalar::is_finite(r) || r <= 0.0 {
+    if r.is_nan() {
+        return 0;
+    }
+    // Catch underflow when numer is vastly smaller than denom.
+    if r == 0.0 {
         return 0;
     }
 
@@ -156,7 +163,12 @@ pub fn chop_quad_at_half(src: &[Point; 3], dst: &mut [Point; 5]) {
 pub fn find_quad_extrema(a: Scalar, b: Scalar, c: Scalar, t_value: &mut Scalar) -> bool {
     // Solve: At + B = 0, where A = a - 2b + c, B = b - a
     // t = -B / A = (b - a) / (a - 2b + c)
-    valid_unit_divide(a - b, a - b - b + c, &mut [*t_value]) != 0
+    let mut root = [0.0; 1];
+    if valid_unit_divide(a - b, a - b - b + c, &mut root) == 0 {
+        return false;
+    }
+    *t_value = root[0];
+    true
 }
 
 /// Chop quadratic at Y extremum. Returns 1 if chopped, 0 if already monotonic.
@@ -169,8 +181,11 @@ pub fn chop_quad_at_y_extrema(src: &[Point; 3], dst: &mut [Point; 5]) -> usize {
         let mut t_value = 0.0;
         if find_quad_extrema(a, b, c, &mut t_value) {
             chop_quad_at(src, dst, t_value);
-            // Ensure flat extrema
-            dst[2].y = (dst[1].y + dst[3].y) / 2.0;
+            // Snap both inner control points to the extremum's y so each
+            // half is exactly monotonic (SkGeometry's
+            // flatten_double_quad_extrema).
+            dst[1].y = dst[2].y;
+            dst[3].y = dst[2].y;
             return 1;
         }
         // Force monotonic if we couldn't compute t
@@ -184,12 +199,17 @@ pub fn chop_quad_at_y_extrema(src: &[Point; 3], dst: &mut [Point; 5]) -> usize {
 }
 
 /// Check if three values are not monotonic.
+///
+/// The sequence turns around when the two successive differences have
+/// opposing signs, so `bc` is negated when `ab` is negative to reduce the
+/// comparison to a single sign test.
 fn is_not_monotonic(a: Scalar, b: Scalar, c: Scalar) -> bool {
     let ab = a - b;
-    let bc = b - c;
-    let ab = ab.abs();
-    let bc = bc.abs();
-    scalar::nearly_zero(ab, None) || (ab > 0.0 && bc > 0.0) == (ab.signum() != bc.signum())
+    let mut bc = b - c;
+    if ab < 0.0 {
+        bc = -bc;
+    }
+    ab == 0.0 || bc < 0.0
 }
 
 /// Find parameter of maximum curvature for quadratic.
@@ -725,12 +745,12 @@ impl Conic {
 
     /// Find Y extremum parameter.
     pub fn find_y_extrema(&self, t: &mut Scalar) -> bool {
-        conic_find_extrema(&self.pts[0].y, self.w, t)
+        conic_find_extrema(&[self.pts[0].y, self.pts[1].y, self.pts[2].y], self.w, t)
     }
 
     /// Find X extremum parameter.
     pub fn find_x_extrema(&self, t: &mut Scalar) -> bool {
-        conic_find_extrema(&self.pts[0].x, self.w, t)
+        conic_find_extrema(&[self.pts[0].x, self.pts[1].x, self.pts[2].x], self.w, t)
     }
 
     /// Chop at Y extremum.
@@ -738,10 +758,13 @@ impl Conic {
         let mut t = 0.0;
         if self.find_y_extrema(&mut t) {
             if self.chop_at(t, dst) {
-                // Clean up extrema
-                dst[0].pts[2].y = dst[0].pts[1].y;
-                dst[1].pts[0].y = dst[0].pts[2].y;
-                dst[1].pts[1].y = dst[0].pts[2].y;
+                // t sits exactly at a y-extremum, so snap the control points
+                // around the split to the shared endpoint's y. Each half is
+                // then exactly monotonic in y.
+                let value = dst[0].pts[2].y;
+                dst[0].pts[1].y = value;
+                dst[1].pts[0].y = value;
+                dst[1].pts[1].y = value;
                 return true;
             }
         }
@@ -753,9 +776,11 @@ impl Conic {
         let mut t = 0.0;
         if self.find_x_extrema(&mut t) {
             if self.chop_at(t, dst) {
-                dst[0].pts[2].x = dst[0].pts[1].x;
-                dst[1].pts[0].x = dst[0].pts[2].x;
-                dst[1].pts[1].x = dst[0].pts[2].x;
+                // Mirror of chop_at_y_extrema for the x axis.
+                let value = dst[0].pts[2].x;
+                dst[0].pts[1].x = value;
+                dst[1].pts[0].x = value;
+                dst[1].pts[1].x = value;
                 return true;
             }
         }
@@ -815,7 +840,7 @@ impl Conic {
 }
 
 /// Helper for conic derivative extrema.
-pub fn conic_find_extrema(src: &Scalar, w: Scalar, t: &mut Scalar) -> bool {
+pub fn conic_find_extrema(src: &[Scalar; 3], w: Scalar, t: &mut Scalar) -> bool {
     let mut coeff = [0.0; 3];
     conic_deriv_coeff(src, w, &mut coeff);
 
@@ -830,13 +855,18 @@ pub fn conic_find_extrema(src: &Scalar, w: Scalar, t: &mut Scalar) -> bool {
     }
 }
 
-/// Compute conic derivative coefficients.
-fn conic_deriv_coeff(src: &Scalar, w: Scalar, coeff: &mut [Scalar; 3]) {
-    let p20 = src - src; // This would need proper indexing from 3D points
-                         // Simplified version - in C++ this operates on 1D array of coordinates
+/// Compute conic derivative coefficients for one axis.
+///
+/// `src` holds that axis's coordinate for the three control points. The C++
+/// takes a strided pointer into the point array and reads indices 0, 2 and 4;
+/// this takes the three values directly.
+fn conic_deriv_coeff(src: &[Scalar; 3], w: Scalar, coeff: &mut [Scalar; 3]) {
+    let p20 = src[2] - src[0];
+    let p10 = src[1] - src[0];
+    let w_p10 = w * p10;
     coeff[0] = w * p20 - p20;
-    coeff[1] = p20 - 2.0 * w * src;
-    coeff[2] = w * src;
+    coeff[1] = p20 - 2.0 * w_p10;
+    coeff[2] = w_p10;
 }
 
 /// Helper: find bisector of two vectors.
