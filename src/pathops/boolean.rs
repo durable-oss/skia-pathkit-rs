@@ -225,7 +225,8 @@ fn classify_edge(seg: [Point; 2], one: &Path, two: &Path, op: PathOp) -> Option<
     if len < MIN_EDGE {
         return None;
     }
-    let n = Point::new(-dir.y / len * OFFSET, dir.x / len * OFFSET);
+    let step = OFFSET.min(len * 0.5);
+    let n = Point::new(-dir.y / len * step, dir.x / len * step);
     let mid_pt = mid(seg[0], seg[1]);
     let left = mid_pt + n;
     let right = mid_pt - n;
