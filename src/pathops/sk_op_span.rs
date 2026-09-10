@@ -80,6 +80,12 @@ pub struct SkOpSpanBase {
     pub f_coin_end: Option<usize>, // circular coin list
     pub f_from_angle: Option<usize>,
     pub f_prev: Option<usize>,
+    /// Next span in the segment.
+    ///
+    /// C++ puts `fNext` on `SkOpSpan` rather than the base, since a terminal
+    /// span has nothing after it. The arena pools both roles together, so the
+    /// edge lives here and is `None` for the tail.
+    pub f_next: Option<usize>,
     pub f_span_adds: i32,
     pub f_aligned: bool,
     pub f_chased: bool,
@@ -111,6 +117,7 @@ impl SkOpSpanBase {
             f_coin_end: None,
             f_from_angle: None,
             f_prev: None,
+            f_next: None,
             f_span_adds: 0,
             f_aligned: false,
             f_chased: false,

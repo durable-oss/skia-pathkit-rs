@@ -78,3 +78,61 @@ them, note the omission.
 - Handles are newtypes; passing a `SpanId` where a `PtTId` is expected does
   not compile.
 - No behaviour change yet — nothing consumes the arena until item 03.
+
+---
+
+## Resolution (2026-09-10)
+
+Done, in `src/pathops/sk_op_arena.rs`.
+
+### Decisions, as asked
+
+**Handles are newtypes.** `SpanId`, `PtTId`, `SegmentId`, `AngleId`, `CoinId`,
+each wrapping a `u32`. Verified against the compiler, not just by reading:
+`arena.segment(span_id)` fails with
+
+```
+error[E0308]: mismatched types
+    |     let _ = a.segment(s);
+    |               ------- ^ expected `SegmentId`, found `SpanId`
+```
+
+**Accessor shape is `arena.span(id)`**, with `&OpArena` / `&mut OpArena` passed
+down. This is the invasive decision the item flagged, and it is now settled:
+every graph-walking method in items 03-07 takes the arena as a parameter. The
+alternative — methods on the node reaching for neighbours — cannot work, since
+a node has no way back to the pool.
+
+**Nothing is ever removed from a pool.** `SkOpPtT::f_deleted` retires a node in
+place; `deleted_nodes_keep_their_slot` pins that down.
+
+**One state object.** The arena carries `nested`, `allocated_op_span`,
+`winding_failed`, `phase`, the two graph roots and the debug id counters, so
+`sk_path_ops_types::OpGlobalState` is redundant. It is not deleted yet only
+because `sk_op_span::compute_wind_sum` still takes one; that goes with item 03.
+
+**Skipped, as agreed:** the `DEBUG_COIN` / `DEBUG_T_SECT_LOOP_COUNT`
+dictionaries.
+
+### Two things the item did not anticipate
+
+- **`SkOpSpanBase` had no `f_next`.** C++ puts `fNext` on the derived
+  `SkOpSpan`, since a terminal span has nothing after it. The arena pools both
+  roles in one `Vec`, so the edge has to live on the base and is `None` for the
+  tail. Added, with a comment saying why it differs from C++.
+- **`ArenaSegment` holds only the graph edges**, not the geometry.
+  `SkOpSegment` in `sk_op_segment.rs` keeps its points, verb and bounds. This
+  keeps item 02 from having to rewrite the geometry code before there is a
+  graph to hold it; item 05 joins the two.
+
+### Acceptance
+
+- `a_span_chain_walks_both_ways_and_returns`: two segments allocated, spans
+  linked, walked head to tail and back, arriving at the head it started from.
+- `sk_op_coincidence.rs`'s `global_state: Some(0), // placeholder arena index`
+  is gone. `SkOpCoincidence` now keeps a real list head and allocates records
+  through `arena.alloc_coin`, with `add_run` / `records` / `count` tested. Its
+  detection passes (`add_missing`, `expand`, `mark_collapsed`, `fix_up`) are
+  still stubs and now say so; that is item 06.
+- Handles are newtypes and the compiler enforces it.
+- No behaviour change: 758 tests pass, unchanged in outcome from before.
