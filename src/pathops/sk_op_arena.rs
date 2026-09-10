@@ -41,7 +41,7 @@
 //! effect on results.
 
 use super::sk_op_angle::SkOpAngle;
-use super::sk_op_span::{SkOpPtT, SkOpSpanBase};
+use super::sk_op_span::{is_zero_or_one, SkOpPtT, SkOpSpanBase, PK_MIN_S32};
 use super::sk_path_ops_types::OpPhase;
 
 /// Maximum number of times winding computation is retried before giving up.
@@ -934,6 +934,223 @@ impl OpArena {
             }
         }
         self.span(id).f_wind_sum
+    }
+
+
+    // --- merge and release (item 03, part 6) ------------------------------
+    //
+    // These mutate the graph while it is being walked, which is why C++ keeps
+    // them apart from the plain accessors and why they land last.
+
+    /// Returns true when `span`'s PtT node is in `id`'s ring.
+    ///
+    /// Port of `SkOpSpanBase::contains(const SkOpSpanBase*)`.
+    #[must_use]
+    pub fn span_contains_span(&self, id: SpanId, span: SpanId) -> bool {
+        let (Some(start), Some(check)) = (self.span_ptt(id), self.span_ptt(span)) else {
+            return false;
+        };
+        self.ptt_contains(start, check)
+    }
+
+    /// Sets the accumulated winding, flagging failure if it disagrees.
+    ///
+    /// Port of `SkOpSpan::setWindSum`. A second, different value means the
+    /// walk reached the same span two ways and disagreed, which is not
+    /// recoverable — C++ records it and returns rather than overwriting.
+    pub fn span_set_wind_sum(&mut self, id: SpanId, wind_sum: i32) {
+        debug_assert!(!self.span_is_final(id));
+        let current = self.span(id).f_wind_sum;
+        if current != PK_MIN_S32 && current != wind_sum {
+            self.set_winding_failed();
+            return;
+        }
+        self.span_mut(id).f_wind_sum = wind_sum;
+    }
+
+    /// Sets the accumulated opposite-operand winding, flagging disagreement.
+    ///
+    /// Port of `SkOpSpan::setOppSum`.
+    pub fn span_set_opp_sum(&mut self, id: SpanId, opp_sum: i32) {
+        debug_assert!(!self.span_is_final(id));
+        let current = self.span(id).f_opp_sum;
+        if current != PK_MIN_S32 && current != opp_sum {
+            self.set_winding_failed();
+            return;
+        }
+        self.span_mut(id).f_opp_sum = opp_sum;
+    }
+
+    /// Unlinks `id` from its segment, handing its PtT nodes to `kept`.
+    ///
+    /// Port of `SkOpSpan::release`. The span comes out of the chain, its own
+    /// PtT node is marked deleted, and every node in the ring that still
+    /// pointed at this span is repointed at `kept`'s span — otherwise those
+    /// nodes would refer to a span no longer in any chain.
+    ///
+    /// The `SkOpCoincidence::fixUp` call C++ makes here is not ported; that is
+    /// item 06. Coincident runs touching a released span are left stale.
+    pub fn span_release(&mut self, id: SpanId, kept: PtTId) {
+        debug_assert!(!self.span_is_final(id));
+        let prev = self.span_prev(id);
+        let next = self.span_next(id);
+        // Close the chain over the gap.
+        match (prev, next) {
+            (Some(p), Some(n)) => {
+                self.span_mut(p).f_next = Some(n.index());
+                self.span_mut(n).f_prev = Some(p.index());
+            }
+            (Some(p), None) => self.span_mut(p).f_next = None,
+            (None, Some(n)) => self.span_mut(n).f_prev = None,
+            (None, None) => {}
+        }
+        // Keep the segment's endpoints honest.
+        if let Some(seg) = self.span_segment(id) {
+            if self.segment(seg).f_head == Some(id) {
+                self.segment_mut(seg).f_head = next;
+            }
+            if self.segment(seg).f_tail == Some(id) {
+                self.segment_mut(seg).f_tail = prev;
+            }
+            self.segment_mut(seg).f_count -= 1;
+        }
+
+        let Some(own) = self.span_ptt(id) else {
+            return;
+        };
+        self.ptt_mut(own).set_deleted(true);
+        // Anything still pointing at this span now points at kept's.
+        let kept_span = self.ptt(kept).f_span;
+        for node in self.ptt_ring(own) {
+            if self.ptt(node).f_span == Some(id.index()) {
+                self.ptt_mut(node).f_span = kept_span;
+            }
+        }
+    }
+
+    /// Folds `span`'s PtT ring into `id`'s, releasing `span`.
+    ///
+    /// Port of `SkOpSpanBase::merge`. The two spans share a t value or a
+    /// point; this moves every node into one ring without trying to decide
+    /// which t or point is the better one.
+    ///
+    /// Returns false when the two were already in one ring, which C++ treats
+    /// as a case that should have been caught earlier.
+    pub fn span_merge(&mut self, id: SpanId, span: SpanId) -> bool {
+        let (Some(own), Some(span_ptt)) = (self.span_ptt(id), self.span_ptt(span)) else {
+            return false;
+        };
+        debug_assert_ne!(self.span(id).f_t, self.ptt(span_ptt).f_t);
+        self.span_release(span, own);
+        if self.span_contains_span(id, span) {
+            return false;
+        }
+        let remainder_start = self.ptt_next(span_ptt);
+        self.ptt_insert(own, span_ptt);
+
+        // Move the rest of span's old ring over, skipping any node that
+        // duplicates one already there on the same span at the same t.
+        let mut remainder = remainder_start;
+        let mut guard = 0;
+        while remainder != span_ptt {
+            let next = self.ptt_next(remainder);
+            let mut duplicate = false;
+            let mut compare = self.ptt_next(span_ptt);
+            let mut inner_guard = 0;
+            while compare != span_ptt {
+                let next_c = self.ptt_next(compare);
+                if self.ptt(next_c).f_span == self.ptt(remainder).f_span
+                    && self.ptt(next_c).f_t == self.ptt(remainder).f_t
+                {
+                    duplicate = true;
+                    break;
+                }
+                compare = next_c;
+                inner_guard += 1;
+                if inner_guard > self.pt_ts.len() {
+                    break;
+                }
+            }
+            if !duplicate {
+                self.ptt_insert(span_ptt, remainder);
+            }
+            remainder = next;
+            guard += 1;
+            if guard > self.pt_ts.len() {
+                break;
+            }
+        }
+        let adds = self.span(span).f_span_adds;
+        self.span_mut(id).f_span_adds += adds;
+        true
+    }
+
+    /// Releases spans of `opp` that duplicate spans of `id` on one segment.
+    ///
+    /// Port of `SkOpSpanBase::mergeMatches`. Where both rings hold a node on
+    /// the same segment, the one at an interior t is released in favour of the
+    /// one at an end; when both sit at an end the segment has collapsed to a
+    /// point and both nodes are deleted.
+    ///
+    /// `mark_all_done` reports a collapsed segment, since marking it is
+    /// `SkOpSegment`'s job and that is item 05.
+    ///
+    /// Returns false if the walk ran away, matching the C++ safety hatch.
+    pub fn span_merge_matches<F>(
+        &mut self,
+        id: SpanId,
+        opp: SpanId,
+        mut mark_all_done: F,
+    ) -> bool
+    where
+        F: FnMut(&mut OpArena, SegmentId),
+    {
+        let (Some(head), Some(opp_head)) = (self.span_ptt(id), self.span_ptt(opp)) else {
+            return false;
+        };
+        let mut safety_hatch = 1_000_000;
+        let mut test = head;
+        loop {
+            safety_hatch -= 1;
+            if safety_hatch == 0 {
+                return false;
+            }
+            let test_next = self.ptt_next(test);
+            if !self.ptt(test).f_deleted {
+                if let Some(segment) = self.ptt_segment(test) {
+                    let test_base = self.ptt(test).f_span.map(SpanId::new);
+                    for inner in self.ptt_ring(opp_head) {
+                        if self.ptt_segment(inner) != Some(segment)
+                            || self.ptt(inner).f_deleted
+                        {
+                            continue;
+                        }
+                        let Some(inner_base) = self.ptt(inner).f_span.map(SpanId::new) else {
+                            continue;
+                        };
+                        let inner_t = self.ptt(inner).f_t;
+                        let test_t = self.ptt(test).f_t;
+                        if !is_zero_or_one(inner_t) {
+                            self.span_release(inner_base, test);
+                        } else if !is_zero_or_one(test_t) {
+                            if let Some(tb) = test_base {
+                                self.span_release(tb, inner);
+                            }
+                        } else {
+                            // Both ends: the segment has collapsed.
+                            mark_all_done(self, segment);
+                            self.ptt_mut(test).set_deleted(true);
+                            self.ptt_mut(inner).set_deleted(true);
+                        }
+                    }
+                }
+            }
+            test = test_next;
+            if test == head {
+                break;
+            }
+        }
+        true
     }
 
     // --- graph roots -----------------------------------------------------
@@ -1838,5 +2055,171 @@ mod tests {
         assert!(!arena.span(spans[0]).chased());
         arena.span_mut(spans[0]).set_chased(true);
         assert!(arena.span(spans[0]).chased());
+    }
+
+    // --- merge and release (item 03, part 6) -----------------------------
+
+    #[test]
+    fn releasing_a_span_closes_the_chain_over_it() {
+        let mut arena = OpArena::new();
+        let (seg, spans) = segment_at_ts(&mut arena, &[0.0, 0.25, 0.5, 1.0]);
+        let keep = arena.span_ptt(spans[0]).expect("ptt");
+        arena.span_release(spans[1], keep);
+
+        // The chain skips the released span.
+        assert_eq!(arena.segment_spans(seg), vec![spans[0], spans[2], spans[3]]);
+        assert_eq!(arena.span_next(spans[0]), Some(spans[2]));
+        assert_eq!(arena.span_prev(spans[2]), Some(spans[0]));
+        assert_eq!(arena.segment(seg).f_count, 3);
+    }
+
+    #[test]
+    fn releasing_the_head_moves_the_head() {
+        let mut arena = OpArena::new();
+        let (seg, spans) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        let keep = arena.span_ptt(spans[1]).expect("ptt");
+        arena.span_release(spans[0], keep);
+        assert_eq!(arena.segment(seg).f_head, Some(spans[1]));
+        assert_eq!(arena.span_prev(spans[1]), None);
+        assert_eq!(arena.segment_spans(seg), vec![spans[1], spans[2]]);
+    }
+
+    #[test]
+    fn releasing_marks_the_ptt_deleted_and_repoints_the_ring() {
+        let mut arena = OpArena::new();
+        let (_, spans) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        let doomed = spans[1];
+        let own = arena.span_ptt(doomed).expect("ptt");
+        // A second node in the ring still pointing at the doomed span.
+        let alias = arena.alloc_ptt(SkOpPtT::new(0.5, Point::new(5.0, 0.0), Some(doomed.index())));
+        arena.ptt_init_ring(alias);
+        arena.ptt_insert(own, alias);
+
+        let keep = arena.span_ptt(spans[0]).expect("ptt");
+        arena.span_release(doomed, keep);
+
+        assert!(arena.ptt(own).f_deleted, "the span's own node is retired");
+        // The alias now points at the kept span rather than a span that is no
+        // longer in any chain.
+        assert_eq!(arena.ptt(alias).f_span, Some(spans[0].index()));
+    }
+
+    #[test]
+    fn set_wind_sum_flags_a_disagreement() {
+        let mut arena = OpArena::new();
+        let (_, spans) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        let s = spans[0];
+        arena.span_set_wind_sum(s, 3);
+        assert_eq!(arena.span(s).wind_sum(), 3);
+        assert!(!arena.winding_failed());
+
+        // Setting the same value again is fine.
+        arena.span_set_wind_sum(s, 3);
+        assert!(!arena.winding_failed());
+
+        // A different value means the walk reached here two ways and
+        // disagreed; the original is kept and failure is recorded.
+        arena.span_set_wind_sum(s, 5);
+        assert!(arena.winding_failed());
+        assert_eq!(arena.span(s).wind_sum(), 3, "the first value stands");
+    }
+
+    #[test]
+    fn set_opp_sum_flags_a_disagreement_too() {
+        let mut arena = OpArena::new();
+        let (_, spans) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        let s = spans[0];
+        arena.span_set_opp_sum(s, 1);
+        assert!(!arena.winding_failed());
+        arena.span_set_opp_sum(s, 2);
+        assert!(arena.winding_failed());
+        assert_eq!(arena.span(s).opp_sum(), 1);
+    }
+
+    #[test]
+    fn span_contains_span_looks_through_the_ptt_ring() {
+        let mut arena = OpArena::new();
+        let (_, a) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        let (_, b) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        assert!(!arena.span_contains_span(a[1], b[1]));
+
+        let pa = arena.span_ptt(a[1]).expect("ptt");
+        let pb = arena.span_ptt(b[1]).expect("ptt");
+        assert!(arena.ptt_add_opp(pa, pb));
+        assert!(arena.span_contains_span(a[1], b[1]));
+        assert!(arena.span_contains_span(b[1], a[1]));
+    }
+
+    #[test]
+    fn merging_two_spans_gathers_their_ptt_nodes() {
+        // Two segments crossing near the same place. Merging folds the second
+        // span's ring into the first and takes the second out of its chain.
+        let mut arena = OpArena::new();
+        let (seg_a, a) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        let (seg_b, b) = segment_at_ts(&mut arena, &[0.0, 0.25, 1.0]);
+        let _ = seg_a;
+
+        let before = arena.ptt_ring(arena.span_ptt(a[1]).expect("ptt")).len();
+        assert!(arena.span_merge(a[1], b[1]));
+
+        let after = arena.ptt_ring(arena.span_ptt(a[1]).expect("ptt")).len();
+        assert!(after > before, "the merged ring grew: {before} -> {after}");
+        // The merged-away span is out of its own chain.
+        assert_eq!(arena.segment_spans(seg_b), vec![b[0], b[2]]);
+    }
+
+    #[test]
+    fn merging_carries_the_span_add_count_across() {
+        let mut arena = OpArena::new();
+        let (_, a) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        let (_, b) = segment_at_ts(&mut arena, &[0.0, 0.25, 1.0]);
+        arena.span_mut(a[1]).bump_span_adds();
+        arena.span_mut(b[1]).bump_span_adds();
+        arena.span_mut(b[1]).bump_span_adds();
+
+        assert!(arena.span_merge(a[1], b[1]));
+        assert_eq!(arena.span(a[1]).f_span_adds, 3);
+    }
+
+    #[test]
+    fn merge_matches_releases_the_interior_duplicate() {
+        // Both rings hold a node on the same segment; the one at an interior
+        // t gives way to the one at an end.
+        let mut arena = OpArena::new();
+        let (seg, spans) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        let (_, other) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+
+        // Put an end node and an interior node of `seg` into two rings.
+        let end_ptt = arena.span_ptt(spans[0]).expect("ptt");
+        let mid_ptt = arena.span_ptt(spans[1]).expect("ptt");
+        let opp_ptt = arena.span_ptt(other[1]).expect("ptt");
+        assert!(arena.ptt_add_opp(opp_ptt, mid_ptt));
+
+        let mut collapsed = Vec::new();
+        assert!(arena.span_merge_matches(spans[0], other[1], |_, s| collapsed.push(s)));
+        let _ = end_ptt;
+
+        // The interior span was released, so the chain skips it.
+        assert_eq!(arena.segment_spans(seg), vec![spans[0], spans[2]]);
+        assert!(collapsed.is_empty(), "nothing collapsed here");
+    }
+
+    #[test]
+    fn merge_matches_reports_a_collapsed_segment() {
+        // Both nodes sit at ends of the same segment: it has no length left.
+        let mut arena = OpArena::new();
+        let (seg, spans) = segment_at_ts(&mut arena, &[0.0, 1.0]);
+        let (_, other) = segment_at_ts(&mut arena, &[0.0, 1.0]);
+
+        let head_ptt = arena.span_ptt(spans[0]).expect("ptt");
+        let opp_ptt = arena.span_ptt(other[0]).expect("ptt");
+        // Point the opposite node at this segment's tail, also an end.
+        let tail_ptt = arena.span_ptt(spans[1]).expect("ptt");
+        assert!(arena.ptt_add_opp(opp_ptt, tail_ptt));
+
+        let mut collapsed = Vec::new();
+        assert!(arena.span_merge_matches(spans[0], other[0], |_, s| collapsed.push(s)));
+        let _ = head_ptt;
+        assert_eq!(collapsed, vec![seg], "the segment collapsed to a point");
     }
 }
