@@ -346,6 +346,254 @@ impl OpArena {
         self.coins.len()
     }
 
+
+    // --- SkOpPtT circular list -------------------------------------------
+    //
+    // A point shared by several segments links one SkOpPtT per segment into a
+    // ring. Walking the ring is how the engine finds every segment through a
+    // point, so these are the first graph operations item 03 needs.
+
+    /// Returns the next node in `id`'s ring.
+    ///
+    /// A node not yet inserted into a ring points at itself, as after
+    /// `SkOpPtT::init`; this returns `id` in that case rather than `None`.
+    #[must_use]
+    pub fn ptt_next(&self, id: PtTId) -> PtTId {
+        match self.ptt(id).f_next {
+            Some(n) => PtTId::new(n),
+            None => id,
+        }
+    }
+
+    /// Closes `id` into a ring of one, as `SkOpPtT::init` leaves it.
+    pub fn ptt_init_ring(&mut self, id: PtTId) {
+        self.ptt_mut(id).f_next = Some(id.index());
+    }
+
+    /// Inserts `node` directly after `id` in the ring.
+    ///
+    /// Port of `SkOpPtT::insert`.
+    pub fn ptt_insert(&mut self, id: PtTId, node: PtTId) {
+        debug_assert_ne!(id, node, "a node cannot be inserted after itself");
+        let after = self.ptt(id).f_next;
+        self.ptt_mut(node).f_next = after.or(Some(id.index()));
+        self.ptt_mut(id).f_next = Some(node.index());
+    }
+
+    /// Returns every node in `id`'s ring, starting at `id`.
+    ///
+    /// Stops early rather than spinning if the links are corrupt.
+    #[must_use]
+    pub fn ptt_ring(&self, id: PtTId) -> Vec<PtTId> {
+        let mut out = vec![id];
+        let mut cur = self.ptt_next(id);
+        while cur != id {
+            out.push(cur);
+            if out.len() > self.pt_ts.len() {
+                break;
+            }
+            cur = self.ptt_next(cur);
+        }
+        out
+    }
+
+    /// Returns the node before `id` in its ring.
+    ///
+    /// Port of `SkOpPtT::prev`, which walks forward because the ring is singly
+    /// linked.
+    #[must_use]
+    pub fn ptt_prev(&self, id: PtTId) -> PtTId {
+        let mut result = id;
+        let mut next = self.ptt_next(id);
+        while next != id {
+            result = next;
+            next = self.ptt_next(next);
+        }
+        result
+    }
+
+    /// Returns true when `check` is somewhere in `id`'s ring, other than `id`.
+    ///
+    /// Port of `SkOpPtT::contains(const SkOpPtT*)`.
+    #[must_use]
+    pub fn ptt_contains(&self, id: PtTId, check: PtTId) -> bool {
+        let mut cur = self.ptt_next(id);
+        let mut guard = 0;
+        while cur != id {
+            if cur == check {
+                return true;
+            }
+            guard += 1;
+            if guard > self.pt_ts.len() {
+                break;
+            }
+            cur = self.ptt_next(cur);
+        }
+        false
+    }
+
+    /// Returns the first node in `id`'s ring on `segment` that is not deleted.
+    ///
+    /// Port of `SkOpPtT::find`. Unlike [`Self::ptt_contains_segment`] the walk
+    /// includes `id` itself.
+    #[must_use]
+    pub fn ptt_find(&self, id: PtTId, segment: SegmentId) -> Option<PtTId> {
+        for node in self.ptt_ring(id) {
+            let n = self.ptt(node);
+            if !n.f_deleted && self.ptt_segment(node) == Some(segment) {
+                return Some(node);
+            }
+        }
+        None
+    }
+
+    /// Returns a node on `check` elsewhere in `id`'s ring, if there is one.
+    ///
+    /// Port of `SkOpPtT::contains(const SkOpSegment*)`.
+    #[must_use]
+    pub fn ptt_contains_segment(&self, id: PtTId, check: SegmentId) -> Option<PtTId> {
+        let mut cur = self.ptt_next(id);
+        let mut guard = 0;
+        while cur != id {
+            if !self.ptt(cur).f_deleted && self.ptt_segment(cur) == Some(check) {
+                return Some(cur);
+            }
+            guard += 1;
+            if guard > self.pt_ts.len() {
+                break;
+            }
+            cur = self.ptt_next(cur);
+        }
+        None
+    }
+
+    /// Returns true when `id`'s ring holds a node on `segment` at `t`.
+    ///
+    /// Port of `SkOpPtT::contains(const SkOpSegment*, double)`.
+    #[must_use]
+    pub fn ptt_contains_t(&self, id: PtTId, segment: SegmentId, t: f32) -> bool {
+        let mut cur = self.ptt_next(id);
+        let mut guard = 0;
+        while cur != id {
+            if self.ptt(cur).f_t == t && self.ptt_segment(cur) == Some(segment) {
+                return true;
+            }
+            guard += 1;
+            if guard > self.pt_ts.len() {
+                break;
+            }
+            cur = self.ptt_next(cur);
+        }
+        false
+    }
+
+    /// Returns the span `id` belongs to.
+    ///
+    /// Port of `SkOpPtT::span`.
+    #[must_use]
+    pub fn ptt_span(&self, id: PtTId) -> Option<SpanId> {
+        self.ptt(id).f_span.map(SpanId::new)
+    }
+
+    /// Returns the segment `id` sits on, by way of its span.
+    ///
+    /// Port of `SkOpPtT::segment`.
+    #[must_use]
+    pub fn ptt_segment(&self, id: PtTId) -> Option<SegmentId> {
+        let span = self.ptt_span(id)?;
+        self.span(span).f_segment.map(SegmentId::new)
+    }
+
+    /// Returns a live node for `id`, which may be `id` itself.
+    ///
+    /// Port of `SkOpPtT::active`. A deleted node yields another node on the
+    /// same span that is not deleted, or `None` when there is none — which the
+    /// caller must treat as a failure rather than carrying on.
+    #[must_use]
+    pub fn ptt_active(&self, id: PtTId) -> Option<PtTId> {
+        if !self.ptt(id).f_deleted {
+            return Some(id);
+        }
+        let span = self.ptt(id).f_span;
+        let mut cur = self.ptt_next(id);
+        let mut guard = 0;
+        while cur != id {
+            let n = self.ptt(cur);
+            if n.f_span == span && !n.f_deleted {
+                return Some(cur);
+            }
+            guard += 1;
+            if guard > self.pt_ts.len() {
+                break;
+            }
+            cur = self.ptt_next(cur);
+        }
+        None
+    }
+
+    /// Returns the node whose `f_next` points at `opp`, or `None` when `id` is
+    /// already inside `opp`'s ring.
+    ///
+    /// Port of `SkOpPtT::oppPrev`. Returning `None` is how [`Self::ptt_add_opp`]
+    /// learns that the two rings are already joined.
+    #[must_use]
+    pub fn ptt_opp_prev(&self, id: PtTId, opp: PtTId) -> Option<PtTId> {
+        let mut opp_prev = self.ptt_next(opp);
+        if opp_prev == id {
+            return None;
+        }
+        while self.ptt_next(opp_prev) != opp {
+            opp_prev = self.ptt_next(opp_prev);
+            if opp_prev == id {
+                return None;
+            }
+        }
+        Some(opp_prev)
+    }
+
+    /// Splices `opp`'s ring into `id`'s.
+    ///
+    /// Port of `SkOpPtT::addOpp`. Returns false when the two are already one
+    /// ring, which is not an error: the point is already shared.
+    pub fn ptt_add_opp(&mut self, id: PtTId, opp: PtTId) -> bool {
+        let Some(opp_prev) = self.ptt_opp_prev(id, opp) else {
+            return false;
+        };
+        let old_next = self.ptt_next(id);
+        self.ptt_mut(id).f_next = Some(opp.index());
+        self.ptt_mut(opp_prev).f_next = Some(old_next.index());
+        true
+    }
+
+    /// Returns true when `id` is not the node its own span points at.
+    ///
+    /// Port of `SkOpPtT::alias`.
+    #[must_use]
+    pub fn ptt_is_alias(&self, id: PtTId) -> bool {
+        match self.ptt_span(id) {
+            Some(span) => self.span(span).f_ptt != Some(id.index()),
+            None => false,
+        }
+    }
+
+    /// Returns true when `id` is the node at one end of its segment.
+    ///
+    /// Port of `SkOpPtT::onEnd`.
+    #[must_use]
+    pub fn ptt_on_end(&self, id: PtTId) -> bool {
+        let Some(span) = self.ptt_span(id) else {
+            return false;
+        };
+        if self.span(span).f_ptt != Some(id.index()) {
+            return false;
+        }
+        let Some(seg) = self.ptt_segment(id) else {
+            return false;
+        };
+        let s = self.segment(seg);
+        s.f_head == Some(span) || s.f_tail == Some(span)
+    }
+
     // --- graph roots -----------------------------------------------------
 
     /// Returns the first segment of the contour list.
@@ -702,5 +950,232 @@ mod tests {
         // a and c are untouched and still where they were.
         assert!((arena.ptt(a).f_t - 0.0).abs() < 1e-9);
         assert!((arena.ptt(c).f_t - 1.0).abs() < 1e-9);
+    }
+
+    // --- SkOpPtT ring (item 03, part 1) ----------------------------------
+
+    /// Allocates a span on `seg` with its own PtT node, and returns both.
+    fn span_with_ptt(arena: &mut OpArena, seg: SegmentId, t: f32) -> (SpanId, PtTId) {
+        let span = arena.alloc_span(SkOpSpanBase::new(
+            t,
+            Point::new(t * 10.0, 0.0),
+            Some(seg.index()),
+        ));
+        let ptt = arena.alloc_ptt(SkOpPtT::new(t, Point::new(t * 10.0, 0.0), Some(span.index())));
+        arena.ptt_init_ring(ptt);
+        arena.span_mut(span).f_ptt = Some(ptt.index());
+        (span, ptt)
+    }
+
+    #[test]
+    fn a_fresh_ptt_is_a_ring_of_one() {
+        let mut arena = OpArena::new();
+        let seg = arena.alloc_segment(ArenaSegment::default());
+        let (_, p) = span_with_ptt(&mut arena, seg, 0.5);
+        assert_eq!(arena.ptt_next(p), p);
+        assert_eq!(arena.ptt_prev(p), p);
+        assert_eq!(arena.ptt_ring(p), vec![p]);
+    }
+
+    #[test]
+    fn a_ptt_ring_of_three_round_trips() {
+        // The acceptance case for this part.
+        let mut arena = OpArena::new();
+        let seg = arena.alloc_segment(ArenaSegment::default());
+        let (_, a) = span_with_ptt(&mut arena, seg, 0.0);
+        let (_, b) = span_with_ptt(&mut arena, seg, 0.5);
+        let (_, c) = span_with_ptt(&mut arena, seg, 1.0);
+        arena.ptt_insert(a, b);
+        arena.ptt_insert(b, c);
+
+        assert_eq!(arena.ptt_ring(a), vec![a, b, c]);
+        // Walking next three times returns to the start.
+        let mut cur = a;
+        for _ in 0..3 {
+            cur = arena.ptt_next(cur);
+        }
+        assert_eq!(cur, a);
+        // And prev is the node whose next is this one.
+        assert_eq!(arena.ptt_prev(a), c);
+        assert_eq!(arena.ptt_prev(b), a);
+        assert_eq!(arena.ptt_prev(c), b);
+    }
+
+    #[test]
+    fn ptt_contains_finds_ring_members_but_not_itself() {
+        let mut arena = OpArena::new();
+        let seg = arena.alloc_segment(ArenaSegment::default());
+        let (_, a) = span_with_ptt(&mut arena, seg, 0.0);
+        let (_, b) = span_with_ptt(&mut arena, seg, 0.5);
+        let (_, outside) = span_with_ptt(&mut arena, seg, 1.0);
+        arena.ptt_insert(a, b);
+
+        assert!(arena.ptt_contains(a, b));
+        assert!(arena.ptt_contains(b, a));
+        assert!(!arena.ptt_contains(a, a), "the walk excludes the start");
+        assert!(!arena.ptt_contains(a, outside));
+    }
+
+    #[test]
+    fn a_ptt_reaches_its_span_and_segment() {
+        let mut arena = OpArena::new();
+        let seg = arena.alloc_segment(ArenaSegment::default());
+        let (span, ptt) = span_with_ptt(&mut arena, seg, 0.25);
+        assert_eq!(arena.ptt_span(ptt), Some(span));
+        assert_eq!(arena.ptt_segment(ptt), Some(seg));
+    }
+
+    #[test]
+    fn ptt_find_locates_a_node_on_a_given_segment() {
+        let mut arena = OpArena::new();
+        let seg_a = arena.alloc_segment(ArenaSegment::default());
+        let seg_b = arena.alloc_segment(ArenaSegment::default());
+        let (_, a) = span_with_ptt(&mut arena, seg_a, 0.4);
+        let (_, b) = span_with_ptt(&mut arena, seg_b, 0.6);
+        arena.ptt_insert(a, b);
+
+        assert_eq!(arena.ptt_find(a, seg_a), Some(a));
+        assert_eq!(arena.ptt_find(a, seg_b), Some(b));
+        // contains_segment skips the start, so it will not report seg_a here.
+        assert_eq!(arena.ptt_contains_segment(a, seg_b), Some(b));
+        assert_eq!(arena.ptt_contains_segment(a, seg_a), None);
+    }
+
+    #[test]
+    fn ptt_find_skips_deleted_nodes() {
+        let mut arena = OpArena::new();
+        let seg_a = arena.alloc_segment(ArenaSegment::default());
+        let seg_b = arena.alloc_segment(ArenaSegment::default());
+        let (_, a) = span_with_ptt(&mut arena, seg_a, 0.4);
+        let (_, dead) = span_with_ptt(&mut arena, seg_b, 0.6);
+        let (_, live) = span_with_ptt(&mut arena, seg_b, 0.7);
+        arena.ptt_insert(a, dead);
+        arena.ptt_insert(dead, live);
+        arena.ptt_mut(dead).set_deleted(true);
+
+        assert_eq!(arena.ptt_find(a, seg_b), Some(live));
+        assert_eq!(arena.ptt_contains_segment(a, seg_b), Some(live));
+    }
+
+    #[test]
+    fn ptt_contains_t_matches_segment_and_parameter() {
+        let mut arena = OpArena::new();
+        let seg_a = arena.alloc_segment(ArenaSegment::default());
+        let seg_b = arena.alloc_segment(ArenaSegment::default());
+        let (_, a) = span_with_ptt(&mut arena, seg_a, 0.4);
+        let (_, b) = span_with_ptt(&mut arena, seg_b, 0.6);
+        arena.ptt_insert(a, b);
+
+        assert!(arena.ptt_contains_t(a, seg_b, 0.6));
+        assert!(!arena.ptt_contains_t(a, seg_b, 0.5), "wrong t");
+        assert!(!arena.ptt_contains_t(a, seg_a, 0.6), "wrong segment");
+    }
+
+    #[test]
+    fn ptt_active_yields_a_live_node_on_the_same_span() {
+        let mut arena = OpArena::new();
+        let seg = arena.alloc_segment(ArenaSegment::default());
+        let (span, dead) = span_with_ptt(&mut arena, seg, 0.5);
+        // A second node on the same span, alive.
+        let live = arena.alloc_ptt(SkOpPtT::new(0.5, Point::new(5.0, 0.0), Some(span.index())));
+        arena.ptt_init_ring(live);
+        arena.ptt_insert(dead, live);
+        arena.ptt_mut(dead).set_deleted(true);
+
+        assert_eq!(arena.ptt_active(live), Some(live), "a live node is its own");
+        assert_eq!(arena.ptt_active(dead), Some(live));
+    }
+
+    #[test]
+    fn ptt_active_gives_up_when_every_node_on_the_span_is_gone() {
+        let mut arena = OpArena::new();
+        let seg = arena.alloc_segment(ArenaSegment::default());
+        let (_, only) = span_with_ptt(&mut arena, seg, 0.5);
+        arena.ptt_mut(only).set_deleted(true);
+        assert_eq!(arena.ptt_active(only), None);
+    }
+
+    #[test]
+    fn add_opp_joins_two_rings() {
+        // Two segments crossing at a point: each has its own ring, and
+        // add_opp splices them so one walk reaches both.
+        let mut arena = OpArena::new();
+        let seg_a = arena.alloc_segment(ArenaSegment::default());
+        let seg_b = arena.alloc_segment(ArenaSegment::default());
+        let (_, a0) = span_with_ptt(&mut arena, seg_a, 0.3);
+        let (_, a1) = span_with_ptt(&mut arena, seg_a, 0.4);
+        arena.ptt_insert(a0, a1);
+        let (_, b0) = span_with_ptt(&mut arena, seg_b, 0.7);
+        let (_, b1) = span_with_ptt(&mut arena, seg_b, 0.8);
+        arena.ptt_insert(b0, b1);
+
+        assert_eq!(arena.ptt_ring(a0).len(), 2);
+        assert_eq!(arena.ptt_ring(b0).len(), 2);
+
+        assert!(arena.ptt_add_opp(a0, b0));
+        let joined = arena.ptt_ring(a0);
+        assert_eq!(joined.len(), 4, "all four nodes are now one ring: {joined:?}");
+        for id in [a0, a1, b0, b1] {
+            assert!(joined.contains(&id), "{id:?} missing from the joined ring");
+        }
+    }
+
+    #[test]
+    fn add_opp_reports_rings_that_are_already_joined() {
+        let mut arena = OpArena::new();
+        let seg = arena.alloc_segment(ArenaSegment::default());
+        let (_, a) = span_with_ptt(&mut arena, seg, 0.0);
+        let (_, b) = span_with_ptt(&mut arena, seg, 0.5);
+        arena.ptt_insert(a, b);
+        // Already one ring, so there is nothing to splice.
+        assert!(!arena.ptt_add_opp(a, b));
+        assert_eq!(arena.ptt_ring(a).len(), 2);
+    }
+
+    #[test]
+    fn opp_prev_finds_the_node_pointing_at_the_target() {
+        let mut arena = OpArena::new();
+        let seg_a = arena.alloc_segment(ArenaSegment::default());
+        let seg_b = arena.alloc_segment(ArenaSegment::default());
+        let (_, a) = span_with_ptt(&mut arena, seg_a, 0.3);
+        let (_, b0) = span_with_ptt(&mut arena, seg_b, 0.7);
+        let (_, b1) = span_with_ptt(&mut arena, seg_b, 0.8);
+        arena.ptt_insert(b0, b1);
+
+        // b1 is the node whose next is b0.
+        assert_eq!(arena.ptt_opp_prev(a, b0), Some(b1));
+        // Once joined, a is inside b's ring and there is no opp prev.
+        assert!(arena.ptt_add_opp(a, b0));
+        assert_eq!(arena.ptt_opp_prev(a, b0), None);
+    }
+
+    #[test]
+    fn a_span_knows_which_ptt_is_its_own() {
+        let mut arena = OpArena::new();
+        let seg = arena.alloc_segment(ArenaSegment::default());
+        let (span, own) = span_with_ptt(&mut arena, seg, 0.5);
+        // A second node on the same span is an alias, not the span's own.
+        let alias = arena.alloc_ptt(SkOpPtT::new(0.5, Point::new(5.0, 0.0), Some(span.index())));
+        arena.ptt_init_ring(alias);
+        arena.ptt_insert(own, alias);
+
+        assert!(!arena.ptt_is_alias(own));
+        assert!(arena.ptt_is_alias(alias));
+    }
+
+    #[test]
+    fn on_end_is_true_only_at_the_segment_ends() {
+        let mut arena = OpArena::new();
+        let seg = arena.alloc_segment(ArenaSegment::default());
+        let (head, head_ptt) = span_with_ptt(&mut arena, seg, 0.0);
+        let (mid, mid_ptt) = span_with_ptt(&mut arena, seg, 0.5);
+        let (tail, tail_ptt) = span_with_ptt(&mut arena, seg, 1.0);
+        arena.segment_mut(seg).f_head = Some(head);
+        arena.segment_mut(seg).f_tail = Some(tail);
+        let _ = mid;
+
+        assert!(arena.ptt_on_end(head_ptt));
+        assert!(arena.ptt_on_end(tail_ptt));
+        assert!(!arena.ptt_on_end(mid_ptt));
     }
 }

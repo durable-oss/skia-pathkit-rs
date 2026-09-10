@@ -53,17 +53,12 @@ pub const PK_MIN_S32: i32 = i32::MIN;
 pub const MAX_WINDING_TRIES: i32 = 100;
 
 /// Collapsed status for spans
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Collapsed {
+    #[default]
     No,
     Yes,
     Error,
-}
-
-impl Default for Collapsed {
-    fn default() -> Self {
-        Collapsed::No
-    }
 }
 
 /// Helper function to check if a scalar is zero or one
@@ -77,6 +72,10 @@ pub struct SkOpSpanBase {
     pub f_t: Scalar,
     pub f_pt: Point,
     pub f_segment: Option<usize>, // arena index
+    /// This span's own point-and-t node, the head of its ring.
+    ///
+    /// Port of `SkOpSpanBase::fPtT`.
+    pub f_ptt: Option<usize>,
     pub f_coin_end: Option<usize>, // circular coin list
     pub f_from_angle: Option<usize>,
     pub f_prev: Option<usize>,
@@ -114,6 +113,7 @@ impl SkOpSpanBase {
             f_t: t,
             f_pt: pt,
             f_segment: segment,
+            f_ptt: None,
             f_coin_end: None,
             f_from_angle: None,
             f_prev: None,
