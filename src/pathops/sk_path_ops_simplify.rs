@@ -42,11 +42,25 @@ const MIN_EDGE: f32 = 1e-4;
 /// inside the filled region.
 const OFFSET: f32 = 0.25;
 
+/// Smallest perpendicular offset tried when sampling an edge's two sides.
+///
+/// Below this the two sample points are close enough to the edge that
+/// `contains` can no longer tell them apart from a point on the boundary
+/// itself, so shrinking further buys nothing.
+const PROBE_MIN: f32 = 1e-3;
+
+/// Factor by which the sampling offset shrinks on each retry.
+const PROBE_SHRINK: f32 = 0.25;
+
 /// Parametric tolerance for merging near-duplicate split points.
 const T_EPS: f32 = 1e-6;
 
 /// Quantization step for matching endpoints when assembling contours.
 const WELD: f32 = 256.0;
+
+/// Smallest area an unclosed run must enclose before it is closed up and kept
+/// rather than discarded.
+const MIN_AREA: f32 = 1e-3;
 
 /// Simplifies `path`, returning a path that fills the same region with
 /// non-overlapping, non-self-intersecting contours.
@@ -486,17 +500,33 @@ fn collect_boundary(pieces: &[[Point; 2]], path: &Path, even_odd: bool) -> Vec<E
         if len < MIN_EDGE {
             continue;
         }
+        let mid_pt = mid(seg[0], seg[1]);
         // Step perpendicular to the piece, scaled down for very short pieces
         // so the sample points stay near this edge rather than landing across
         // a neighbouring one.
-        let step = OFFSET.min(len * 0.5);
-        let n = Point::new(-dir.y / len * step, dir.x / len * step);
-        let mid_pt = mid(seg[0], seg[1]);
-        let in_left = probe.contains((mid_pt + n).x, (mid_pt + n).y);
-        let in_right = probe.contains((mid_pt - n).x, (mid_pt - n).y);
-        if in_left == in_right {
-            continue;
+        //
+        // A single fixed offset cannot classify a piece bounding a region
+        // narrower than the step: both samples land outside and the piece is
+        // discarded, which breaks the ring the pieces form and leaves
+        // `assemble` with nothing it can close. Retry at successively finer
+        // offsets so slivers are resolved at whatever width they actually
+        // have.
+        let unit = Point::new(-dir.y / len, dir.x / len);
+        let mut step = OFFSET.min(len * 0.5);
+        let mut sides = None;
+        while step >= PROBE_MIN {
+            let n = Point::new(unit.x * step, unit.y * step);
+            let l = probe.contains((mid_pt + n).x, (mid_pt + n).y);
+            let r = probe.contains((mid_pt - n).x, (mid_pt - n).y);
+            if l != r {
+                sides = Some(l);
+                break;
+            }
+            step *= PROBE_SHRINK;
         }
+        let Some(in_left) = sides else {
+            continue;
+        };
         if in_left {
             edges.push(Edge {
                 from: seg[0],
@@ -549,6 +579,21 @@ fn dedup_coincident(edges: Vec<Edge>) -> Vec<Edge> {
         .collect()
 }
 
+/// Twice the signed area enclosed by the closed polygon through `verts`.
+///
+/// Positive for counter-clockwise winding in a y-up frame. Used only for its
+/// magnitude, to tell a run that bounds real fill from one that doubles back
+/// on itself and encloses nothing.
+fn signed_area(verts: &[Point]) -> f32 {
+    let mut acc = 0.0;
+    for i in 0..verts.len() {
+        let a = verts[i];
+        let b = verts[(i + 1) % verts.len()];
+        acc += a.cross(b);
+    }
+    acc * 0.5
+}
+
 /// Quantizes a point so endpoints that should coincide compare equal.
 fn key(p: Point) -> (i32, i32) {
     ((p.x * WELD).round() as i32, (p.y * WELD).round() as i32)
@@ -557,9 +602,15 @@ fn key(p: Point) -> (i32, i32) {
 /// Chains boundary edges into closed contours and writes them to a path.
 ///
 /// At each vertex the most sharply left-turning unused edge is taken, which
-/// walks the outline of the region rather than cutting across it. Edges that
-/// cannot be closed into a contour are dropped, mirroring the leftover
-/// handling in Skia's `SkPathWriter::assemble`.
+/// walks the outline of the region rather than cutting across it.
+///
+/// A run that never returns to its origin is closed by joining its two ends,
+/// provided it encloses real area. This mirrors Skia's
+/// `SkPathWriter::assemble`, which links leftover partial contours to their
+/// nearest free endpoints instead of discarding them: dropping such a run
+/// would delete a filled region the input actually had, and a single dropped
+/// piece anywhere on a ring would otherwise take the whole contour with it.
+/// Runs that enclose no area are still dropped, since they contribute no fill.
 fn assemble(edges: &[Edge], fill_type: FillType) -> Path {
     let n = edges.len();
     let mut outgoing: std::collections::HashMap<(i32, i32), Vec<usize>> =
@@ -612,7 +663,10 @@ fn assemble(edges: &[Edge], fill_type: FillType) -> Path {
                 break;
             }
         }
-        if !closed || verts.len() < 3 {
+        if verts.len() < 3 {
+            continue;
+        }
+        if !closed && signed_area(&verts).abs() < MIN_AREA {
             continue;
         }
         path.move_to(verts[0].x, verts[0].y);
@@ -870,6 +924,146 @@ mod tests {
         assert!(result.contains(50.0, 45.0));
         assert!(!result.contains(50.0, -10.0));
         assert!(!result.contains(5.0, 40.0));
+    }
+
+    /// A contour ending in a near-degenerate spike used to vanish entirely.
+    ///
+    /// The spike's two flanks bound a region thinner than the fixed
+    /// perpendicular offset `collect_boundary` sampled at, so both samples read
+    /// "outside" and the piece was discarded. That broke the ring of boundary
+    /// pieces, and `assemble`, which kept only runs that returned to their
+    /// origin, then emitted nothing at all.
+    #[test]
+    fn simplify_keeps_contour_with_degenerate_spike() {
+        // Reduced from a font glyph's swept stroke: a body with a hairline
+        // spike at the tail.
+        const PTS: &[(f32, f32)] = &[
+            (265.2254, 646.6782),
+            (293.8087, 654.6358),
+            (324.1818, 659.5676),
+            (355.7458, 661.2591),
+            (387.9075, 659.524),
+            (419.1481, 654.2556),
+            (448.0477, 645.9188),
+            (474.1282, 634.8705),
+            (496.9165, 621.5131),
+            (516.2436, 606.6158),
+            (531.5778, 590.3043),
+            (542.7201, 573.075),
+            (549.6874, 555.2849),
+            (552.4633, 537.5287),
+            (551.3721, 520.1179),
+            (546.4543, 502.7428),
+            (537.4683, 485.4285),
+            (524.5909, 468.1683),
+            (507.2624, 451.7708),
+            (485.5978, 436.8444),
+            (459.8072, 423.953),
+            (450.3936, 421.8325),
+            (429.5548, 418.3125),
+            (403.0803, 414.4648),
+            (374.814, 410.7244),
+            (348.3902, 407.4814),
+            (327.4115, 405.1188),
+            (315.6939, 404.0379),
+            (322.0133, 356.9807),
+            (321.526, 360.3026),
+        ];
+
+        let mut path = Path::new();
+        path.move_to(PTS[0].0, PTS[0].1);
+        for p in &PTS[1..] {
+            path.line_to(p.0, p.1);
+        }
+        path.close();
+
+        let simplified = simplify(&path).unwrap();
+        assert!(
+            !simplified.is_empty(),
+            "a contour with a large filled area must not simplify to nothing"
+        );
+
+        // The fill must be preserved, not merely non-empty. Sample the
+        // bounding box and require every filled point to survive.
+        for i in 0..120 {
+            for j in 0..120 {
+                let x = 250.0 + 320.0 * (i as f32 + 0.5) / 120.0;
+                let y = 340.0 + 340.0 * (j as f32 + 0.5) / 120.0;
+                if path.contains(x, y) {
+                    assert!(
+                        simplified.contains(x, y),
+                        "point ({x}, {y}) was filled before simplify and is not after"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A wedge whose interior is far thinner than the default sampling offset.
+    #[test]
+    fn simplify_keeps_sliver_thinner_than_probe_offset() {
+        let mut path = Path::new();
+        path.move_to(0.0, 0.0);
+        path.line_to(100.0, 0.0);
+        path.line_to(100.0, 0.01);
+        path.line_to(0.0, 0.02);
+        path.close();
+
+        let simplified = simplify(&path).unwrap();
+        assert!(!simplified.is_empty());
+    }
+
+    /// A closed contour whose final segment cuts back across the body.
+    #[test]
+    fn simplify_contour_whose_close_crosses_body() {
+        let mut path = Path::new();
+        path.move_to(100.0, 100.0);
+        path.line_to(300.0, 100.0);
+        path.line_to(300.0, 300.0);
+        path.line_to(150.0, 300.0);
+        path.line_to(150.0, 200.0);
+        path.line_to(250.0, 200.0);
+        path.line_to(250.0, 50.0);
+        path.close();
+
+        let simplified = simplify(&path).unwrap();
+        assert!(!simplified.is_empty());
+
+        // Every point the input filled is still filled.
+        for i in 0..80 {
+            for j in 0..80 {
+                let x = 90.0 + 230.0 * (i as f32 + 0.5) / 80.0;
+                let y = 40.0 + 280.0 * (j as f32 + 0.5) / 80.0;
+                if path.contains(x, y) {
+                    assert!(simplified.contains(x, y), "lost fill at ({x}, {y})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn signed_area_matches_shoelace() {
+        // Unit square, counter-clockwise in a y-up frame.
+        let square = [
+            Point::new(0.0, 0.0),
+            Point::new(1.0, 0.0),
+            Point::new(1.0, 1.0),
+            Point::new(0.0, 1.0),
+        ];
+        assert!((signed_area(&square) - 1.0).abs() < 1e-6);
+
+        // Reversing the winding flips the sign.
+        let mut reversed = square;
+        reversed.reverse();
+        assert!((signed_area(&reversed) + 1.0).abs() < 1e-6);
+
+        // A run doubling back on itself encloses nothing.
+        let hair = [
+            Point::new(0.0, 0.0),
+            Point::new(1.0, 0.0),
+            Point::new(0.0, 0.0),
+        ];
+        assert!(signed_area(&hair).abs() < 1e-6);
     }
 
     #[test]
