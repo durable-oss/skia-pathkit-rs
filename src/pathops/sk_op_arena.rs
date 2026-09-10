@@ -115,6 +115,23 @@ pub fn use_inner_winding(outer_winding: i32, inner_winding: i32) -> bool {
     }
 }
 
+/// Where a chase walk currently stands.
+///
+/// Port of the `startPtr`, `stepPtr`, `minPtr` and `last` out-parameters that
+/// `SkOpSegment::nextChase` writes back through. Bundling them keeps the call
+/// sites from juggling four mutable references.
+#[derive(Debug, Clone, Copy)]
+pub struct ChaseState {
+    /// The span the walk is at.
+    pub start: SpanId,
+    /// Which way it is travelling: 1 forwards, -1 backwards.
+    pub step: i32,
+    /// The lesser span of the current pair.
+    pub min: Option<SpanId>,
+    /// Where the walk stopped, when it could not continue.
+    pub last: Option<SpanId>,
+}
+
 /// Returns true when two points are equal to within the grid tolerance.
 ///
 /// Port of `SkDPoint::ApproximatelyEqual`.
@@ -1423,6 +1440,224 @@ impl OpArena {
     #[must_use]
     pub fn update_opp_winding_reverse(&self, start: SpanId, end: SpanId) -> i32 {
         self.update_opp_winding(end, start)
+    }
+
+
+    // --- marking and chasing (item 05, part 5) ----------------------------
+
+    /// Marks `span` resolved, counting it against its segment.
+    ///
+    /// Port of `SkOpSegment::markDone`. Already-done spans are left alone, so
+    /// the segment's count stays honest under repeated calls.
+    pub fn mark_done(&mut self, span: SpanId) {
+        if self.span(span).done() {
+            return;
+        }
+        self.span_mut(span).set_done(true);
+        if let Some(seg) = self.span_segment(span) {
+            self.segment_mut(seg).f_done_count += 1;
+        }
+    }
+
+    /// Records `winding` on `span`, unless it is already resolved.
+    ///
+    /// Port of `SkOpSegment::markWinding(SkOpSpan*, int)`.
+    pub fn mark_winding(&mut self, span: SpanId, winding: i32) -> bool {
+        debug_assert_ne!(winding, 0, "marking a zero winding says nothing");
+        if self.span(span).done() {
+            return false;
+        }
+        self.span_set_wind_sum(span, winding);
+        true
+    }
+
+    /// Records both windings on `span`, unless it is already resolved.
+    ///
+    /// Port of `SkOpSegment::markWinding(SkOpSpan*, int, int)`.
+    pub fn mark_winding_opp(&mut self, span: SpanId, winding: i32, opp_winding: i32) -> bool {
+        debug_assert!(
+            winding != 0 || opp_winding != 0,
+            "marking two zero windings says nothing"
+        );
+        if self.span(span).done() {
+            return false;
+        }
+        self.span_set_wind_sum(span, winding);
+        self.span_set_opp_sum(span, opp_winding);
+        true
+    }
+
+    /// Returns true when every span of `segment` is resolved.
+    ///
+    /// Port of `SkOpSegment::done`.
+    #[must_use]
+    pub fn segment_done(&self, segment: SegmentId) -> bool {
+        let s = self.segment(segment);
+        s.f_done_count >= s.f_count - 1
+    }
+
+    /// Marks every span of `segment` resolved.
+    ///
+    /// Port of `SkOpSegment::markAllDone`.
+    pub fn segment_mark_all_done(&mut self, segment: SegmentId) {
+        for span in self.segment_spans(segment) {
+            if self.span_is_final(span) {
+                continue;
+            }
+            self.mark_done(span);
+        }
+    }
+
+    /// Where a chase step ended up.
+    ///
+    /// Port of the out-parameters of `SkOpSegment::nextChase`, which returns
+    /// the next segment and writes back the span, step and minimum it reached.
+    #[must_use]
+    pub fn next_chase(&self, state: &mut ChaseState) -> Option<SegmentId> {
+        let orig_start = state.start;
+        let step = state.step;
+        let end_span = if step > 0 {
+            self.span_next(orig_start)?
+        } else {
+            self.span_prev(orig_start)?
+        };
+        let angle = if step > 0 {
+            self.span_from_angle(end_span)
+        } else {
+            self.span_to_angle_of(end_span)
+        };
+
+        let (other, found_span, other_end) = match angle {
+            None => {
+                // No angle here, so the only way onward is through a shared
+                // endpoint: the PtT ring at t == 0 or t == 1.
+                let t = self.span(end_span).f_t;
+                if t != 0.0 && t != 1.0 {
+                    return None;
+                }
+                let end_ptt = self.span_ptt(end_span)?;
+                let other_ptt = self.ptt_next(end_ptt);
+                let other = self.ptt_segment(other_ptt)?;
+                let found = self.ptt_span(other_ptt)?;
+                let other_end = if step > 0 {
+                    self.span_upcastable(found).and_then(|f| self.span_next(f))
+                } else {
+                    self.span_prev(found)
+                };
+                (other, found, other_end)
+            }
+            Some(_) => {
+                // Following the angle loop is item 04's remaining half; until
+                // `after` exists there is no sorted loop to step through.
+                state.last = Some(end_span);
+                return None;
+            }
+        };
+
+        let other_end = other_end?;
+        let found_step = self.span_step(found_span, other_end);
+        if state.step != found_step {
+            state.last = Some(end_span);
+            return None;
+        }
+        let orig_min = if step < 0 {
+            self.span_prev(orig_start)?
+        } else {
+            orig_start
+        };
+        let found_min = self.span_starter(found_span, other_end)?;
+        // A step that changes the winding contribution is not the same walk.
+        if self.span(found_min).wind_value() != self.span(orig_min).wind_value()
+            || self.span(found_min).opp_value() != self.span(orig_min).opp_value()
+        {
+            state.last = Some(end_span);
+            return None;
+        }
+        state.start = found_span;
+        state.step = found_step;
+        state.min = Some(found_min);
+        Some(other)
+    }
+
+    /// Marks a run of spans resolved, following it across segments.
+    ///
+    /// Port of `SkOpSegment::markAndChaseDone`. Returns the span the chase
+    /// stopped at, if it stopped part way; `None` means it ran to the end.
+    ///
+    /// Returns `None` for the whole result when the walk ran away, matching
+    /// the C++ safety net.
+    pub fn mark_and_chase_done(
+        &mut self,
+        start: SpanId,
+        end: SpanId,
+    ) -> Option<Option<SpanId>> {
+        let step = self.span_step(start, end);
+        let min_span = self.span_starter(start, end)?;
+        self.mark_done(min_span);
+
+        let mut state = ChaseState {
+            start,
+            step,
+            min: Some(min_span),
+            last: None,
+        };
+        let mut prior_done: Option<SpanId> = None;
+        let mut last_done: Option<SpanId> = Some(min_span);
+        let mut safety_net = 100_000;
+        while let Some(other) = self.next_chase(&mut state) {
+            safety_net -= 1;
+            if safety_net == 0 {
+                return None;
+            }
+            if self.segment_done(other) {
+                break;
+            }
+            let Some(min) = state.min else { break };
+            if last_done == Some(min) || prior_done == Some(min) {
+                // Going round in a circle; stop without reporting a stopping
+                // point, as C++ does.
+                return Some(None);
+            }
+            self.mark_done(min);
+            prior_done = last_done;
+            last_done = Some(min);
+        }
+        Some(state.last)
+    }
+
+    /// Marks a run of spans with `winding`, following it across segments.
+    ///
+    /// Port of the two-argument `SkOpSegment::markAndChaseWinding`. The chase
+    /// stops at the first span whose sum is already known.
+    pub fn mark_and_chase_winding(
+        &mut self,
+        start: SpanId,
+        end: SpanId,
+        winding: i32,
+    ) -> Option<(bool, Option<SpanId>)> {
+        let span_start = self.span_starter(start, end)?;
+        let step = self.span_step(start, end);
+        let success = self.mark_winding(span_start, winding);
+
+        let mut state = ChaseState {
+            start,
+            step,
+            min: Some(span_start),
+            last: None,
+        };
+        let mut safety_net = 100_000;
+        while let Some(_other) = self.next_chase(&mut state) {
+            safety_net -= 1;
+            if safety_net == 0 {
+                return None;
+            }
+            let Some(min) = state.min else { break };
+            if self.span(min).wind_sum() != PK_MIN_S32 {
+                break;
+            }
+            self.mark_winding(min, winding);
+        }
+        Some((success, state.last))
     }
 
     // --- graph roots -----------------------------------------------------
@@ -2847,5 +3082,191 @@ mod tests {
         assert_eq!(arena.update_opp_winding(mid, head), 1);
         // And the reverse form swaps the ends.
         assert_eq!(arena.update_opp_winding_reverse(head, mid), 1);
+    }
+
+    // --- marking and chasing (item 05, part 5) ---------------------------
+
+    #[test]
+    fn mark_done_counts_each_span_once() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let head = arena.segment(seg).f_head.expect("head");
+        assert_eq!(arena.segment(seg).f_done_count, 0);
+
+        arena.mark_done(head);
+        assert!(arena.span(head).done());
+        assert_eq!(arena.segment(seg).f_done_count, 1);
+
+        // Marking again must not double-count, or the segment reads as done
+        // before it is.
+        arena.mark_done(head);
+        assert_eq!(arena.segment(seg).f_done_count, 1);
+    }
+
+    #[test]
+    fn a_segment_is_done_once_every_real_span_is() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let _ = arena.segment_add_t(seg, 0.5, Point::new(50.0, 0.0));
+        // Three spans, of which the tail carries no winding.
+        assert!(!arena.segment_done(seg));
+
+        arena.segment_mark_all_done(seg);
+        assert!(arena.segment_done(seg));
+        assert_eq!(arena.segment(seg).f_done_count, 2, "the tail is not marked");
+    }
+
+    #[test]
+    fn mark_winding_records_the_sum() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let head = arena.segment(seg).f_head.expect("head");
+        assert!(arena.mark_winding(head, 3));
+        assert_eq!(arena.span(head).wind_sum(), 3);
+    }
+
+    #[test]
+    fn mark_winding_refuses_a_span_already_done() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let head = arena.segment(seg).f_head.expect("head");
+        arena.mark_done(head);
+        assert!(!arena.mark_winding(head, 3));
+        assert_eq!(arena.span(head).wind_sum(), PK_MIN_S32, "left alone");
+    }
+
+    #[test]
+    fn mark_winding_opp_records_both_sums() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let head = arena.segment(seg).f_head.expect("head");
+        assert!(arena.mark_winding_opp(head, 2, 5));
+        assert_eq!(arena.span(head).wind_sum(), 2);
+        assert_eq!(arena.span(head).opp_sum(), 5);
+    }
+
+    #[test]
+    fn mark_and_chase_done_marks_the_lesser_span() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+
+        let stopped = arena.mark_and_chase_done(head, mid).expect("did not run away");
+        assert!(arena.span(head).done(), "the lesser of the pair is marked");
+        assert!(!arena.span(mid).done());
+        // Nothing to chase into: this segment stands alone.
+        assert_eq!(stopped, None);
+    }
+
+    #[test]
+    fn mark_and_chase_done_starts_from_either_end() {
+        // The lesser span is marked whichever way round the pair is given.
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+
+        let _ = arena.mark_and_chase_done(mid, head).expect("did not run away");
+        assert!(arena.span(head).done());
+        assert!(!arena.span(mid).done());
+    }
+
+    #[test]
+    fn mark_and_chase_winding_records_the_sum() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+
+        let (ok, _) = arena
+            .mark_and_chase_winding(head, mid, 2)
+            .expect("did not run away");
+        assert!(ok);
+        assert_eq!(arena.span(head).wind_sum(), 2);
+    }
+
+    #[test]
+    fn next_chase_crosses_at_a_shared_endpoint() {
+        // Two segments meeting end to end. With no angles attached the only
+        // way onward is the PtT ring at the shared point, which is the branch
+        // nextChase takes when fromAngle is null.
+        let mut arena = OpArena::new();
+        let a = arena.alloc_segment_with_ends(Point::new(0.0, 0.0), Point::new(100.0, 0.0));
+        let b = arena.alloc_segment_with_ends(Point::new(100.0, 0.0), Point::new(100.0, 100.0));
+        let a_tail = arena.segment(a).f_tail.expect("tail");
+        let b_head = arena.segment(b).f_head.expect("head");
+        let pa = arena.span_ptt(a_tail).expect("ptt");
+        let pb = arena.span_ptt(b_head).expect("ptt");
+        assert!(arena.ptt_add_opp(pa, pb));
+
+        let a_head = arena.segment(a).f_head.expect("head");
+        let mut state = ChaseState {
+            start: a_head,
+            step: 1,
+            min: None,
+            last: None,
+        };
+        let reached = arena.next_chase(&mut state);
+        assert_eq!(reached, Some(b), "the walk carried on into the next segment");
+        assert_eq!(state.start, b_head);
+        assert_eq!(state.step, 1);
+    }
+
+    #[test]
+    fn next_chase_stops_where_the_winding_changes() {
+        let mut arena = OpArena::new();
+        let a = arena.alloc_segment_with_ends(Point::new(0.0, 0.0), Point::new(100.0, 0.0));
+        let b = arena.alloc_segment_with_ends(Point::new(100.0, 0.0), Point::new(100.0, 100.0));
+        let a_tail = arena.segment(a).f_tail.expect("tail");
+        let b_head = arena.segment(b).f_head.expect("head");
+        let pa = arena.span_ptt(a_tail).expect("ptt");
+        let pb = arena.span_ptt(b_head).expect("ptt");
+        assert!(arena.ptt_add_opp(pa, pb));
+
+        // Give the two different contributions: this is not the same walk.
+        let a_head = arena.segment(a).f_head.expect("head");
+        arena.span_mut(a_head).set_wind_value(1);
+        arena.span_mut(b_head).set_wind_value(2);
+
+        let mut state = ChaseState {
+            start: a_head,
+            step: 1,
+            min: None,
+            last: None,
+        };
+        assert_eq!(arena.next_chase(&mut state), None);
+        assert!(state.last.is_some(), "it recorded where it stopped");
+    }
+
+    #[test]
+    fn next_chase_stops_at_an_interior_dead_end() {
+        // An interior span with no angle and no ring to cross by: there is
+        // nowhere for the walk to go.
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+        let _ = mid;
+
+        let mut state = ChaseState {
+            start: head,
+            step: 1,
+            min: None,
+            last: None,
+        };
+        assert_eq!(arena.next_chase(&mut state), None);
     }
 }
