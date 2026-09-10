@@ -438,13 +438,9 @@ impl OpArena {
     /// includes `id` itself.
     #[must_use]
     pub fn ptt_find(&self, id: PtTId, segment: SegmentId) -> Option<PtTId> {
-        for node in self.ptt_ring(id) {
-            let n = self.ptt(node);
-            if !n.f_deleted && self.ptt_segment(node) == Some(segment) {
-                return Some(node);
-            }
-        }
-        None
+        self.ptt_ring(id)
+            .into_iter()
+            .find(|&node| !self.ptt(node).f_deleted && self.ptt_segment(node) == Some(segment))
     }
 
     /// Returns a node on `check` elsewhere in `id`'s ring, if there is one.
@@ -734,12 +730,210 @@ impl OpArena {
     #[must_use]
     pub fn span_contains_segment(&self, id: SpanId, segment: SegmentId) -> Option<PtTId> {
         let start = self.span_ptt(id)?;
-        for node in self.ptt_ring(start) {
-            if !self.ptt(node).f_deleted && self.ptt_segment(node) == Some(segment) {
-                return Some(node);
+        self.ptt_ring(start)
+            .into_iter()
+            .find(|&node| !self.ptt(node).f_deleted && self.ptt_segment(node) == Some(segment))
+    }
+
+
+    // --- coincidence membership (item 03, part 3) -------------------------
+    //
+    // Two rings, both self-referential when empty: `f_coincident` links spans
+    // that start a coincident run together, `f_coin_end` links the spans that
+    // end one. C++ initialises each to point at its own span, so "not
+    // coincident" is "points at itself"; `None` means the same here.
+
+    /// Returns the next span in `id`'s coincident-start ring.
+    #[must_use]
+    pub fn span_coincident(&self, id: SpanId) -> SpanId {
+        match self.span(id).f_coincident {
+            Some(n) => SpanId::new(n),
+            None => id,
+        }
+    }
+
+    /// Returns the next span in `id`'s coincident-end ring.
+    ///
+    /// Port of `SkOpSpanBase::coinEnd`.
+    #[must_use]
+    pub fn span_coin_end(&self, id: SpanId) -> SpanId {
+        match self.span(id).f_coin_end {
+            Some(n) => SpanId::new(n),
+            None => id,
+        }
+    }
+
+    /// Returns true when `id` starts a coincident run.
+    ///
+    /// Port of `SkOpSpan::isCoincident`, which is "the ring is not just me".
+    #[must_use]
+    pub fn span_is_coincident(&self, id: SpanId) -> bool {
+        self.span_coincident(id) != id
+    }
+
+    /// Returns true when `coin` is in `id`'s coincident-start ring.
+    ///
+    /// Port of `SkOpSpan::containsCoincidence(const SkOpSpan*)`.
+    #[must_use]
+    pub fn span_contains_coincidence(&self, id: SpanId, coin: SpanId) -> bool {
+        let mut next = self.span_coincident(id);
+        let mut guard = 0;
+        while next != id {
+            if next == coin {
+                return true;
+            }
+            guard += 1;
+            if guard > self.spans.len() {
+                break;
+            }
+            next = self.span_coincident(next);
+        }
+        false
+    }
+
+    /// Returns true when `coin` is in `id`'s coincident-end ring.
+    ///
+    /// Port of `SkOpSpanBase::containsCoinEnd`.
+    #[must_use]
+    pub fn span_contains_coin_end(&self, id: SpanId, coin: SpanId) -> bool {
+        let mut next = self.span_coin_end(id);
+        let mut guard = 0;
+        while next != id {
+            if next == coin {
+                return true;
+            }
+            guard += 1;
+            if guard > self.spans.len() {
+                break;
+            }
+            next = self.span_coin_end(next);
+        }
+        false
+    }
+
+    /// Splices `coin` into `id`'s coincident-start ring.
+    ///
+    /// Port of `SkOpSpan::insertCoincidence`. A span already in the ring is
+    /// left alone, so this is idempotent.
+    pub fn span_insert_coincidence(&mut self, id: SpanId, coin: SpanId) {
+        debug_assert_ne!(id, coin);
+        if self.span_contains_coincidence(id, coin) {
+            return;
+        }
+        let coin_next = self.span_coincident(coin);
+        let this_next = self.span_coincident(id);
+        self.span_mut(coin).f_coincident = Some(this_next.index());
+        self.span_mut(id).f_coincident = Some(coin_next.index());
+    }
+
+    /// Splices `coin` into `id`'s coincident-end ring.
+    ///
+    /// Port of `SkOpSpanBase::insertCoinEnd`.
+    pub fn span_insert_coin_end(&mut self, id: SpanId, coin: SpanId) {
+        debug_assert_ne!(id, coin);
+        if self.span_contains_coin_end(id, coin) {
+            return;
+        }
+        let coin_next = self.span_coin_end(coin);
+        let this_next = self.span_coin_end(id);
+        self.span_mut(coin).f_coin_end = Some(this_next.index());
+        self.span_mut(id).f_coin_end = Some(coin_next.index());
+    }
+
+    /// Drops `id` out of its coincident-start ring.
+    ///
+    /// Port of `SkOpSpan::clearCoincident`. Returns false when there was
+    /// nothing to clear.
+    pub fn span_clear_coincident(&mut self, id: SpanId) -> bool {
+        debug_assert!(!self.span_is_final(id));
+        if !self.span_is_coincident(id) {
+            return false;
+        }
+        self.span_mut(id).f_coincident = Some(id.index());
+        true
+    }
+
+    /// Returns true when `id`'s coincident-start ring reaches `segment`.
+    ///
+    /// Port of `SkOpSpan::containsCoincidence(const SkOpSegment*)`.
+    #[must_use]
+    pub fn span_coincidence_reaches(&self, id: SpanId, segment: SegmentId) -> bool {
+        let mut next = self.span_coincident(id);
+        let mut guard = 0;
+        loop {
+            if self.span_segment(next) == Some(segment) {
+                return true;
+            }
+            next = self.span_coincident(next);
+            guard += 1;
+            if next == self.span_coincident(id) || guard > self.spans.len() {
+                break;
             }
         }
-        None
+        false
+    }
+
+    // --- angle attachment (item 03, part 4) -------------------------------
+
+    /// Returns the angle leaving `id`.
+    ///
+    /// Port of `SkOpSpan::toAngle`.
+    #[must_use]
+    pub fn span_to_angle(&self, id: SpanId) -> Option<AngleId> {
+        self.span(id).f_to_angle.map(AngleId::new)
+    }
+
+    /// Returns the angle arriving at `id`.
+    ///
+    /// Port of `SkOpSpanBase::fromAngle`.
+    #[must_use]
+    pub fn span_from_angle(&self, id: SpanId) -> Option<AngleId> {
+        self.span(id).f_from_angle.map(AngleId::new)
+    }
+
+    /// Attaches the angle leaving `id`.
+    ///
+    /// Port of `SkOpSpan::setToAngle`, which asserts the span is not terminal:
+    /// nothing leaves the end of a segment.
+    pub fn span_set_to_angle(&mut self, id: SpanId, angle: Option<AngleId>) {
+        debug_assert!(
+            !self.span_is_final(id),
+            "the terminal span has no angle leaving it"
+        );
+        self.span_mut(id).f_to_angle = angle.map(AngleId::index);
+    }
+
+    /// Attaches the angle arriving at `id`.
+    ///
+    /// Port of `SkOpSpanBase::setFromAngle`.
+    pub fn span_set_from_angle(&mut self, id: SpanId, angle: Option<AngleId>) {
+        self.span_mut(id).f_from_angle = angle.map(AngleId::index);
+    }
+
+    // --- winding state (item 03, part 5) ----------------------------------
+
+    /// Computes the winding sum for `id`, or returns the stored one.
+    ///
+    /// Port of `SkOpSpan::computeWindSum`, which retries `sortableTop` until
+    /// it succeeds or [`MAX_WINDING_TRIES`] passes go by.
+    ///
+    /// `sortable_top` is passed in because `FindSortableTop` is item 07 and
+    /// does not exist yet; when it lands it becomes the caller. Passing a
+    /// closure that always fails reproduces the old behaviour of returning the
+    /// stored field, but now that is the caller's choice rather than a silent
+    /// stub.
+    pub fn span_compute_wind_sum<F>(&mut self, id: SpanId, mut sortable_top: F) -> i32
+    where
+        F: FnMut(&mut OpArena, SpanId) -> bool,
+    {
+        let mut tries = 0;
+        while !sortable_top(self, id) {
+            tries += 1;
+            if tries >= MAX_WINDING_TRIES {
+                break;
+            }
+        }
+        self.span(id).f_wind_sum
     }
 
     // --- graph roots -----------------------------------------------------
@@ -863,6 +1057,7 @@ impl OpArena {
 mod tests {
     use super::*;
     use crate::core::Point;
+    use crate::pathops::sk_op_span::PK_MIN_S32;
 
     /// Builds a segment with `count` spans linked head to tail, and links each
     /// span back to the segment. Returns the segment and its span handles.
@@ -1456,5 +1651,192 @@ mod tests {
         for id in &spans_b {
             assert_eq!(arena.span_segment(*id), Some(seg_b));
         }
+    }
+
+    // --- coincidence membership (item 03, part 3) ------------------------
+
+    #[test]
+    fn a_lone_span_is_not_coincident() {
+        let mut arena = OpArena::new();
+        let (_, spans) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        assert!(!arena.span_is_coincident(spans[0]));
+        assert_eq!(arena.span_coincident(spans[0]), spans[0]);
+        assert_eq!(arena.span_coin_end(spans[0]), spans[0]);
+    }
+
+    #[test]
+    fn inserting_coincidence_joins_two_spans() {
+        let mut arena = OpArena::new();
+        let (_, a) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        let (_, b) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        arena.span_insert_coincidence(a[0], b[0]);
+
+        assert!(arena.span_is_coincident(a[0]));
+        assert!(arena.span_is_coincident(b[0]));
+        assert!(arena.span_contains_coincidence(a[0], b[0]));
+        assert!(arena.span_contains_coincidence(b[0], a[0]));
+        // A span outside the ring is not reported.
+        assert!(!arena.span_contains_coincidence(a[0], a[1]));
+    }
+
+    #[test]
+    fn inserting_the_same_coincidence_twice_changes_nothing() {
+        let mut arena = OpArena::new();
+        let (_, a) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        let (_, b) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        arena.span_insert_coincidence(a[0], b[0]);
+        let after_first = arena.span_coincident(a[0]);
+        arena.span_insert_coincidence(a[0], b[0]);
+        assert_eq!(arena.span_coincident(a[0]), after_first);
+    }
+
+    #[test]
+    fn clearing_coincidence_takes_a_span_back_out() {
+        let mut arena = OpArena::new();
+        let (_, a) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        let (_, b) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        arena.span_insert_coincidence(a[0], b[0]);
+        assert!(arena.span_clear_coincident(a[0]));
+        assert!(!arena.span_is_coincident(a[0]));
+        // Clearing again reports there was nothing to do.
+        assert!(!arena.span_clear_coincident(a[0]));
+    }
+
+    #[test]
+    fn coin_end_is_a_separate_ring_from_coincident() {
+        let mut arena = OpArena::new();
+        let (_, a) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        let (_, b) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        arena.span_insert_coin_end(a[2], b[2]);
+
+        assert!(arena.span_contains_coin_end(a[2], b[2]));
+        assert!(arena.span_contains_coin_end(b[2], a[2]));
+        // The start ring is untouched by an end-ring insertion.
+        assert!(!arena.span_is_coincident(a[2]));
+        assert!(!arena.span_contains_coincidence(a[2], b[2]));
+    }
+
+    #[test]
+    fn coincidence_reaches_the_other_segment() {
+        let mut arena = OpArena::new();
+        let (seg_a, a) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        let (seg_b, b) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        arena.span_insert_coincidence(a[0], b[0]);
+        assert!(arena.span_coincidence_reaches(a[0], seg_b));
+        assert!(arena.span_coincidence_reaches(b[0], seg_a));
+    }
+
+    #[test]
+    fn is_canceled_when_neither_operand_contributes() {
+        let mut arena = OpArena::new();
+        let (_, spans) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        assert!(arena.span(spans[0]).is_canceled());
+        arena.span_mut(spans[0]).set_wind_value(1);
+        assert!(!arena.span(spans[0]).is_canceled());
+    }
+
+    // --- angle attachment (item 03, part 4) ------------------------------
+
+    #[test]
+    fn angles_attach_to_and_from_a_span() {
+        let mut arena = OpArena::new();
+        let (_, spans) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        let to = arena.alloc_angle(SkOpAngle::new());
+        let from = arena.alloc_angle(SkOpAngle::new());
+
+        assert_eq!(arena.span_to_angle(spans[0]), None);
+        assert_eq!(arena.span_from_angle(spans[0]), None);
+        arena.span_set_to_angle(spans[0], Some(to));
+        arena.span_set_from_angle(spans[0], Some(from));
+        assert_eq!(arena.span_to_angle(spans[0]), Some(to));
+        assert_eq!(arena.span_from_angle(spans[0]), Some(from));
+    }
+
+    #[test]
+    fn the_terminal_span_still_takes_an_arriving_angle() {
+        // Nothing leaves the end of a segment, but something arrives at it.
+        let mut arena = OpArena::new();
+        let (_, spans) = segment_at_ts(&mut arena, &[0.0, 1.0]);
+        let from = arena.alloc_angle(SkOpAngle::new());
+        arena.span_set_from_angle(spans[1], Some(from));
+        assert_eq!(arena.span_from_angle(spans[1]), Some(from));
+    }
+
+    // --- winding state (item 03, part 5) ---------------------------------
+
+    #[test]
+    fn wind_and_opp_values_are_set_and_read() {
+        let mut arena = OpArena::new();
+        let (_, spans) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        let s = spans[0];
+        assert_eq!(arena.span(s).wind_value(), 0);
+        arena.span_mut(s).set_wind_value(2);
+        arena.span_mut(s).set_opp_value(3);
+        assert_eq!(arena.span(s).wind_value(), 2);
+        assert_eq!(arena.span(s).opp_value(), 3);
+        // Sums start unset.
+        assert_eq!(arena.span(s).wind_sum(), PK_MIN_S32);
+        arena.span_mut(s).set_wind_sum(5);
+        assert_eq!(arena.span(s).wind_sum(), 5);
+    }
+
+    #[test]
+    fn compute_wind_sum_runs_the_search_until_it_succeeds() {
+        // The acceptance case: it computes rather than returning the field.
+        let mut arena = OpArena::new();
+        let (_, spans) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        let s = spans[0];
+        assert_eq!(arena.span(s).wind_sum(), PK_MIN_S32);
+
+        // A search that fails twice, then writes a sum and succeeds.
+        let mut calls = 0;
+        let sum = arena.span_compute_wind_sum(s, |arena, id| {
+            calls += 1;
+            if calls < 3 {
+                return false;
+            }
+            arena.span_mut(id).set_wind_sum(7);
+            true
+        });
+        assert_eq!(calls, 3, "it retried until the search succeeded");
+        assert_eq!(sum, 7);
+        assert_eq!(arena.span(s).wind_sum(), 7);
+    }
+
+    #[test]
+    fn compute_wind_sum_gives_up_after_max_tries() {
+        let mut arena = OpArena::new();
+        let (_, spans) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        let mut calls = 0;
+        let sum = arena.span_compute_wind_sum(spans[0], |_, _| {
+            calls += 1;
+            false
+        });
+        assert_eq!(calls, MAX_WINDING_TRIES, "bounded, not an infinite loop");
+        assert_eq!(sum, PK_MIN_S32, "nothing was computed");
+    }
+
+    #[test]
+    fn marking_added_and_bumping_adds() {
+        let mut arena = OpArena::new();
+        let (_, spans) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        let s = spans[0];
+        assert!(!arena.span(s).already_added());
+        arena.span_mut(s).mark_added();
+        assert!(arena.span(s).already_added());
+
+        assert_eq!(arena.span(s).f_span_adds, 0);
+        arena.span_mut(s).bump_span_adds();
+        arena.span_mut(s).bump_span_adds();
+        assert_eq!(arena.span(s).f_span_adds, 2);
+    }
+
+    #[test]
+    fn chased_is_recorded() {
+        let mut arena = OpArena::new();
+        let (_, spans) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        assert!(!arena.span(spans[0]).chased());
+        arena.span_mut(spans[0]).set_chased(true);
+        assert!(arena.span(spans[0]).chased());
     }
 }

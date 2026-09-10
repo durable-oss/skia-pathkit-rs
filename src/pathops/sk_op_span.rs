@@ -6,7 +6,6 @@
 //! Port of Skia's SkOpSpan.{h,cpp}
 
 use crate::core::{Point, Scalar};
-use super::sk_path_ops_types::OpGlobalState;
 
 /// PtT node (declared in SkOpSpan.h per C++)
 #[derive(Debug, Clone)]
@@ -89,23 +88,38 @@ pub struct SkOpSpanBase {
     pub f_aligned: bool,
     pub f_chased: bool,
     pub f_collapsed: Collapsed,
-}
 
-/// Full span (inherits base fields via composition in arena model)
-#[derive(Debug, Clone)]
-pub struct SkOpSpan {
-    pub base: SkOpSpanBase,
-    pub f_coincident: Option<usize>, // circular list
+    // The fields below are C++'s `SkOpSpan`, the derived type. The arena
+    // pools both roles in one `Vec`, so they live here and go unread on the
+    // terminal span - which is exactly what the C++ inheritance means.
+    /// Ring of spans coincident with this one.
+    pub f_coincident: Option<usize>,
+    /// Angle leaving this span.
     pub f_to_angle: Option<usize>,
-    pub f_next: Option<usize>,
+    /// Accumulated winding, or [`PK_MIN_S32`] when not yet computed.
     pub f_wind_sum: i32,
+    /// Accumulated opposite-operand winding.
     pub f_opp_sum: i32,
+    /// Winding contribution of this span.
     pub f_wind_value: i32,
+    /// Opposite-operand winding contribution.
     pub f_opp_value: i32,
+    /// How many times a top has been sought from here.
     pub f_top_t_try: i32,
+    /// True once this span has been resolved.
     pub f_done: bool,
+    /// True once this span has been emitted.
     pub f_already_added: bool,
 }
+
+/// A span carrying winding data.
+///
+/// C++ has `SkOpSpan` derive from `SkOpSpanBase`, the extra fields being the
+/// winding state a terminal span does not need. The arena keeps both in one
+/// pool, so this is an alias: whether a span is terminal is answered by
+/// [`OpArena::span_is_final`](super::sk_op_arena::OpArena::span_is_final)
+/// rather than by its type.
+pub type SkOpSpan = SkOpSpanBase;
 
 impl SkOpSpanBase {
     pub fn new(t: Scalar, pt: Point, segment: Option<usize>) -> Self {
@@ -122,21 +136,8 @@ impl SkOpSpanBase {
             f_aligned: false,
             f_chased: false,
             f_collapsed: Collapsed::No,
-        }
-    }
-
-    pub fn t(&self) -> Scalar { self.f_t }
-    pub fn pt(&self) -> Point { self.f_pt }
-    pub fn collapsed(&self) -> Collapsed { self.f_collapsed }
-}
-
-impl SkOpSpan {
-    pub fn new(t: Scalar, pt: Point, segment: Option<usize>) -> Self {
-        Self {
-            base: SkOpSpanBase::new(t, pt, segment),
             f_coincident: None,
             f_to_angle: None,
-            f_next: None,
             f_wind_sum: PK_MIN_S32,
             f_opp_sum: PK_MIN_S32,
             f_wind_value: 0,
@@ -147,19 +148,87 @@ impl SkOpSpan {
         }
     }
 
-    pub fn t(&self) -> Scalar { self.base.t() }
-    pub fn pt(&self) -> Point { self.base.pt() }
+    pub fn t(&self) -> Scalar { self.f_t }
+    pub fn pt(&self) -> Point { self.f_pt }
+    pub fn collapsed(&self) -> Collapsed { self.f_collapsed }
+
+    /// Returns this span's winding contribution.
     pub fn wind_value(&self) -> i32 { self.f_wind_value }
+    /// Returns this span's opposite-operand contribution.
     pub fn opp_value(&self) -> i32 { self.f_opp_value }
+    /// Returns the accumulated winding, or [`PK_MIN_S32`] if not yet computed.
     pub fn wind_sum(&self) -> i32 { self.f_wind_sum }
+    /// Returns the accumulated opposite-operand winding.
     pub fn opp_sum(&self) -> i32 { self.f_opp_sum }
+    /// Returns true once this span has been resolved.
     pub fn done(&self) -> bool { self.f_done }
+    /// Sets the accumulated winding.
     pub fn set_wind_sum(&mut self, val: i32) { self.f_wind_sum = val; }
+    /// Sets the accumulated opposite-operand winding.
     pub fn set_opp_sum(&mut self, val: i32) { self.f_opp_sum = val; }
+    /// Marks this span resolved.
     pub fn set_done(&mut self, done: bool) { self.f_done = done; }
 
-    pub fn compute_wind_sum(&mut self, _global: &OpGlobalState) -> i32 {
-        self.f_wind_sum
+    /// Returns true when this span contributes nothing to either operand.
+    ///
+    /// Port of `SkOpSpan::isCanceled`.
+    #[must_use]
+    pub fn is_canceled(&self) -> bool {
+        self.f_wind_value == 0 && self.f_opp_value == 0
+    }
+
+    /// Returns true when this span has already been emitted.
+    ///
+    /// Port of `SkOpSpan::alreadyAdded`.
+    #[must_use]
+    pub fn already_added(&self) -> bool {
+        self.f_already_added
+    }
+
+    /// Marks this span emitted.
+    ///
+    /// Port of `SkOpSpan::markAdded`.
+    pub fn mark_added(&mut self) {
+        self.f_already_added = true;
+    }
+
+    /// Counts another span added through this one.
+    ///
+    /// Port of `SkOpSpanBase::bumpSpanAdds`.
+    pub fn bump_span_adds(&mut self) {
+        self.f_span_adds += 1;
+    }
+
+    /// Returns true when this span has been walked during chasing.
+    ///
+    /// Port of `SkOpSpanBase::chased`.
+    #[must_use]
+    pub fn chased(&self) -> bool {
+        self.f_chased
+    }
+
+    /// Records whether this span has been walked during chasing.
+    ///
+    /// Port of `SkOpSpanBase::setChased`.
+    pub fn set_chased(&mut self, chased: bool) {
+        self.f_chased = chased;
+    }
+
+    /// Sets this span's winding contribution.
+    ///
+    /// Port of `SkOpSpan::setWindValue`.
+    pub fn set_wind_value(&mut self, wind_value: i32) {
+        debug_assert!(wind_value >= 0);
+        debug_assert_eq!(self.f_wind_sum, PK_MIN_S32);
+        self.f_wind_value = wind_value;
+    }
+
+    /// Sets this span's opposite-operand contribution.
+    ///
+    /// Port of `SkOpSpan::setOppValue`.
+    pub fn set_opp_value(&mut self, opp_value: i32) {
+        debug_assert_eq!(self.f_opp_sum, PK_MIN_S32);
+        self.f_opp_value = opp_value;
     }
 }
 
