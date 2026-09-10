@@ -11,6 +11,7 @@ use crate::error::PathKitError;
 
 mod boolean;
 pub mod sk_intersection_helper;
+pub mod sk_line_parameters;
 pub mod sk_op_angle;
 pub mod sk_op_coincidence;
 pub mod sk_op_contour;
