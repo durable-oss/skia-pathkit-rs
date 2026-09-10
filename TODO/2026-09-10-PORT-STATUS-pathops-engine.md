@@ -92,3 +92,82 @@ Independent, can start immediately:
 0% for a module means "no Rust file of that name", **not** necessarily "not
 ported" — item 14 was already complete inside a sibling module. Check whether
 the code landed elsewhere before starting items 11, 12 or 13.
+
+
+---
+
+# Progress, 2026-09-10 (second pass)
+
+Tests: **811** lib tests, from 581 at the start. `cargo clippy --lib` is clean
+on every file touched. Nothing is stubbed silently: where a dependency does not
+exist yet it is a closure parameter or a documented `Not ported`, not a
+hard-coded `true`.
+
+## Closed
+
+| item | what |
+|---|---|
+| 01 | 5 of 7 orphans compiled; 5 real bugs found by doing so |
+| 02 | the arena — `sk_op_arena.rs` |
+| 03 | span/PtT linkage, all six sub-parts |
+| 10 | conic weight in flatten (**was a live bug**) |
+| 11 | `SkOpBuilder`, and the duplicate `OpBuilder` removed |
+| 12 | `SkDLineIntersection` |
+| 13 | `SkDConicLineIntersection` |
+| 15 | `assemble` dropping contours (**was a live bug**) |
+
+Also landed outside the numbered items: `SkLineParameters` (item 15 in `done/`),
+`SkOpAngle`'s geometric core, and `sub_divide_curve` — the
+`SkOpSegment::subDivide(…, SkDCurve*)` overload that `setSpans` needs, which
+did not exist in either form.
+
+## Bugs found along the way
+
+Compiling the orphaned files and running clippy over them turned up five
+defects that had been invisible:
+
+1. **Infinite loop** in `check_coincident` (quad/line): `last` was `used()`
+   rather than `used() - 1` and never decremented on removal.
+2. **`SkIntersections::remove_one` did not always decrement.** Removing the
+   last entry did nothing, which is what made (1) spin. It also never shifted
+   the coincidence bitmask.
+3. **`SkDConic::sub_divide` was not a subdivision** — de Casteljau on the
+   projected points, weight discarded, control point emitted twice.
+4. **Both cubic `find_extrema`** solved the wrong quadratic, so extrema were
+   silently missed. `monotonic_in_x`/`_y` are built on one of them.
+5. Four test expectations were wrong (never having run); each was the test, not
+   the code.
+
+## Where item 04 stands
+
+Most of it landed. Present and tested: the 32-sector `find_sector` and
+`set_sector` with compass-point bumping and mask, `check_crosses_zero`,
+`opposite_planes`, both `line_on_one_side` forms, `lines_on_original_side`,
+`alignment_same_side`, `convex_hull_overlaps`, `tangents_diverge`,
+`dist_end_ratio`, the hull sweep, and the loop itself (`insert`, `merge`,
+`loop_count`, `loop_contains`, `previous`, `validate_next`) in an `AngleList`
+arena.
+
+Still absent, and all for one reason — they need the span graph attached to
+real segment geometry, which is item 05:
+
+`set`, `setSpans`, `computeSector`, `endsIntersect`, `endToSide`, `midToSide`,
+`checkParallel`, `orderable`, `after`.
+
+`AngleList::insert` and `merge` take the comparator as a closure precisely so
+`after` drops in without touching the splice logic. **Note the contract**:
+`after(angle, test)` must mean "angle lies in the ccw arc from `test` to
+`test.next`", not "angle's sector is greater". A naive `>` is not an ordering on
+a ring, and under `merge` it silently *drops* angles — confirmed against the
+C++ algorithm directly, so it is a property of the algorithm, not of this port.
+
+## Remaining order
+
+```
+05 segment winding  ->  04 (finish)  ->  06 coincidence
+                    ->  07 sortable top  ->  08 common fns  ->  09 bridge
+```
+
+Item 05 moved to the front: it unblocks the rest of 04, and `SkOpSegment` is
+still on the pre-arena `Box`-linked model with two competing `SkOpSpan`
+definitions, which everything downstream has to reconcile anyway.
