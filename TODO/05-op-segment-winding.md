@@ -62,3 +62,48 @@ Sub-commits:
 - `find_next_winding` on a hand-built two-segment crossing returns the
   expected next segment and span pair.
 - No method in the file returns a bare `true`/`false`/`None` as its whole body.
+
+---
+
+## Progress (2026-09-10)
+
+Parts 1, 3, 4, 5 and 6 landed, on `OpArena` rather than on `SkOpSegment`:
+inserting a span means allocating one and relinking a shared graph, which a
+segment owning its spans by value cannot do.
+
+| part | landed as |
+|---|---|
+| 1 `add_t` | `segment_add_t`, `alloc_segment_with_ends`, `spans_match` |
+| 3 statics | `span_sign`, `opp_sign`, `use_inner_winding`, `wind_sum_between`, `walk_angle`, `set_up_winding`, `set_up_windings` |
+| 4 `updateWinding` | all four variants |
+| 5 marking | `mark_done`, `mark_winding`, `mark_winding_opp`, `segment_done`, `segment_mark_all_done`, `next_chase`, `mark_and_chase_done`, `mark_and_chase_winding` |
+| 6 `active*` | `active_winding` x2, `active_op` x2, `active_angle`, `active_angle_inner`, `active_angle_other`, and both edge tables |
+
+The `gActiveEdge` table is checked against operator semantics, not against
+itself: `the_binary_table_matches_each_operator` walks all 64 combinations and
+derives each answer from what the operator means, so a transcription slip in
+any entry fails.
+
+### Still open, and why
+
+- **Part 2** (`span_to_angle`, `calc_angles`, `sort_angles`) — needs
+  `SkOpAngle::set` and `after`, item 04's remaining half.
+- **Part 7** (`findNextWinding`, `findNextXor`, `findNextOp`) — needs the
+  sorted angle loop, same reason. `next_chase`'s angle branch is the same
+  blocker; it records where it stopped rather than pretending to follow a loop.
+- **Part 8** (`addCurveTo`) — needs `SkPathWriter` wiring.
+  `SkOpSegment::subDivide`'s *other* overload, the one filling a curve, is
+  ported as `sk_op_angle::sub_divide_curve`.
+- **Part 9** (`missingCoincidence`, `moveMultiples`, `moveNearby`,
+  `testForCoincidence`, `spansNearby`) — the cleanup pass.
+
+### On the acceptance criteria
+
+- `add_t` inserts: three interior t values give an ordered chain, tested.
+- "No method returns a bare `true`/`false`/`None` as its whole body" is **not**
+  met yet, and cannot be until parts 2, 7, 8 and 9 land. What changed is that
+  every remaining stub in `sk_op_segment.rs` now says in its own doc comment
+  that it is not ported, what it needs, and what it returns instead; two are
+  `#[deprecated]` pointing at their arena replacements. They no longer read as
+  implemented.
+- `find_next_winding` on a two-segment crossing is part 7, still open.

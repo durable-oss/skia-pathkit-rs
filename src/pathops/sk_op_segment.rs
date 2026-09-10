@@ -432,30 +432,91 @@ impl SkOpSegment {
         t >= 0.0 && t <= 1.0
     }
 
+    /// Superseded by [`OpArena::segment_add_t`].
+    ///
+    /// [`OpArena::segment_add_t`]: super::sk_op_arena::OpArena::segment_add_t
+    ///
+    /// Inserting a span means allocating one and relinking a shared graph, so
+    /// it belongs on the arena rather than on a segment that owns its spans by
+    /// value. This form remains only until the callers listed in
+    /// `TODO/05-op-segment-winding.md` move across, and always returns `None`.
+    #[deprecated(note = "use OpArena::segment_add_t")]
     pub fn add_t(&mut self, _t: Scalar, _pt: Point) -> Option<&mut SkOpSpan> {
         None
     }
 
-    pub fn calc_angles(&mut self) {
-        // TODO: full port using SkOpAngle + global state
-    }
+    /// Not ported: builds the angles at each span. Needs `SkOpAngle::set`,
+    /// which is item 04's remaining half. Does nothing.
+    pub fn calc_angles(&mut self) {}
 
-    pub fn mark_and_chase_done(&mut self, _start: &SkOpSpan, _end: &SkOpSpan, _chase: &mut Option<&SkOpSpan>) -> bool {
+    /// Superseded by [`OpArena::mark_and_chase_done`].
+    ///
+    /// [`OpArena::mark_and_chase_done`]: super::sk_op_arena::OpArena::mark_and_chase_done
+    ///
+    /// Always reports success without marking anything.
+    #[deprecated(note = "use OpArena::mark_and_chase_done")]
+    pub fn mark_and_chase_done(
+        &mut self,
+        _start: &SkOpSpan,
+        _end: &SkOpSpan,
+        _chase: &mut Option<&SkOpSpan>,
+    ) -> bool {
         true
     }
 
-    pub fn find_next_op(&self, _chase: &mut Vec<&SkOpSpan>, _start: &SkOpSpan, _end: &SkOpSpan, _unsortable: &mut bool, _last_simple: &mut bool, _op: crate::pathops::PathOp, _xor_mask: i32, _xor_op_mask: i32) -> Option<&SkOpSegment> {
+    /// Not ported: walks to the next segment of a boolean result. Needs the
+    /// sorted angle loop, which is item 04. Always returns `None`.
+    #[allow(clippy::too_many_arguments)] // mirrors the C++ signature
+    pub fn find_next_op(
+        &self,
+        _chase: &mut Vec<&SkOpSpan>,
+        _start: &SkOpSpan,
+        _end: &SkOpSpan,
+        _unsortable: &mut bool,
+        _last_simple: &mut bool,
+        _op: crate::pathops::PathOp,
+        _xor_mask: i32,
+        _xor_op_mask: i32,
+    ) -> Option<&SkOpSegment> {
         None
     }
 
-    pub fn sub_divide(&self, _start: &SkOpSpan, _end: &SkOpSpan, _writer: &mut crate::pathops::sk_path_writer::SkPathWriter) -> bool {
+    /// Not ported: emits this segment's curve into a path writer. The other
+    /// C++ overload, which fills a curve rather than a writer, is ported as
+    /// [`sub_divide_curve`](super::sk_op_angle::sub_divide_curve). Always
+    /// reports success without writing anything.
+    pub fn sub_divide(
+        &self,
+        _start: &SkOpSpan,
+        _end: &SkOpSpan,
+        _writer: &mut crate::pathops::sk_path_writer::SkPathWriter,
+    ) -> bool {
         true
     }
 
-    pub fn missing_coincidence(&self) -> bool { false }
-    pub fn move_multiples(&mut self) -> bool { true }
-    pub fn move_nearby(&mut self) -> bool { true }
-    pub fn sort_angles(&mut self) -> bool { true }
+    /// Not ported: finds coincident runs this segment should have recorded.
+    /// Item 06. Always reports none.
+    pub fn missing_coincidence(&self) -> bool {
+        false
+    }
+
+    /// Not ported: merges spans that share a point. Item 05 part 9. Always
+    /// reports success.
+    pub fn move_multiples(&mut self) -> bool {
+        true
+    }
+
+    /// Not ported: merges spans that are nearly the same point. Item 05
+    /// part 9. Always reports success.
+    pub fn move_nearby(&mut self) -> bool {
+        true
+    }
+
+    /// Not ported: sorts each span's angle loop. Needs `SkOpAngle::after`,
+    /// which is item 04's remaining half. Always reports success.
+    pub fn sort_angles(&mut self) -> bool {
+        true
+    }
 
     /// Validates the segment (debug builds only)
     #[cfg(debug_assertions)]

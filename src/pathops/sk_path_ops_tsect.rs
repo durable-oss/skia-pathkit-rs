@@ -6,7 +6,7 @@
 //! intersections between parametric curves (quadratic, cubic, conic).
 
 use std::cell::RefCell;
-use std::f32::INFINITY;
+
 use std::rc::Rc;
 
 use crate::core::{Point, Scalar};
@@ -558,7 +558,7 @@ impl TSpan {
 
     fn closest_bounded_t(&self, pt: Point) -> Scalar {
         let mut result = -1.0;
-        let mut closest = INFINITY;
+        let mut closest = f32::INFINITY;
 
         let mut current = self.bounded.clone();
         while let Some(curr) = current {
