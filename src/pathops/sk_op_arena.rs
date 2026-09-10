@@ -594,6 +594,154 @@ impl OpArena {
         s.f_head == Some(span) || s.f_tail == Some(span)
     }
 
+
+    // --- SkOpSpanBase chain (item 03, part 2) -----------------------------
+    //
+    // Spans run head to tail along a segment in increasing t. The terminal
+    // span sits at t == 1 and carries no winding, which is what C++ expresses
+    // by making it an SkOpSpanBase rather than an SkOpSpan.
+
+    /// Returns the next span along the segment.
+    ///
+    /// Port of `SkOpSpan::next`. `None` at the tail.
+    #[must_use]
+    pub fn span_next(&self, id: SpanId) -> Option<SpanId> {
+        self.span(id).f_next.map(SpanId::new)
+    }
+
+    /// Returns the previous span along the segment.
+    ///
+    /// Port of `SkOpSpanBase::prev`. `None` at the head.
+    #[must_use]
+    pub fn span_prev(&self, id: SpanId) -> Option<SpanId> {
+        self.span(id).f_prev.map(SpanId::new)
+    }
+
+    /// Links `next` after `id`.
+    ///
+    /// Port of `SkOpSpan::setNext`, with the matching back link so the chain
+    /// stays walkable in both directions.
+    pub fn span_set_next(&mut self, id: SpanId, next: Option<SpanId>) {
+        self.span_mut(id).f_next = next.map(SpanId::index);
+        if let Some(n) = next {
+            self.span_mut(n).f_prev = Some(id.index());
+        }
+    }
+
+    /// Links `prev` before `id`.
+    ///
+    /// Port of `SkOpSpanBase::setPrev`.
+    pub fn span_set_prev(&mut self, id: SpanId, prev: Option<SpanId>) {
+        self.span_mut(id).f_prev = prev.map(SpanId::index);
+        if let Some(p) = prev {
+            self.span_mut(p).f_next = Some(id.index());
+        }
+    }
+
+    /// Returns true when `id` is the terminal span, at t == 1.
+    ///
+    /// Port of `SkOpSpanBase::final`.
+    #[must_use]
+    pub fn span_is_final(&self, id: SpanId) -> bool {
+        self.span(id).f_t == 1.0
+    }
+
+    /// Returns `id` as a winding-carrying span, or `None` if it is terminal.
+    ///
+    /// Port of `SkOpSpanBase::upCastable`. C++ downcasts the base pointer;
+    /// the arena keeps both roles in one pool, so the distinction is made
+    /// here instead of by the type. `upCast` itself, which asserts rather than
+    /// returning null, has no separate form: a caller that knows the span is
+    /// not terminal can `expect` on this.
+    #[must_use]
+    pub fn span_upcastable(&self, id: SpanId) -> Option<SpanId> {
+        if self.span_is_final(id) {
+            None
+        } else {
+            Some(id)
+        }
+    }
+
+    /// Returns the segment `id` belongs to.
+    ///
+    /// Port of `SkOpSpanBase::segment`.
+    #[must_use]
+    pub fn span_segment(&self, id: SpanId) -> Option<SegmentId> {
+        self.span(id).f_segment.map(SegmentId::new)
+    }
+
+    /// Returns the span's own point-and-t node.
+    ///
+    /// Port of `SkOpSpanBase::ptT`.
+    #[must_use]
+    pub fn span_ptt(&self, id: SpanId) -> Option<PtTId> {
+        self.span(id).f_ptt.map(PtTId::new)
+    }
+
+    /// Returns whichever of `id` and `end` has the lesser t, as a
+    /// winding-carrying span.
+    ///
+    /// Port of `SkOpSpanBase::starter`. The two must be on the same segment.
+    /// The lesser of the pair is never the terminal span unless both are, so
+    /// the upcast succeeds in every case the engine asks about.
+    #[must_use]
+    pub fn span_starter(&self, id: SpanId, end: SpanId) -> Option<SpanId> {
+        debug_assert_eq!(
+            self.span_segment(id),
+            self.span_segment(end),
+            "starter compares spans of one segment"
+        );
+        let result = if self.span(id).f_t < self.span(end).f_t {
+            id
+        } else {
+            end
+        };
+        self.span_upcastable(result)
+    }
+
+    /// Returns 1 when `end` lies after `id` along the segment, -1 otherwise.
+    ///
+    /// Port of `SkOpSpanBase::step`.
+    #[must_use]
+    pub fn span_step(&self, id: SpanId, end: SpanId) -> i32 {
+        if self.span(id).f_t < self.span(end).f_t {
+            1
+        } else {
+            -1
+        }
+    }
+
+    /// Returns every span of `segment`, head to tail.
+    ///
+    /// Stops early rather than spinning if the links are corrupt.
+    #[must_use]
+    pub fn segment_spans(&self, segment: SegmentId) -> Vec<SpanId> {
+        let mut out = Vec::new();
+        let mut cur = self.segment(segment).f_head;
+        while let Some(id) = cur {
+            out.push(id);
+            if out.len() > self.spans.len() {
+                break;
+            }
+            cur = self.span_next(id);
+        }
+        out
+    }
+
+    /// Returns the node on `id`'s ring that sits on `segment`.
+    ///
+    /// Port of `SkOpSpanBase::contains(const SkOpSegment*)`.
+    #[must_use]
+    pub fn span_contains_segment(&self, id: SpanId, segment: SegmentId) -> Option<PtTId> {
+        let start = self.span_ptt(id)?;
+        for node in self.ptt_ring(start) {
+            if !self.ptt(node).f_deleted && self.ptt_segment(node) == Some(segment) {
+                return Some(node);
+            }
+        }
+        None
+    }
+
     // --- graph roots -----------------------------------------------------
 
     /// Returns the first segment of the contour list.
@@ -1177,5 +1325,136 @@ mod tests {
         assert!(arena.ptt_on_end(head_ptt));
         assert!(arena.ptt_on_end(tail_ptt));
         assert!(!arena.ptt_on_end(mid_ptt));
+    }
+
+    // --- SkOpSpanBase chain (item 03, part 2) ----------------------------
+
+    /// Builds a segment whose spans sit at the given t values, linked in order
+    /// and each with its own PtT node.
+    fn segment_at_ts(arena: &mut OpArena, ts: &[f32]) -> (SegmentId, Vec<SpanId>) {
+        let seg = arena.alloc_segment(ArenaSegment::default());
+        let mut ids = Vec::new();
+        for &t in ts {
+            let (span, _) = span_with_ptt(arena, seg, t);
+            ids.push(span);
+        }
+        for i in 0..ids.len().saturating_sub(1) {
+            arena.span_set_next(ids[i], Some(ids[i + 1]));
+        }
+        arena.segment_mut(seg).f_head = ids.first().copied();
+        arena.segment_mut(seg).f_tail = ids.last().copied();
+        arena.segment_mut(seg).f_count = ids.len() as i32;
+        (seg, ids)
+    }
+
+    #[test]
+    fn set_next_links_both_directions() {
+        let mut arena = OpArena::new();
+        let (seg, spans) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        assert_eq!(arena.segment_spans(seg), spans);
+        for i in 0..spans.len() {
+            if i + 1 < spans.len() {
+                assert_eq!(arena.span_next(spans[i]), Some(spans[i + 1]));
+                assert_eq!(arena.span_prev(spans[i + 1]), Some(spans[i]));
+            }
+        }
+        assert_eq!(arena.span_prev(spans[0]), None, "head has no previous");
+        assert_eq!(arena.span_next(spans[2]), None, "tail has no next");
+    }
+
+    #[test]
+    fn set_prev_links_both_directions_too() {
+        let mut arena = OpArena::new();
+        let seg = arena.alloc_segment(ArenaSegment::default());
+        let (a, _) = span_with_ptt(&mut arena, seg, 0.0);
+        let (b, _) = span_with_ptt(&mut arena, seg, 1.0);
+        arena.span_set_prev(b, Some(a));
+        assert_eq!(arena.span_next(a), Some(b));
+        assert_eq!(arena.span_prev(b), Some(a));
+    }
+
+    #[test]
+    fn only_the_span_at_one_is_final() {
+        let mut arena = OpArena::new();
+        let (_, spans) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        assert!(!arena.span_is_final(spans[0]));
+        assert!(!arena.span_is_final(spans[1]));
+        assert!(arena.span_is_final(spans[2]));
+    }
+
+    #[test]
+    fn upcastable_refuses_the_terminal_span() {
+        let mut arena = OpArena::new();
+        let (_, spans) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        assert_eq!(arena.span_upcastable(spans[0]), Some(spans[0]));
+        assert_eq!(arena.span_upcastable(spans[1]), Some(spans[1]));
+        assert_eq!(
+            arena.span_upcastable(spans[2]),
+            None,
+            "the terminal span carries no winding"
+        );
+    }
+
+    #[test]
+    fn starter_returns_the_lesser_t_either_way_round() {
+        // The acceptance case: both orderings must give the same answer.
+        let mut arena = OpArena::new();
+        let (_, spans) = segment_at_ts(&mut arena, &[0.0, 0.25, 0.75, 1.0]);
+        let (lo, hi) = (spans[1], spans[2]);
+        assert_eq!(arena.span_starter(lo, hi), Some(lo));
+        assert_eq!(arena.span_starter(hi, lo), Some(lo));
+
+        // Against the head, the head wins from either side.
+        assert_eq!(arena.span_starter(spans[0], hi), Some(spans[0]));
+        assert_eq!(arena.span_starter(hi, spans[0]), Some(spans[0]));
+    }
+
+    #[test]
+    fn step_reports_which_way_the_walk_runs() {
+        let mut arena = OpArena::new();
+        let (_, spans) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        assert_eq!(arena.span_step(spans[0], spans[2]), 1, "forwards");
+        assert_eq!(arena.span_step(spans[2], spans[0]), -1, "backwards");
+    }
+
+    #[test]
+    fn a_span_reaches_its_ptt_and_segment() {
+        let mut arena = OpArena::new();
+        let seg = arena.alloc_segment(ArenaSegment::default());
+        let (span, ptt) = span_with_ptt(&mut arena, seg, 0.5);
+        assert_eq!(arena.span_ptt(span), Some(ptt));
+        assert_eq!(arena.span_segment(span), Some(seg));
+    }
+
+    #[test]
+    fn span_contains_segment_walks_the_ptt_ring() {
+        // Two segments crossing: from a span on one, the ring reaches the
+        // other, which is how the engine hops between segments at a crossing.
+        let mut arena = OpArena::new();
+        let (seg_a, spans_a) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        let (seg_b, spans_b) = segment_at_ts(&mut arena, &[0.0, 0.5, 1.0]);
+        let a_mid = arena.span_ptt(spans_a[1]).expect("ptt");
+        let b_mid = arena.span_ptt(spans_b[1]).expect("ptt");
+        assert!(arena.ptt_add_opp(a_mid, b_mid));
+
+        assert_eq!(arena.span_contains_segment(spans_a[1], seg_b), Some(b_mid));
+        assert_eq!(arena.span_contains_segment(spans_b[1], seg_a), Some(a_mid));
+        // A span not part of the crossing reaches nothing on the other segment.
+        assert_eq!(arena.span_contains_segment(spans_a[0], seg_b), None);
+    }
+
+    #[test]
+    fn two_segments_are_walked_independently() {
+        let mut arena = OpArena::new();
+        let (seg_a, spans_a) = segment_at_ts(&mut arena, &[0.0, 0.3, 1.0]);
+        let (seg_b, spans_b) = segment_at_ts(&mut arena, &[0.0, 0.6, 0.9, 1.0]);
+        assert_eq!(arena.segment_spans(seg_a), spans_a);
+        assert_eq!(arena.segment_spans(seg_b), spans_b);
+        for id in &spans_a {
+            assert_eq!(arena.span_segment(*id), Some(seg_a));
+        }
+        for id in &spans_b {
+            assert_eq!(arena.span_segment(*id), Some(seg_b));
+        }
     }
 }
