@@ -195,7 +195,7 @@ struct Edge {
 ///
 /// Stands in for Skia's `SkPath::isConvex()`, which this crate's `Path` does
 /// not expose. Curves are flattened first so control-point turns count.
-fn is_convex(path: &Path) -> bool {
+pub(super) fn is_convex(path: &Path) -> bool {
     let mut contours = 0;
     for (verb, _, _) in path.iter() {
         if verb == Verb::Move {

@@ -18,6 +18,7 @@ pub mod sk_intersection_helper;
 pub mod sk_intersections;
 pub mod sk_line_parameters;
 pub mod sk_op_angle;
+pub mod sk_op_builder;
 pub mod sk_op_coincidence;
 pub mod sk_op_contour;
 pub mod sk_op_edge_builder;
@@ -111,45 +112,7 @@ pub fn as_winding(path: &Path) -> Result<Path, PathKitError> {
     crate::pathops::sk_path_ops_as_winding::as_winding(path).ok_or(PathKitError::OperationFailed)
 }
 
-/// Accumulates a series of path operations, optimized for unioning many
-/// paths together.
-#[derive(Debug, Default)]
-pub struct OpBuilder {
-    paths: Vec<Path>,
-    ops: Vec<PathOp>,
-}
-
-impl OpBuilder {
-    /// Returns an empty builder.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            paths: Vec::new(),
-            ops: Vec::new(),
-        }
-    }
-
-    /// Adds `path` to the accumulated result via `operator`.
-    pub fn add(&mut self, path: Path, operator: PathOp) {
-        self.paths.push(path);
-        self.ops.push(operator);
-    }
-
-    /// Computes the accumulated result and resets the builder.
-    pub fn resolve(&mut self) -> Result<Path, PathKitError> {
-        if self.paths.is_empty() {
-            return Ok(Path::new());
-        }
-        let mut result = self.paths[0].clone();
-        for i in 1..self.paths.len() {
-            let op = self.ops[i - 1];
-            result = crate::pathops::op(&result, &self.paths[i], op)?;
-        }
-        self.paths.clear();
-        self.ops.clear();
-        Ok(result)
-    }
-}
+pub use sk_op_builder::OpBuilder;
 
 #[cfg(test)]
 mod tests {
