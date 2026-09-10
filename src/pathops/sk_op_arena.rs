@@ -42,7 +42,8 @@
 
 use super::sk_op_angle::SkOpAngle;
 use super::sk_op_span::{is_zero_or_one, SkOpPtT, SkOpSpanBase, PK_MIN_S32};
-use super::sk_path_ops_types::OpPhase;
+use super::sk_path_ops_types::{approximately_equal, OpPhase};
+use crate::core::Point;
 
 /// Maximum number of times winding computation is retried before giving up.
 ///
@@ -93,6 +94,14 @@ impl_handle!(PtTId);
 impl_handle!(SegmentId);
 impl_handle!(AngleId);
 impl_handle!(CoinId);
+
+/// Returns true when two points are equal to within the grid tolerance.
+///
+/// Port of `SkDPoint::ApproximatelyEqual`.
+fn points_approximately_equal(a: Point, b: Point) -> bool {
+    approximately_equal(f64::from(a.x), f64::from(b.x))
+        && approximately_equal(f64::from(a.y), f64::from(b.y))
+}
 
 /// One record of two segments running along the same path.
 ///
@@ -1153,6 +1162,112 @@ impl OpArena {
         true
     }
 
+
+    // --- segment span insertion (item 05, part 1) -------------------------
+
+    /// Inserts a span at `t` on `segment`, returning its point-and-t node.
+    ///
+    /// Port of `SkOpSegment::addT`. Walks the chain in increasing t; an
+    /// existing span at the same t, or at a t whose point matches, is reused
+    /// with its add count bumped, and otherwise a new span goes in before the
+    /// first larger t.
+    ///
+    /// This is the operation that puts an intersection into the graph. Without
+    /// it nothing else in the engine has anything to walk.
+    ///
+    /// Returns `None` when the chain is malformed — a t below the head, or a t
+    /// above the tail — which C++ treats as a hard failure.
+    pub fn segment_add_t(&mut self, segment: SegmentId, t: f32, pt: Point) -> Option<PtTId> {
+        let mut span_base = self.segment(segment).f_head?;
+        let tail = self.segment(segment).f_tail;
+        loop {
+            let result = self.span_ptt(span_base)?;
+            let result_t = self.ptt(result).f_t;
+            if t == result_t || (!is_zero_or_one(t) && self.spans_match(result, t, pt)) {
+                self.span_mut(span_base).bump_span_adds();
+                return Some(result);
+            }
+            if t < result_t {
+                // The new span goes between this one and the one before it.
+                let prev = self.span_prev(span_base)?;
+                let span = self.segment_insert_after(segment, prev, t, pt);
+                self.span_mut(span).bump_span_adds();
+                return self.span_ptt(span);
+            }
+            if Some(span_base) == tail {
+                // Past the end of the chain with nowhere to put it.
+                return None;
+            }
+            span_base = self.span_next(span_base)?;
+        }
+    }
+
+    /// Returns true when `base` names the same place as `t` and `pt`.
+    ///
+    /// Port of the same-segment half of `SkOpSegment::match`. The cross-segment
+    /// case needs `ptsDisjoint`, which is item 05 part 9.
+    fn spans_match(&self, base: PtTId, t: f32, pt: Point) -> bool {
+        let node = self.ptt(base);
+        if node.f_t == t {
+            return true;
+        }
+        points_approximately_equal(pt, node.f_pt)
+    }
+
+    /// Allocates a span at `t` and links it after `prev`.
+    ///
+    /// Port of `SkOpSegment::insert`.
+    fn segment_insert_after(
+        &mut self,
+        segment: SegmentId,
+        prev: SpanId,
+        t: f32,
+        pt: Point,
+    ) -> SpanId {
+        let next = self.span_next(prev);
+        let span = self.alloc_span(SkOpSpanBase::new(t, pt, Some(segment.index())));
+        let ptt = self.alloc_ptt(SkOpPtT::new(t, pt, Some(span.index())));
+        self.ptt_init_ring(ptt);
+        self.span_mut(span).f_ptt = Some(ptt.index());
+
+        self.span_mut(span).f_prev = Some(prev.index());
+        self.span_mut(prev).f_next = Some(span.index());
+        self.span_mut(span).f_next = next.map(SpanId::index);
+        if let Some(n) = next {
+            self.span_mut(n).f_prev = Some(span.index());
+        } else {
+            // The new span is now the end of the chain.
+            self.segment_mut(segment).f_tail = Some(span);
+        }
+        self.segment_mut(segment).f_count += 1;
+        span
+    }
+
+    /// Builds a segment with spans at t = 0 and t = 1, ready for `add_t`.
+    ///
+    /// Stands in for `SkOpSegment::init`, which also stores the geometry;
+    /// that half stays on [`super::sk_op_segment::SkOpSegment`] until the two
+    /// are joined.
+    pub fn alloc_segment_with_ends(&mut self, start: Point, end: Point) -> SegmentId {
+        let segment = self.alloc_segment(ArenaSegment::default());
+        let head = self.alloc_span(SkOpSpanBase::new(0.0, start, Some(segment.index())));
+        let head_ptt = self.alloc_ptt(SkOpPtT::new(0.0, start, Some(head.index())));
+        self.ptt_init_ring(head_ptt);
+        self.span_mut(head).f_ptt = Some(head_ptt.index());
+
+        let tail = self.alloc_span(SkOpSpanBase::new(1.0, end, Some(segment.index())));
+        let tail_ptt = self.alloc_ptt(SkOpPtT::new(1.0, end, Some(tail.index())));
+        self.ptt_init_ring(tail_ptt);
+        self.span_mut(tail).f_ptt = Some(tail_ptt.index());
+
+        self.span_mut(head).f_next = Some(tail.index());
+        self.span_mut(tail).f_prev = Some(head.index());
+        self.segment_mut(segment).f_head = Some(head);
+        self.segment_mut(segment).f_tail = Some(tail);
+        self.segment_mut(segment).f_count = 2;
+        segment
+    }
+
     // --- graph roots -----------------------------------------------------
 
     /// Returns the first segment of the contour list.
@@ -1273,8 +1388,7 @@ impl OpArena {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Point;
-    use crate::pathops::sk_op_span::PK_MIN_S32;
+        use crate::pathops::sk_op_span::PK_MIN_S32;
 
     /// Builds a segment with `count` spans linked head to tail, and links each
     /// span back to the segment. Returns the segment and its span handles.
@@ -2221,5 +2335,164 @@ mod tests {
         assert!(arena.span_merge_matches(spans[0], other[0], |_, s| collapsed.push(s)));
         let _ = head_ptt;
         assert_eq!(collapsed, vec![seg], "the segment collapsed to a point");
+    }
+
+    // --- segment span insertion (item 05, part 1) ------------------------
+
+    /// A horizontal segment from (0,0) to (100,0), with only its two ends.
+    fn horizontal_segment(arena: &mut OpArena) -> SegmentId {
+        arena.alloc_segment_with_ends(Point::new(0.0, 0.0), Point::new(100.0, 0.0))
+    }
+
+    /// The t value of each span of `segment`, head to tail.
+    fn span_ts(arena: &OpArena, segment: SegmentId) -> Vec<f32> {
+        arena
+            .segment_spans(segment)
+            .into_iter()
+            .map(|id| arena.span(id).f_t)
+            .collect()
+    }
+
+    #[test]
+    fn a_new_segment_has_just_its_two_ends() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        assert_eq!(span_ts(&arena, seg), vec![0.0, 1.0]);
+        assert_eq!(arena.segment(seg).f_count, 2);
+    }
+
+    #[test]
+    fn add_t_inserts_a_span_in_order() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let ptt = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        assert!((arena.ptt(ptt).f_t - 0.5).abs() < 1e-9);
+        assert_eq!(span_ts(&arena, seg), vec![0.0, 0.5, 1.0]);
+        assert_eq!(arena.segment(seg).f_count, 3);
+    }
+
+    #[test]
+    fn add_t_three_times_gives_an_ordered_chain() {
+        // The acceptance case: three interior t values, walked in order.
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        // Inserted out of order on purpose.
+        for t in [0.75f32, 0.25, 0.5] {
+            arena
+                .segment_add_t(seg, t, Point::new(t * 100.0, 0.0))
+                .expect("inserted");
+        }
+        assert_eq!(span_ts(&arena, seg), vec![0.0, 0.25, 0.5, 0.75, 1.0]);
+        assert_eq!(arena.segment(seg).f_count, 5);
+
+        // The chain is linked both ways.
+        let spans = arena.segment_spans(seg);
+        for i in 0..spans.len() {
+            if i + 1 < spans.len() {
+                assert_eq!(arena.span_next(spans[i]), Some(spans[i + 1]));
+                assert_eq!(arena.span_prev(spans[i + 1]), Some(spans[i]));
+            }
+        }
+        assert_eq!(arena.segment(seg).f_tail, spans.last().copied());
+    }
+
+    #[test]
+    fn adding_the_same_t_twice_yields_one_span() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let first = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let second = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("reused");
+        assert_eq!(first, second, "the same t reuses its node");
+        assert_eq!(span_ts(&arena, seg), vec![0.0, 0.5, 1.0]);
+        assert_eq!(arena.segment(seg).f_count, 3);
+    }
+
+    #[test]
+    fn adding_a_t_at_an_existing_point_reuses_it() {
+        // A different t naming the same place is the same intersection.
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let first = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let again = arena
+            .segment_add_t(seg, 0.500_000_1, Point::new(50.0, 0.0))
+            .expect("reused");
+        assert_eq!(first, again);
+        assert_eq!(span_ts(&arena, seg), vec![0.0, 0.5, 1.0]);
+    }
+
+    #[test]
+    fn add_t_bumps_the_span_add_count() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let ptt = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let span = arena.ptt_span(ptt).expect("span");
+        assert_eq!(arena.span(span).f_span_adds, 1);
+        let _ = arena.segment_add_t(seg, 0.5, Point::new(50.0, 0.0));
+        assert_eq!(arena.span(span).f_span_adds, 2);
+    }
+
+    #[test]
+    fn adding_t_at_the_ends_reuses_head_and_tail() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let head = arena.segment(seg).f_head.expect("head");
+        let tail = arena.segment(seg).f_tail.expect("tail");
+
+        let at_zero = arena
+            .segment_add_t(seg, 0.0, Point::new(0.0, 0.0))
+            .expect("head reused");
+        let at_one = arena
+            .segment_add_t(seg, 1.0, Point::new(100.0, 0.0))
+            .expect("tail reused");
+        assert_eq!(arena.ptt_span(at_zero), Some(head));
+        assert_eq!(arena.ptt_span(at_one), Some(tail));
+        assert_eq!(arena.segment(seg).f_count, 2, "no new spans");
+    }
+
+    #[test]
+    fn every_added_span_knows_its_segment_and_has_its_own_ptt() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        for t in [0.2f32, 0.4, 0.6] {
+            let _ = arena.segment_add_t(seg, t, Point::new(t * 100.0, 0.0));
+        }
+        for span in arena.segment_spans(seg) {
+            assert_eq!(arena.span_segment(span), Some(seg));
+            let ptt = arena.span_ptt(span).expect("every span owns a node");
+            assert_eq!(arena.ptt_span(ptt), Some(span));
+            assert!(!arena.ptt_is_alias(ptt));
+        }
+    }
+
+    #[test]
+    fn two_segments_crossing_each_get_their_own_span() {
+        // What an intersection actually does: a span on each segment at its
+        // own t, and their PtT nodes joined so the walk can cross over.
+        let mut arena = OpArena::new();
+        let a = arena.alloc_segment_with_ends(Point::new(0.0, 0.0), Point::new(100.0, 0.0));
+        let b = arena.alloc_segment_with_ends(Point::new(50.0, -50.0), Point::new(50.0, 50.0));
+        let cross = Point::new(50.0, 0.0);
+
+        let pa = arena.segment_add_t(a, 0.5, cross).expect("on a");
+        let pb = arena.segment_add_t(b, 0.5, cross).expect("on b");
+        assert!(arena.ptt_add_opp(pa, pb));
+
+        assert_eq!(span_ts(&arena, a), vec![0.0, 0.5, 1.0]);
+        assert_eq!(span_ts(&arena, b), vec![0.0, 0.5, 1.0]);
+        // From a's crossing span, the ring reaches b and back.
+        let span_a = arena.ptt_span(pa).expect("span");
+        assert_eq!(arena.span_contains_segment(span_a, b), Some(pb));
+        let span_b = arena.ptt_span(pb).expect("span");
+        assert_eq!(arena.span_contains_segment(span_b, a), Some(pa));
     }
 }
