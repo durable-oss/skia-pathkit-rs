@@ -59,7 +59,7 @@
 //! `TODO/2026-09-10-pathops-engine-port-gaps.md`.
 
 use super::sk_line_parameters::{LinePoint, SkLineParameters};
-use super::sk_path_ops_types::{almost_equal_ulps, approximately_zero};
+use super::sk_path_ops_types::almost_equal_ulps;
 use crate::core::Verb;
 
 /// Number of sectors the circle of directions is divided into.
@@ -230,6 +230,7 @@ impl CurveSweep {
     ///
     /// Port of `SkDCurve::offset`; angles are compared after being moved to a
     /// common origin.
+    #[allow(clippy::needless_range_loop)] // mirrors the C++ point indexing
     pub fn offset(&mut self, dx: f64, dy: f64) {
         let count = verb_to_points(self.f_verb);
         for index in 0..=count {
@@ -281,6 +282,7 @@ impl CurveSweep {
     }
 
     /// Returns the largest absolute coordinate over points `0..=count`.
+    #[allow(clippy::needless_range_loop)] // mirrors the C++ point indexing
     fn max_component(&self, count: usize) -> f64 {
         let mut max_val: f64 = 0.0;
         for index in 0..=count {
@@ -624,6 +626,7 @@ impl SkOpAngle {
     /// `self_mid` and `rh_mid` are the vectors from each curve's origin to the
     /// point at its mid t, used only when the sweeps span more than 180
     /// degrees.
+    #[allow(clippy::too_many_arguments)] // segment data the arena cannot supply yet
     pub fn convex_hull_overlaps(
         &mut self,
         rh: &SkOpAngle,
@@ -815,6 +818,7 @@ impl SkOpAngle {
     /// are translated to share a starting point; if a control point was on one
     /// side of a compared line before the translation and on the other side
     /// after, the previously computed order is reversed.
+    #[allow(clippy::needless_range_loop)] // mirrors the C++ point indexing
     pub fn alignment_same_side(&self, test: &SkOpAngle, order: &mut i32) {
         if *order < 0 {
             return;
@@ -1225,31 +1229,33 @@ mod tests {
     #[test]
     fn find_sector_places_the_compass_points() {
         let a = SkOpAngle::new();
-        // The header's table: +x is 31, +y is 7 (sedecimant 15 and 3).
+        // Skia's y axis points down, so the header diagram's "to the top"
+        // sector 7 is reached with a negative y.
         assert_eq!(a.find_sector(Verb::Line, 1.0, 0.0), 31);
-        assert_eq!(a.find_sector(Verb::Line, 0.0, 1.0), 7);
+        assert_eq!(a.find_sector(Verb::Line, 0.0, -1.0), 7);
         assert_eq!(a.find_sector(Verb::Line, -1.0, 0.0), 15);
-        assert_eq!(a.find_sector(Verb::Line, 0.0, -1.0), 23);
+        assert_eq!(a.find_sector(Verb::Line, 0.0, 1.0), 23);
     }
 
     #[test]
     fn find_sector_places_the_diagonals() {
         let a = SkOpAngle::new();
-        // Exact 45s land on odd multiples: sedecimant 1,5,9,13 -> 3,11,19,27.
-        assert_eq!(a.find_sector(Verb::Line, 1.0, 1.0), 3);
-        assert_eq!(a.find_sector(Verb::Line, -1.0, 1.0), 11);
-        assert_eq!(a.find_sector(Verb::Line, -1.0, -1.0), 19);
-        assert_eq!(a.find_sector(Verb::Line, 1.0, -1.0), 27);
+        // Exact 45s land on sedecimants 1, 5, 9, 13 -> sectors 3, 11, 19, 27,
+        // walking counterclockwise on screen from the up-and-right diagonal.
+        assert_eq!(a.find_sector(Verb::Line, 1.0, -1.0), 3);
+        assert_eq!(a.find_sector(Verb::Line, -1.0, -1.0), 11);
+        assert_eq!(a.find_sector(Verb::Line, -1.0, 1.0), 19);
+        assert_eq!(a.find_sector(Verb::Line, 1.0, 1.0), 27);
     }
 
     #[test]
     fn find_sector_orders_counterclockwise_within_a_quadrant() {
         let a = SkOpAngle::new();
-        // Sweeping ccw from +x through +y in the first quadrant, the sector
-        // must increase: 31 wraps to 0, so compare the three interior ones.
-        let shallow = a.find_sector(Verb::Line, 4.0, 1.0); // x > y
-        let diagonal = a.find_sector(Verb::Line, 1.0, 1.0); // x == y
-        let steep = a.find_sector(Verb::Line, 1.0, 4.0); // x < y
+        // Sweeping ccw on screen from +x means y goes negative. Sector 31
+        // wraps to 0, so compare the three interior directions.
+        let shallow = a.find_sector(Verb::Line, 4.0, -1.0); // |x| > |y|
+        let diagonal = a.find_sector(Verb::Line, 1.0, -1.0); // |x| == |y|
+        let steep = a.find_sector(Verb::Line, 1.0, -4.0); // |x| < |y|
         assert_eq!(shallow, 1);
         assert_eq!(diagonal, 3);
         assert_eq!(steep, 5);
@@ -1259,20 +1265,21 @@ mod tests {
     #[test]
     fn find_sector_covers_all_four_quadrants_in_order() {
         let a = SkOpAngle::new();
-        // Walk ccw from just above +x all the way around; sectors ascend.
+        // Walk ccw on screen from just above +x all the way around; the
+        // sectors ascend the whole way.
         let dirs = [
-            (4.0, 1.0),
-            (1.0, 1.0),
-            (1.0, 4.0),
-            (-1.0, 4.0),
-            (-1.0, 1.0),
-            (-4.0, 1.0),
-            (-4.0, -1.0),
-            (-1.0, -1.0),
-            (-1.0, -4.0),
-            (1.0, -4.0),
-            (1.0, -1.0),
             (4.0, -1.0),
+            (1.0, -1.0),
+            (1.0, -4.0),
+            (-1.0, -4.0),
+            (-1.0, -1.0),
+            (-4.0, -1.0),
+            (-4.0, 1.0),
+            (-1.0, 1.0),
+            (-1.0, 4.0),
+            (1.0, 4.0),
+            (1.0, 1.0),
+            (4.0, 1.0),
         ];
         let sectors: Vec<i8> = dirs
             .iter()
@@ -1295,12 +1302,13 @@ mod tests {
     #[test]
     fn find_sector_treats_curve_near_ties_as_exact_diagonals() {
         let a = SkOpAngle::new();
+        // Eight ULPs above 1.0 in f32: inside the tolerance, but not equal.
+        let nearly = 1.000_000_953_674_316_4;
         // For a line, a hair off 45 degrees is not the diagonal sector.
-        let nearly = 1.0 + 1e-9;
-        assert_ne!(a.find_sector(Verb::Line, nearly, 1.0), 3);
+        assert_eq!(a.find_sector(Verb::Line, nearly, -1.0), 1);
         // For a curve the near-tie collapses to the exact diagonal, so the
         // tangent gets its own sector.
-        assert_eq!(a.find_sector(Verb::Quad, nearly, 1.0), 3);
+        assert_eq!(a.find_sector(Verb::Quad, nearly, -1.0), 3);
     }
 
     // --- set_sector -------------------------------------------------------
@@ -1645,9 +1653,24 @@ mod tests {
 
     // --- arena and loops --------------------------------------------------
 
-    /// Orders angles by sector, which is enough to exercise the loop code.
+    /// Stands in for `SkOpAngle::after` using sectors alone.
+    ///
+    /// Returns true when `angle` falls in the counterclockwise arc running
+    /// from `test` to `test`'s successor. The real comparator answers the same
+    /// question with curve geometry; sectors are enough to exercise the loop
+    /// splicing. A plain `>` on the sector would not do: the loop is circular,
+    /// so ordering has to be relative to the arc rather than absolute.
     fn by_sector(list: &AngleList, angle: usize, test: usize) -> bool {
-        list.get(angle).f_sector_start > list.get(test).f_sector_start
+        let gap = |from: i8, to: i8| -> i32 { (i32::from(to) - i32::from(from)).rem_euclid(32) };
+        let Some(next) = list.next_of(test) else {
+            return true;
+        };
+        if next == test {
+            return true;
+        }
+        let test_sector = list.get(test).f_sector_start;
+        gap(test_sector, list.get(angle).f_sector_start)
+            < gap(test_sector, list.get(next).f_sector_start)
     }
 
     #[test]
@@ -1711,10 +1734,20 @@ mod tests {
         assert_eq!(list.loop_count(east), 4);
         assert!(list.validate_next(east));
 
-        // Walking from the smallest sector, the sectors ascend.
+        // The loop is circular, so the walk is some rotation of the ascending
+        // order: each step advances counterclockwise, wrapping exactly once.
         let mut seen = Vec::new();
         list.for_each_in_loop(north, |_, angle| seen.push(angle.f_sector_start));
-        assert_eq!(seen, vec![7, 15, 23, 31]);
+        assert_eq!(seen.len(), 4);
+        let mut sorted = seen.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, vec![7, 15, 23, 31]);
+        let wraps = seen
+            .windows(2)
+            .filter(|pair| pair[0] > pair[1])
+            .count()
+            + usize::from(seen[3] > seen[0]);
+        assert_eq!(wraps, 1, "sectors ascend counterclockwise: {seen:?}");
     }
 
     #[test]

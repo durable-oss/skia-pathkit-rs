@@ -58,9 +58,10 @@ pub struct SkOpRayHit {
 /// Forward declarations for related types
 #[derive(Debug, Clone)]
 pub struct SkOpGlobalState;
-pub struct SkOpAngle;
 pub struct SkOpCoincidence;
 pub struct SkPathWriter;
+
+pub use super::sk_op_angle::SkOpAngle;
 
 /// A path contour with segments
 #[derive(Debug)]

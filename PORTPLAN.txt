@@ -1,0 +1,532 @@
+================================================================================
+PORTPLAN — Finishing the pathops engine port
+================================================================================
+
+Scope: comparison of the current Rust state of
+
+  SkOpSegment        (src/pathops/sk_op_segment.rs)
+  SkOpSpan           (src/pathops/sk_op_span.rs)
+  SkOpContour        (src/pathops/sk_op_contour.rs)
+  SkOpCoincidence    (src/pathops/sk_op_coincidence.rs)
+  SkAddIntersections (src/pathops/SkAddIntersections.rs)
+  SkPathWriter       (src/pathops/sk_path_writer.rs)
+  SkPathOpsDebug     (src/pathops/sk_path_ops_debug.rs)
+
+against their C++ originals in old/pathkit/src/pathops/ (*.h + *.cpp), and a
+complete plan to finish the port.
+
+--------------------------------------------------------------------------------
+0. EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+
+The pathops engine is NOT functionally ported. The current Rust files are a mix
+of (a) truncated data structures, (b) "simplified" method stubs that return
+hard-coded `true`/`false`/empty values, and (c) a handful of genuinely ported
+leaf functions (mostly geometric evaluation and debug formatting). The boolean
+operation engine's core algorithms — span insertion, coincidence
+detection/expansion, angle/winding computation, and contour assembly — are
+absent or no-ops.
+
+In addition to the per-file gaps, there are four cross-cutting structural
+problems that must be fixed before any of the seven files can be called
+"done":
+
+  S1. The crate does not build. `Cargo.toml` declares two optional path
+      dependencies (`skia-rs-core`, `skia-rs-path`) pointing at
+      `inspirations/skia-rs/crates/...`, which does not exist. Cargo fails to
+      resolve these even with `--no-default-features`:
+
+          error: no matching package named `skia-rs-core` found
+          location searched: .../inspirations/skia-rs/crates/skia-rs-core
+
+      Because they are optional they should not be required for a default
+      build; the paths are unresolvable and must be fixed (see §5.1).
+
+      FIXED.
+
+  S2. Seven source files are orphaned — they exist under src/pathops/ but are
+      NOT declared in src/pathops/mod.rs, so they are never compiled:
+
+          SkAddIntersections.rs       (the file this plan concerns)
+          SkIntersections.rs
+          SkDCubicLineIntersection.rs
+          SkDCubicToQuads.rs
+          SkDQuadLineIntersection.rs
+          SkPathOpsOp.rs
+          SkPathOpsCurve.rs
+
+      mod.rs only declares the snake_case modules (sk_op_*, sk_path_*). These
+      capitalized files were early ports that were superseded by the snake_case
+      rename but never wired in or deleted.
+
+  S3. Naming/import mismatches. Even if the orphaned files were declared, they
+      reference module paths that do not resolve. E.g. SkAddIntersections.rs
+      does:
+
+          use crate::pathops::{SkOpContour::SkOpContour,
+                               SkOpCoincidence::SkOpCoincidence,
+                               SkIntersections::SkIntersections,
+                               SkIntersectionHelper::SkIntersectionHelper};
+
+      but the actual modules are `sk_op_contour`, `sk_op_coincidence`,
+      `sk_intersection_helper`, and `SkIntersections` (orphaned). None of these
+      top-level `SkOpContour::` / `SkIntersectionHelper::` module names exist.
+
+  S4. Missing transitive APIs. sk_intersection_helper.rs exposes
+      `SkIntersectionHelper::start_after()` and `::advance()` as no-op stubs
+      returning `false`, so `AddIntersectTs`'s double loop can never advance.
+      `SkIntersections` (orphaned) lacks almost every curve-vs-curve dispatch
+      method that SkAddIntersections.rs calls (quad_horizontal, conic_vertical,
+      intersect_cubic_conic, etc.). These APIs do not exist anywhere yet.
+
+Conclusion: "finishing the port" is a from-scratch build of the engine core,
+not a handful of edits. The plan below orders the work by data-structure
+dependency and flags the memory-model decision that everything else depends on.
+
+--------------------------------------------------------------------------------
+1. COMPARISON METHODOLOGY
+--------------------------------------------------------------------------------
+
+For each of the seven files we compared:
+
+  * struct/field lists   (C++ .h vs Rust struct)
+  * method surface       (C++ .h/.cpp method defs vs Rust `impl` methods)
+  * body fidelity        (real algorithm vs "Simplified" stub)
+  * test coverage        (Rust `#[cfg(test)]` vs C++ behavior)
+
+Line counts give a first-order signal:
+
+  C++ source                  Rust port                gap
+  SkOpSegment.cpp  1782       sk_op_segment.rs   543   far smaller + stubs
+  SkOpSpan.cpp      485       sk_op_span.rs      133   missing PtT/SpanBase
+  SkOpContour.cpp   109       sk_op_contour.rs   691   larger but stubbed
+  SkOpCoincidence.cpp 1441    sk_op_coincidence.rs 10  stub
+  SkAddIntersections.cpp 580  SkAddIntersections.rs 457  orphaned + stubbed
+  SkPathWriter.cpp  432       sk_path_writer.rs  665   assemble() incomplete
+  SkPathOpsDebug.cpp 3044     sk_path_ops_debug.rs 521 partial (formatters only)
+
+Note the Rust files are often *longer* than the C++ while doing less, because
+they carry doc comments, tests, and `derive` impls. Length is not progress.
+
+--------------------------------------------------------------------------------
+2. PER-FILE COMPARISON
+--------------------------------------------------------------------------------
+
+2.1  SkOpSpan  (sk_op_span.rs)   — MOST FOUNDATIONAL, LEAST DONE
+--------------------------------------------------------------------------------
+C++ defines THREE tightly-coupled types (SkOpSpan.h):
+
+  SkOpPtT       — a (t, pt) node that lives in an intrusive singly-linked
+                  "opposite" list across two curves; fields: fT, fPt, fSpan,
+                  fNext, fDeleted, fDuplicatePt, fCoincident.
+  SkOpSpanBase  — base span; owns a SkOpPtT plus fSegment, fCoinEnd (intrusive
+                  circular linked list), fFromAngle, fPrev, fSpanAdds, fAligned,
+                  fChased. Enum class Collapsed {kNo,kYes,kError}.
+  SkOpSpan      — derived; adds fCoincident (circular list), fToAngle, fNext,
+                  fWindSum, fOppSum, fWindValue, fOppValue, fTopTTry, fDone,
+                  fAlreadyAdded.
+
+Rust port has:
+  * `SkOpSpan` only (a flat struct), with fields t/pt/wind_value/opp_value/
+    wind_sum/opp_sum/done/next/final_span/top_t_try. `next` is `Option<Box>`.
+  * `Collapsed` enum (No/Yes/Error) — good, matches C++.
+  * `PK_MIN_S32`, `MAX_WINDING_TRIES`, `is_zero_or_one` helper.
+  * Uses `Rc`/`RefCell` imports but never uses them.
+
+Missing / wrong:
+  * No `SkOpPtT` at all (its 10-line stub lives in sk_op_coincidence.rs §2.4).
+  * No `SkOpSpanBase`; `SkOpSpan` conflates base + span fields. C++ keeps the
+    base/span split so a terminal span (t == 1) can be represented without
+    winding fields and without the `final()`/`upCast()` dance.
+  * No `fCoinEnd`, `fCoincident` (coincidence lists), `fFromAngle`/`fToAngle`
+    (angle linkage), `fAligned`, `fChased`, `fSpanAdds`, `fDuplicatePt`,
+    `fDeleted`, `fCoincident` (on PtT).
+  * `next: Option<Box<SkOpSpan>>` cannot express the bidirectional, shared,
+    aliased lists the C++ relies on (see §4 memory model).
+  * Missing methods (from .cpp): SkOpPtT::{active,alias,contains,contour,find,
+    globalState,init,onEnd,prev,ptAlreadySeen,segment,setDeleted};
+    SkOpSpanBase::{addOpp,checkForCollapsedCoincidence,collapsed,contains,
+    containsCoinEnd,contour,initBase,merge,mergeMatches};
+    SkOpSpan::{computeWindSum,containsCoincidence,init,insertCoincidence,
+    release,setOppSum,setWindSum}.
+  * `wind_sum`/`opp_sum` initialized to `i32::MIN` (== PK_MinS32) — correct.
+
+2.2  SkOpSegment  (sk_op_segment.rs)   — HEAVILY SIMPLIFIED
+--------------------------------------------------------------------------------
+C++ SkOpSegment.h/.cpp exposes ~90 methods across winding, angle, coincidence,
+and subdivision. The Rust port provides only:
+
+  * Verb enum (Line/Quad/Conic/Cubic) + point_count — good.
+  * SkOpSpanBase/SkOpSpan *duplicated local copies* (§2.1's flat span redefined
+    here as a separate, incompatible `SkOpSpan` with `base` sub-struct) — this
+    SHADOWS/conflicts with sk_op_span.rs's `SkOpSpan`. Two different `SkOpSpan`
+    types exist in the crate.
+  * constructors (new/new_line/add_line/add_quad/add_conic/add_cubic) — mostly
+    present but the bounds math is naive min/max-of-control-points rather than
+    Skia's tight curve bounds (setQuadBounds/setConicBounds/setCubicBounds from
+    SkDCurve). This yields *correct-but-loose* bounds (acceptable as an initial
+    AABB; not the tight bounds Skia computes, which matter for some culling).
+  * trivial accessors + is_horizontal/is_vertical/is_done/mark_all_done/
+    undone_span/pt_at_t/last_pt/contains/debug_validate.
+  * `pt_at_t` is WRONG for Conic (it does a linear lerp instead of the rational
+    conic formula).
+
+Missing (the entire engine surface), per SkOpSegment.cpp method list:
+  activeAngle, activeAngleInner, activeAngleOther, activeOp, activeWinding,
+  addCurveTo, addExpanded, addMissing, addT (two overloads), calcAngles,
+  clearAll, clearOne, ClearVisited, collapsed, ComputeOneSum(-Reverse),
+  computeSum, existing, findNextOp/Winding/Xor, findSortableTop, globalState,
+  init, insert, isClose, isSimple, isXor, joinEnds, markAllDone (real),
+  markAndChaseDone/Winding, markAngle, markDone, markWinding, match,
+  missingCoincidence, moveMultiples, moveNearby, nextChase, operand, OppSign,
+  oppXor, ptsDisjoint, rayCheck, release, setUpWinding(s), sortAngles, SpanSign,
+  spansNearby, subDivide, testForCoincidence, undoneSpan (real),
+  updateOppWinding(-Reverse), updateWinding(-Reverse), UseInnerWinding,
+  windingSpanAtT, windSum.
+
+Also missing fields: fContour, fVisited, fPts as a *borrowed* slice into the
+edge-builder arena (Rust uses owned `[Point;4]`), and the arena/globalState
+back-reference used by `insert()`.
+
+2.3  SkOpContour  (sk_op_contour.rs)   — STRUCTURE OK, ALGORITHMS STUBBED
+--------------------------------------------------------------------------------
+C++ SkOpContour is a thin container: it owns a linked list of SkOpSegment and
+delegates the real work to segments. The Rust port gets the container shape
+mostly right (f_head/f_tail/f_next/f_bounds/f_ccw/f_count/f_done/f_operand/
+f_reverse/f_xor/f_opp_xor, plus SkOpRayDir/SkOpRayHit enums and
+SkOpContourHead/SkOpContourBuilder helpers).
+
+But these methods are hard-coded stubs (comments literally say "Simplified
+implementation"):
+
+  calc_angles()         -> {}             (must call segment->calcAngles())
+  missing_coincidence() -> false          (must OR over segments)
+  move_multiples()      -> true           (must call segment->moveMultiples())
+  move_nearby()         -> true           (must call segment->moveNearby())
+  sort_angles()         -> true           (must call segment->sortAngles())
+  mark_all_done()       -> loop that `break`s on first segment (only head touched)
+  undone_span()         -> iterates `f_head.next()` and never includes the head
+                           itself (C++ iterates from &fHead)
+  join_segments()       -> {}             (must call segment->joinEnds(next))
+
+Other issues:
+  * `append_segment()` has a logic bug: it creates a *detached* new segment,
+    sets its `prev` to the old tail, but never calls `old_tail.set_next(...)`,
+    and `set_bounds()` walks `.next()` — so a contour with >1 segment will
+    produce a dangling chain (only the head is reachable). This mirrors the
+    broken doubly-linked ownership (§4).
+  * `start()`/`end()` return points but C++ returns `const SkPoint&` off the
+    segment pts; semantics differ for closed contours.
+  * `init()` hard-codes `f_id = 1` instead of asking globalState for a fresh ID.
+  * SkOpContourBuilder batching logic is close to C++ addLine/flush, but
+    `add_line` in the head struct lacks the `add_curve` dispatcher and
+    `set_contour`.
+  * `SkOpContourHead` uses a `Vec<SkOpContour>` (indexable, fine) but C++ uses
+    a linked list; `remove`/`joinAllSegments` are absent.
+
+Missing methods: toPath, toReversePath, toPartialForward, toPartialBackward,
+findSortableTop, rayCheck, resetReverse, joinSegments (real), and the debug
+dump family.
+
+2.4  SkOpCoincidence  (sk_op_coincidence.rs)   — ESSENTIALLY EMPTY
+--------------------------------------------------------------------------------
+The Rust file is 10 lines and defines only a bogus `SkOpPtT { f_t: f64 }` inside
+a `pub mod SkOpPtT`. That is: no `SkCoincidentSpans`, no `SkOpCoincidence`, no
+`add`/`addMissing`/`apply`/`mark`/`markCollapsed`/`expand`/`extend`/
+`findOverlaps`/`fixUp`/`release`/`releaseDeleted`/`TRange`/`checkOverlap`/
+`overlap`/`correctEnds` — none of the 40+ methods in SkOpCoincidence.cpp.
+
+This is the single largest hole in the engine. SkOpCoincidence is what tracks
+and merges overlapping spans; without it, none of the coincident-edge cases
+(shared edges, degenerate overlaps) that make boolean ops correct on real
+input can work.
+
+Note: the C++ SkOpPtT genuinely belongs in SkOpSpan (it is declared in
+SkOpSpan.h, not SkOpCoincidence.h). The Rust placement of a `SkOpPtT` inside
+sk_op_coincidence.rs is a porting error and must be moved.
+
+2.5  SkAddIntersections  (SkAddIntersections.rs)   — ORPHANED + INCOMPLETE
+--------------------------------------------------------------------------------
+The C++ `AddIntersectTs(test, next, coincidence)` is the engine entry point
+that walks every segment pair and dispatches to SkIntersections. The Rust file
+mirrors the *dispatch* structure faithfully (all 36 segment-type combinations
+are enumerated correctly) but:
+
+  * It is NOT in mod.rs, so it never compiles or runs (§S2).
+  * Its imports reference non-existent module names (§S3).
+  * `record_intersections` (the C++ coincidence-recording loop, lines 509–575)
+    is gutted: it computes `coin_index`/`coin_ptt` but never calls
+    `testTAt->addT`, `mergeMatches`, `addOpp`, `unaligned`, or
+    `coincidence->add(...)`. The core "record an intersection + record a
+    coincident span" work is a `// stub` comment.
+  * `compute_intersections` calls `ts.quad_horizontal(...)`, `ts.conic_line(...)`,
+    `ts.intersect_cubic_cubic(...)`, etc., none of which exist on the orphaned
+    `SkIntersections` type (§S4). The dispatch won't compile once wired.
+  * `almost_less_ulps`/`bounds_intersects` are trivial float fudges
+    (`a < b && (b-a).abs() > 1e-10`), not Skia's ULP-based `AlmostLessUlps`.
+  * `add_intersects_ts` uses `std::ptr::addr_eq(test, next)` for the
+    self-intersection early-skip; with the arena/refactor in §4 this identity
+    check needs a stable handle, not pointer equality on `&mut` refs.
+
+2.6  SkPathWriter  (sk_path_writer.rs)   — CLOSE, BUT assemble() AND TYPES DRIFT
+--------------------------------------------------------------------------------
+The C++ SkPathWriter defers lineTo emission to collapse collinear runs, records
+"partial" contours whose endpoints don't meet, then `assemble()`s them into a
+single path by nearest-endpoint matching. The Rust port is largely a faithful
+transcription of the *deferred-line* half (close/conicTo/cubicTo/deferredLine/
+deferredMove/finishContour/init/isClosed/lineTo/matchedLast/moveTo/quadTo/
+update/changedSlopes).
+
+Divergences / bugs:
+  * Type drift: C++ operates on `const SkOpPtT*` (so deferred points are
+    span t-values, not raw SkPoint). The Rust port uses `Option<Point>`, losing
+    the t-value/span linkage. This means `update()` cannot later ask "is this
+    endpoint a whole-span endpoint at t∈{0,1}" that `assemble()` needs to
+    lengthen partial contours through simple segments. Must switch to SkOpPtT
+    (or an equivalent handle) once §2.1 lands.
+  * `assemble()` is materially incomplete. The C++ (lines 202–431) does:
+        (a) lengthen any partial adjacent to a simple segment (the whole
+            `do { ... isSimple ... } while(true)` loop, lines 224–265) — the
+            Rust version is an empty `for _p_idx` loop with a TODO;
+        (b) build sLink/eLink with `PK_MaxS32` sentinels and a `distLookup`
+            indirection — the Rust uses `Option<usize>` with `!idx` twos-complement
+            "flip" encoding, which silently breaks when idx == 0 (USIZE_MAX vs
+            the C++ `~0 == -1` semantics is subtle but `!0usize` is not `-1`);
+        (c) the final re-link walk (lines 330–423) — the Rust version is a
+            single partially-transcribed `while` that does not correctly
+            consume sLink/eLink entries or alternate `forward`/reverse, and
+            never calls reversePathTo (it only appends verbs forward).
+  * `append_verb` for Conic uses `contour.conic_weights().get(0)` (always the
+    FIRST weight) instead of the weight at the current verb index; multi-conic
+    contours will corrupt weights.
+  * `Default for SkPathWriter` is `unimplemented!()`. This is the stub flagged
+    in PLANS/skia-rs-interop/00-overview.md. It cannot exist because SkPathWriter
+    borrows a `&mut Path`; a `Default` impl is semantically impossible — remove
+    the impl rather than leaving `unimplemented!()`.
+  * `close()` calls `self.init()` which rewinds `current` — fine — but then
+    manually replays verbs via `append_verb` instead of the C++
+    `fPathPtr->addPath(fCurrent)`. A `Path::add_path` helper (append/extend
+    modes) is missing and would simplify this and assemble().
+
+2.7  SkPathOpsDebug  (sk_path_ops_debug.rs)   — FORMATTERS DONE, HOOKS MISSING
+--------------------------------------------------------------------------------
+The C++ SkPathOpsDebug.cpp (3044 lines) is two things: (1) a large set of
+dump/validate/health-check routines gated behind DEBUG_COIN/DEBUG_ANGLE/etc.,
+and (2) the runtime debug state (gRunFail, gVeryVerbose, coin dictionaries,
+glitch log). The Rust port has ported:
+
+  * GlitchType enum + as_str        (matches k*_Glitch names)      — good
+  * CoinDictEntry / CoinDict        (add dedupes on iteration+line) — good
+  * SpanGlitch / GlitchLog          (record_* builders)             — good
+  * DebugFlags (gRunFail/gVeryVerbose as thread_local)              — partial
+  * SkPathOpsDebug::{op_str, mathematicaize, valid_wind, winding_printf}
+                                                                   — good
+  * chase_contains, check_health, show_active_spans as `#[cfg(debug_assertions)]`
+    stubs.
+
+Missing (the debug layer is inherently secondary, but should not be skipped):
+  * `check_health` and `show_active_spans` are empty placeholders; the C++
+    versions traverse all contours/spans and are the main way to validate the
+    engine during development.
+  * No `DumpOp`, `DumpSimplify`, `VerifyOp`, `VerifySimplify`, `ReportOpFail`,
+    `ReportSimplifyFail`, `ShowPath`, `ShowOnePath`, `gActiveSpans` bookkeeping.
+  * The `#[cfg(debug_assertions)]` gating is coarser than C++'s per-feature
+    `DEBUG_COIN` / `DEBUG_ANGLE` / `DEBUG_ACTIVE_SPANS` / `DEBUG_MARK_DONE`
+    flags; fine for a first pass, but the two health-check functions should get
+    real bodies once the span/segment/contour types are complete.
+  * `mathematicaize` has an edge-case bug: it only replaces `e` when preceded
+    by a digit (`num` tracking), and the test asserts "1.5e-3" -> "1.5*^-3",
+    which works, but a leading-exponent or `E` uppercase is not handled. Minor.
+
+--------------------------------------------------------------------------------
+3. DEPENDENCY ORDER (WHAT TO BUILD FIRST)
+--------------------------------------------------------------------------------
+
+The seven files form a strict dependency chain. Build in this order:
+
+  1. SkOpSpan   — SkOpPtT, SkOpSpanBase, SkOpSpan (the shared vocabulary).
+  2. SkOpSegment — depends on span, angle, curve, globalState.
+  3. SkOpContour — depends on segment; container + delegation only.
+  4. SkPathWriter — depends on SkOpPtT (for deferred/assemble endpoints) and a
+                    Path::add_path helper; is otherwise leaf-like. Can be done
+                    in parallel with 5–6 once 1 is stable.
+  5. SkOpCoincidence — depends on SkOpPtT/SkOpSpanBase/SkOpSpan + segment.
+  6. SkAddIntersections — depends on 1–5 plus a *complete* SkIntersections
+       (which itself must gain all curve-vs-curve methods).
+  7. SkPathOpsDebug — last; its health-check bodies need 1–5 to exist.
+
+There are also two enablers that are NOT among the seven files but are
+prerequisites for them:
+
+  * SkIntersections (SkIntersections.rs) must be completed and wired into
+    mod.rs — currently orphaned and missing ~20 dispatch methods called by
+    SkAddIntersections.
+  * SkOpGlobalState / SkArenaAlloc (see §4) must be defined; every one of the
+    seven types holds a back-reference to it (`globalState()->allocator()`).
+
+--------------------------------------------------------------------------------
+4. MEMORY MODEL / OWNERSHIP — THE KEY DESIGN DECISION
+--------------------------------------------------------------------------------
+
+The C++ code relies on intrusive, aliased, bidirectional linked structures:
+
+  * SkOpSegment:  fNext/fPrev doubly-linked list.
+  * SkOpSpan/SkOpSpanBase: fNext/fPrev list per segment.
+  * SkOpPtT:       singly-linked fNext "opposite" ring across two segments.
+  * SkOpSpanBase:  fCoinEnd circular list; SkOpSpan: fCoincident circular list.
+  * Angles:        fFromAngle/fToAngle pointing at SkOpAngle nodes.
+  * Everything is allocated from a SkArenaAlloc owned by SkOpGlobalState, and
+    freed by dropping the global state at end of an op.
+
+A faithful Rust port CANNOT use `Box`/`Option<Box>` (current code) — that gives
+single-owner, acyclic, non-aliased trees and cannot express the above. It also
+cannot use `Rc<RefCell<>>` naively, because the circular lists would leak and
+`RefCell` borrowing would fight the pervasive read-modify-write access pattern.
+
+Recommended approach: an arena/index ("slotmap") model that mirrors Skia's
+arena:
+
+  * A `SkOpGlobalState` (or `OpsArena`) owns:
+        segments:  Vec<SegmentData>
+        spans:     Vec<SpanBaseData>   (with a discriminant for base vs span)
+        pt_ts:     Vec<PtTData>
+        coins:     Vec<CoincidentSpans>
+        angles:    Vec<AngleData>
+    and all inter-object links become plain `usize` indices (with a `SK_NONE`
+    sentinel, e.g. usize::MAX) instead of pointers.
+  * Objects hold `global: usize`/`arena` handles rather than `&`/`Box`; this
+    removes the `&'static mut` + `std::mem::transmute` aliasing UB currently in
+    sk_intersection_helper.rs (`init()` transmutes a `&mut` into `&'static mut`).
+  * "Deletion" = tombstone flags (fDeleted, fDone) exactly as C++ does — the
+    arena is dropped whole, so no per-node drop needed (or use a simple bump
+    arena with `T: Copy` payloads and `ManuallyDrop`).
+  * Self/intra-contour identity tests replace `std::ptr::addr_eq` with index
+    comparison.
+
+This decision must be made and implemented FIRST (as part of step 1), because
+every one of the seven files currently assumes a pointer/Box model and will
+need rewriting against the index model. Trying to finish the algorithms on top
+of the current `Box`/`transmute` scaffolding is a dead end.
+
+--------------------------------------------------------------------------------
+5. BUILD FIXES (BLOCKERS, INDEPENDENT OF THE PORT)
+--------------------------------------------------------------------------------
+
+5.1  Fix Cargo.toml optional deps. The `skia-rs` feature currently breaks every
+     build. Either:
+       (a) vendor/stub the two crates under `inspirations/skia-rs/crates/...`
+           (as the path implies) and add them to the repo or as git deps, or
+       (b) drop the `[[bin]] pathkit-main` target's implicit dependence and make
+           the optional deps truly optional by pointing them at a valid source
+           (crates.io version or `git =`), so a default build does not try to
+           resolve a missing local path.
+     A `cargo build` (no features) must succeed. This is a prerequisite to
+     iterating on any of the code below (currently the crate cannot even be
+     type-checked).
+
+5.2  Wire the orphaned files. Decide the canonical filename convention
+     (recommend snake_case for consistency: `sk_add_intersections.rs`,
+     `sk_intersections.rs`, `sk_dcubic_line_intersection.rs`,
+     `sk_dcubic_to_quads.rs`, `sk_dquad_line_intersection.rs`,
+     `sk_path_ops_op.rs`, `sk_path_ops_curve.rs`), rename them, and declare
+     them in src/pathops/mod.rs. Delete the superseded duplicated content
+     (e.g. the local SkOpSpan/SkOpSpanBase redefined inside sk_op_segment.rs).
+
+5.3  Fix import paths. Rewrite SkAddIntersections.rs's `use` statements to the
+     real module names after 5.2, and reconcile the duplicated types.
+
+5.4  Remove UB. Replace the `&'static mut` + `mem::transmute` in
+     sk_intersection_helper.rs and the `mem::transmute` in `pts()` with the
+     arena/index model (§4) or explicit borrows. This is undefined behavior
+     today and will be caught by miri/sanitizers.
+
+--------------------------------------------------------------------------------
+6. MILESTONES
+--------------------------------------------------------------------------------
+
+M0 — Build green (no feature). Fix Cargo.toml (§5.1); confirm `cargo build`,
+      `cargo test --lib` pass. Establish the test baseline (currently ~525 tests
+      per PLANS note, but that figure predates the orphan/stub state — recount).
+
+M1 — Arena/global-state + SkOpSpan. Implement SkOpGlobalState/arena + index
+      handles; fully port SkOpPtT, SkOpSpanBase, SkOpSpan (all fields, all
+      .cpp methods), with `Collapsed` semantics. Move SkOpPtT out of
+      sk_op_coincidence.rs. Unit-test list insertion/merging/collapsed logic.
+
+M2 — SkOpSegment. Port the full method surface (§2.2) on top of M1. Replace
+      naive AABB with SkDCurve tight bounds; fix conic pt_at_t. Port
+      addT/addMissing/insert/calcAngles/sortAngles/markAndChase*/update*Winding/
+      findNext*/subDivide. This is the largest single-file effort.
+
+M3 — SkOpContour. Port delegation methods (calcAngles/sortAngles/moveMultiples/
+      moveNearby/missingCoincidence/markAllDone/undoneSpan/joinSegments/
+      toPath/toReversePath/findSortableTop/rayCheck). Fix append_segment chain.
+
+M4 — SkPathWriter. Switch deferred/endpoints to SkOpPtT handles; add
+      Path::add_path (append/extend) + reversePathTo; complete assemble()'s
+      three phases (lengthen-through-simple, link-matching, re-link walk) with
+      correct sentinel/negation semantics; fix conic weight indexing; remove
+      `Default`/`unimplemented!()`.
+
+M5 — SkOpCoincidence. Port SkCoincidentSpans + SkOpCoincidence in full
+      (§2.4): add/addMissing/apply/mark/markCollapsed/expand/extend/findOverlaps/
+      fixUp/release/releaseDeleted/checkOverlap/overlap/TRange/correctEnds.
+
+M6 — SkIntersections + SkAddIntersections. Complete SkIntersections' curve
+      dispatch; wire files into mod.rs; port AddIntersectTs record loop
+      (addT/mergeMatches/addOpp/unaligned/coincidence->add) and ULP helpers.
+
+M7 — SkPathOpsDebug. Flesh out check_health/show_active_spans + dump family
+      against M1–M5 types; add VerifyOp/VerifySimplify for regression safety.
+
+M8 — End-to-end verification. Replace the current `op()` shortcut
+      (rect-union/rect-intersect special cases in src/pathops/mod.rs) with the
+      real engine pipeline (edge build -> AddIntersectTs -> coincidence ->
+      winding/sort -> PathWriter -> assemble), or at least route non-trivial
+      inputs through it. Compare outputs against C++ on a corpus.
+
+--------------------------------------------------------------------------------
+7. VERIFICATION STRATEGY
+--------------------------------------------------------------------------------
+
+  * Port the C++ SkPathOpsOp/Simplify/AsWinding/EdgeBuilder drivers so the
+    engine is reachable from `pathops::op`/`simplify`/`as_winding`.
+  * Build a differential-test harness: feed the same path pairs to (a) this
+    crate and (b) the C++ reference (old/pathkit builds via CMake; or reference
+    Skia's known outputs) and compare resulting path geometry + fill area.
+  * Property tests: commutativity of union/intersect, idempotence of
+    union(x,x), `difference(a,b) == a` when disjoint, closed-contour output.
+  * Run under `cargo miri` for the index/arena code (no aliasing UB), and
+    `cargo clippy -D warnings`.
+  * Keep DEBUG_COIN/DebugValidate parity: port `debugValidate()` invariants so
+    internal consistency (coin loop integrity, span ordering) is checked in
+    debug builds, matching the C++ regression surface.
+  * Ensure `cargo test` remains green at every milestone; do not regress the
+    existing leaf-function tests (debug formatters, span helpers, writer
+    deferred-line tests).
+
+--------------------------------------------------------------------------------
+8. RISKS / NOTES
+--------------------------------------------------------------------------------
+
+  * The current PLANS/skia-rs-interop/00-overview.md claims pathops is
+    "implemented, not scaffolding ... 525 tests passing." That is inaccurate
+    against the tree as it stands (sk_op_coincidence is 10 lines; seven files
+    are orphaned; the crate does not build). Trust the code, not that note;
+    consider updating the overview and the missing PORTING.md / stale
+    CHANGELOG.md (flagged out-of-scope there) once M0–M2 land.
+  * Tight vs loose bounds: Skia's `setCubicBounds` computes curve-space tight
+    bounds (using extrema), which SkAddIntersections' early-reject relies on
+    for performance and, in some cases, correctness. Port SkDCurve bounds
+    (SkPathOpsCubic.h/SkPathOpsCurve.h) rather than shipping naive AABBs long
+    term.
+  * The `Default`/`unimplemented!()` on SkPathWriter and the `todo!()` in
+    core::Path::contains are separate but should be resolved alongside, since
+    Path::contains feeds some winding checks.
+  * Conic support is the most error-prone area (rational parameterization,
+    weight, flipped/ordered coincident handling). Give conic-specific
+    differential tests extra coverage.
+
+================================================================================
+END OF PLAN
+================================================================================

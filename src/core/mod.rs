@@ -39,7 +39,7 @@ pub use rrect::{Corner, RRect, Type as RRectType};
 pub use scalar::Scalar;
 pub use sk_arena_alloc::ArenaAlloc;
 pub use sk_cubic_clipper::SkCubicClipper;
-pub use sk_geometry::CubicType;
+pub use sk_geometry::{Conic, CubicType};
 pub use sk_malloc::{sk_bzero, sk_careful_memcpy};
 pub use sk_math::{sk_floats_are_unit, sk_ieee_float_divide, sk_sqrt_bits, SkSafeMath};
 pub use sk_path_measure::{MatrixFlags, PathMeasure};

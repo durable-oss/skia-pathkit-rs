@@ -5,7 +5,8 @@
 //! splitting edges at intersections, and keeping pieces that sit on the
 //! result boundary according to [`Path::contains`].
 
-use crate::core::{FillType, Path, Point, Verb};
+
+use crate::core::{Conic, FillType, Path, Point, Scalar, Verb};
 use crate::error::PathKitError;
 
 use super::PathOp;
@@ -48,7 +49,7 @@ fn flatten(path: &Path) -> Vec<[Point; 2]> {
     let mut last = Point::default();
     let mut started = false;
 
-    for (verb, pts, _weight) in path.iter() {
+    for (verb, pts, weight) in path.iter() {
         match verb {
             Verb::Move => {
                 contour_start = pts[0];
@@ -59,8 +60,19 @@ fn flatten(path: &Path) -> Vec<[Point; 2]> {
                 push_seg(&mut segs, pts[0], pts[1]);
                 last = pts[1];
             }
-            Verb::Quad | Verb::Conic => {
+            Verb::Quad => {
                 flatten_quad(pts[0], pts[1], pts[2], MAX_FLAT_DEPTH, &mut segs);
+                last = pts[2];
+            }
+            Verb::Conic => {
+                flatten_conic(
+                    pts[0],
+                    pts[1],
+                    pts[2],
+                    weight.unwrap_or(1.0),
+                    MAX_FLAT_DEPTH,
+                    &mut segs,
+                );
                 last = pts[2];
             }
             Verb::Cubic => {
@@ -100,6 +112,48 @@ fn flatten_quad(p0: Point, p1: Point, p2: Point, depth: u32, out: &mut Vec<[Poin
     let p012 = mid(p01, p12);
     flatten_quad(p0, p01, p012, depth - 1, out);
     flatten_quad(p012, p12, p2, depth - 1, out);
+}
+
+/// Flattens a conic into chords, honouring its weight.
+///
+/// A conic with `w != 1` traces a different curve than the quadratic through
+/// the same three points, so it cannot be flattened as a quad: the flattened
+/// boundary would disagree with `Path::contains`, which evaluates the conic
+/// correctly, and every edge would then be classified against the wrong side.
+///
+/// Subdivision uses [`Conic::chop`], which splits in the rational form and so
+/// keeps both halves on the original curve.
+fn flatten_conic(p0: Point, p1: Point, p2: Point, w: Scalar, depth: u32, out: &mut Vec<[Point; 2]>) {
+    // A weight of 1 is exactly the quadratic, and the control point's distance
+    // to the chord bounds the error of the straight-line approximation.
+    if depth == 0 || dist_to_line(p1, p0, p2) <= FLAT_TOL {
+        push_seg(out, p0, p2);
+        return;
+    }
+    let conic = Conic::new([p0, p1, p2], w);
+    let mut halves = [Conic::new([Point::default(); 3], 1.0); 2];
+    conic.chop(&mut halves);
+    if !halves[0].is_finite() || !halves[1].is_finite() {
+        // Degenerate weight; fall back to the chord rather than recursing.
+        push_seg(out, p0, p2);
+        return;
+    }
+    flatten_conic(
+        halves[0].pts[0],
+        halves[0].pts[1],
+        halves[0].pts[2],
+        halves[0].w,
+        depth - 1,
+        out,
+    );
+    flatten_conic(
+        halves[1].pts[0],
+        halves[1].pts[1],
+        halves[1].pts[2],
+        halves[1].w,
+        depth - 1,
+        out,
+    );
 }
 
 fn flatten_cubic(
@@ -373,5 +427,108 @@ mod tests {
         let result = path_op(&a, &b, PathOp::Difference).unwrap();
         assert!(result.contains(2.0, 5.0));
         assert!(!result.contains(7.0, 5.0));
+    }
+
+    /// Returns the closest distance from `pt` to the conic, sampled densely.
+    fn dist_to_conic(pt: Point, conic: &Conic) -> f32 {
+        let mut best = f32::INFINITY;
+        for i in 0..=2000 {
+            let t = i as f32 / 2000.0;
+            best = best.min(Point::distance(pt, conic.eval_at(t)));
+        }
+        best
+    }
+
+    #[test]
+    fn flatten_conic_stays_on_the_true_curve() {
+        // The weight a circle's quarter arc uses; a quad through the same
+        // three points bulges noticeably away from it.
+        let w = std::f32::consts::FRAC_1_SQRT_2;
+        let p0 = Point::new(0.0, 0.0);
+        let p1 = Point::new(100.0, 0.0);
+        let p2 = Point::new(100.0, 100.0);
+        let conic = Conic::new([p0, p1, p2], w);
+
+        let mut segs = Vec::new();
+        flatten_conic(p0, p1, p2, w, MAX_FLAT_DEPTH, &mut segs);
+        assert!(!segs.is_empty());
+
+        for seg in &segs {
+            for &pt in seg {
+                assert!(
+                    dist_to_conic(pt, &conic) <= FLAT_TOL,
+                    "flattened point {pt:?} is {} off the conic",
+                    dist_to_conic(pt, &conic)
+                );
+            }
+        }
+        // The chain runs end to end along the curve.
+        assert_eq!(segs[0][0], p0);
+        assert_eq!(segs[segs.len() - 1][1], p2);
+    }
+
+    #[test]
+    fn flatten_conic_differs_from_flatten_quad_when_weighted() {
+        let w = std::f32::consts::FRAC_1_SQRT_2;
+        let p0 = Point::new(0.0, 0.0);
+        let p1 = Point::new(100.0, 0.0);
+        let p2 = Point::new(100.0, 100.0);
+
+        let mut as_conic = Vec::new();
+        flatten_conic(p0, p1, p2, w, MAX_FLAT_DEPTH, &mut as_conic);
+        let mut as_quad = Vec::new();
+        flatten_quad(p0, p1, p2, MAX_FLAT_DEPTH, &mut as_quad);
+
+        // Treating the conic as a quad is what the old code did; the midpoints
+        // of the two flattenings must not agree, or the bug would be invisible.
+        let conic_mid = as_conic[as_conic.len() / 2][0];
+        let quad_mid = as_quad[as_quad.len() / 2][0];
+        assert!(
+            Point::distance(conic_mid, quad_mid) > 1.0,
+            "a weighted conic must not flatten like a quad"
+        );
+    }
+
+    #[test]
+    fn flatten_conic_with_unit_weight_matches_a_quad() {
+        // w == 1 is exactly the quadratic, so the two must agree closely.
+        let p0 = Point::new(0.0, 0.0);
+        let p1 = Point::new(50.0, 100.0);
+        let p2 = Point::new(100.0, 0.0);
+        let quad = Conic::new([p0, p1, p2], 1.0);
+
+        let mut segs = Vec::new();
+        flatten_conic(p0, p1, p2, 1.0, MAX_FLAT_DEPTH, &mut segs);
+        for seg in &segs {
+            for &pt in seg {
+                assert!(dist_to_conic(pt, &quad) <= FLAT_TOL);
+            }
+        }
+    }
+
+    #[test]
+    fn boolean_ops_on_discs_are_not_empty() {
+        // Item 10's repro: every curved boolean returned empty because the
+        // conic weight was dropped when flattening.
+        let mut a = Path::new();
+        a.add_circle(200.0, 200.0, 40.0);
+        let mut b = Path::new();
+        b.add_circle(230.0, 200.0, 40.0);
+        for op in [PathOp::Union, PathOp::Intersect, PathOp::Difference] {
+            let result = path_op(&a, &b, op).unwrap();
+            assert!(!result.is_empty(), "{op:?} of two discs came back empty");
+        }
+    }
+
+    #[test]
+    fn union_of_a_disc_and_a_rect_is_not_empty() {
+        let mut disc = Path::new();
+        disc.add_circle(200.0, 200.0, 40.0);
+        let mut rect = Path::new();
+        rect.add_rect_simple(crate::core::Rect::from_ltrb(180.0, 180.0, 260.0, 260.0));
+        let result = path_op(&disc, &rect, PathOp::Union).unwrap();
+        assert!(!result.is_empty());
+        assert!(result.contains(200.0, 200.0));
+        assert!(result.contains(250.0, 250.0));
     }
 }

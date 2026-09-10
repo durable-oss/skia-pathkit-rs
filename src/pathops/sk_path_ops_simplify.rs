@@ -26,7 +26,8 @@
 //! leftovers — and `bridge_winding` / `bridge_xor` correspond to the two
 //! branches Skia selects on `builder.xorMask()`.
 
-use crate::core::{FillType, Path, Point, Verb};
+
+use crate::core::{Conic, FillType, Path, Point, Scalar, Verb};
 
 /// Flatness tolerance, in path units, for subdividing curves into line
 /// segments.
@@ -285,7 +286,7 @@ fn build_edges(path: &Path) -> Vec<[Point; 2]> {
         push_seg(segs, last, start);
     };
 
-    for (verb, pts, _weight) in path.iter() {
+    for (verb, pts, weight) in path.iter() {
         match verb {
             Verb::Move => {
                 if started {
@@ -299,8 +300,19 @@ fn build_edges(path: &Path) -> Vec<[Point; 2]> {
                 push_seg(&mut segs, pts[0], pts[1]);
                 last = pts[1];
             }
-            Verb::Quad | Verb::Conic => {
+            Verb::Quad => {
                 flatten_quad(pts[0], pts[1], pts[2], MAX_FLAT_DEPTH, &mut segs);
+                last = pts[2];
+            }
+            Verb::Conic => {
+                flatten_conic(
+                    pts[0],
+                    pts[1],
+                    pts[2],
+                    weight.unwrap_or(1.0),
+                    MAX_FLAT_DEPTH,
+                    &mut segs,
+                );
                 last = pts[2];
             }
             Verb::Cubic => {
@@ -344,6 +356,48 @@ fn flatten_quad(p0: Point, p1: Point, p2: Point, depth: u32, out: &mut Vec<[Poin
 
 /// Recursively subdivides a cubic until it is flat enough to replace with a
 /// chord.
+/// Flattens a conic into chords, honouring its weight.
+///
+/// A conic with `w != 1` traces a different curve than the quadratic through
+/// the same three points, so it cannot be flattened as a quad: the flattened
+/// boundary would disagree with `Path::contains`, which evaluates the conic
+/// correctly, and every edge would then be classified against the wrong side.
+///
+/// Subdivision uses [`Conic::chop`], which splits in the rational form and so
+/// keeps both halves on the original curve.
+fn flatten_conic(p0: Point, p1: Point, p2: Point, w: Scalar, depth: u32, out: &mut Vec<[Point; 2]>) {
+    // A weight of 1 is exactly the quadratic, and the control point's distance
+    // to the chord bounds the error of the straight-line approximation.
+    if depth == 0 || dist_to_line(p1, p0, p2) <= FLAT_TOL {
+        push_seg(out, p0, p2);
+        return;
+    }
+    let conic = Conic::new([p0, p1, p2], w);
+    let mut halves = [Conic::new([Point::default(); 3], 1.0); 2];
+    conic.chop(&mut halves);
+    if !halves[0].is_finite() || !halves[1].is_finite() {
+        // Degenerate weight; fall back to the chord rather than recursing.
+        push_seg(out, p0, p2);
+        return;
+    }
+    flatten_conic(
+        halves[0].pts[0],
+        halves[0].pts[1],
+        halves[0].pts[2],
+        halves[0].w,
+        depth - 1,
+        out,
+    );
+    flatten_conic(
+        halves[1].pts[0],
+        halves[1].pts[1],
+        halves[1].pts[2],
+        halves[1].w,
+        depth - 1,
+        out,
+    );
+}
+
 fn flatten_cubic(p0: Point, p1: Point, p2: Point, p3: Point, depth: u32, out: &mut Vec<[Point; 2]>) {
     if depth == 0 || (dist_to_line(p1, p0, p3) <= FLAT_TOL && dist_to_line(p2, p0, p3) <= FLAT_TOL) {
         push_seg(out, p0, p3);
