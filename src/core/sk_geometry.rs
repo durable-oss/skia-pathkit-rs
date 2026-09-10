@@ -1173,4 +1173,110 @@ mod tests {
         assert!(count > 0 && count <= 4);
         assert!(dst.iter().take(count).all(|c| c.is_finite()));
     }
+
+    #[test]
+    fn is_not_monotonic_detects_turnaround() {
+        // Rising then falling, and falling then rising, both turn around.
+        assert!(is_not_monotonic(0.0, 100.0, 0.0));
+        assert!(is_not_monotonic(0.0, -100.0, 0.0));
+        // Steadily rising or falling does not.
+        assert!(!is_not_monotonic(0.0, 50.0, 100.0));
+        assert!(!is_not_monotonic(100.0, 50.0, 0.0));
+        // A flat leading difference counts as non-monotonic.
+        assert!(is_not_monotonic(5.0, 5.0, 9.0));
+    }
+
+    #[test]
+    fn valid_unit_divide_accepts_negative_numerator() {
+        // Skia negates both terms rather than rejecting a negative numerator.
+        let mut r = [0.0; 1];
+        assert_eq!(valid_unit_divide(-100.0, -200.0, &mut r), 1);
+        assert!((r[0] - 0.5).abs() < 1e-6);
+
+        // Out-of-range and degenerate inputs are still rejected.
+        assert_eq!(valid_unit_divide(200.0, 100.0, &mut r), 0);
+        assert_eq!(valid_unit_divide(0.0, 100.0, &mut r), 0);
+        assert_eq!(valid_unit_divide(100.0, 0.0, &mut r), 0);
+    }
+
+    #[test]
+    fn find_quad_extrema_returns_t() {
+        // A symmetric arch peaks at t = 0.5.
+        let mut t = 0.0;
+        assert!(find_quad_extrema(0.0, 100.0, 0.0, &mut t));
+        assert!((t - 0.5).abs() < 1e-6, "t was {t}");
+    }
+
+    #[test]
+    fn chop_quad_at_y_extrema_splits_arch() {
+        // move(0,0) quad(50,100 -> 100,0) peaks at y = 50, so it must chop.
+        let src = [
+            Point::new(0.0, 0.0),
+            Point::new(50.0, 100.0),
+            Point::new(100.0, 0.0),
+        ];
+        let mut dst = [Point::default(); 5];
+        assert_eq!(chop_quad_at_y_extrema(&src, &mut dst), 1);
+
+        // The split point sits at the extremum.
+        assert!((dst[2].y - 50.0).abs() < 1e-4, "split y {}", dst[2].y);
+        // Both control points are snapped to it, making each half monotonic.
+        assert!((dst[1].y - dst[2].y).abs() < 1e-6);
+        assert!((dst[3].y - dst[2].y).abs() < 1e-6);
+        // Endpoints are untouched.
+        assert_eq!(dst[0], src[0]);
+        assert_eq!(dst[4], src[2]);
+    }
+
+    #[test]
+    fn conic_find_extrema_uses_all_three_points() {
+        // An arch conic has an interior y-extremum; a monotonic one does not.
+        let arch = Conic::new(
+            [
+                Point::new(0.0, 0.0),
+                Point::new(50.0, 100.0),
+                Point::new(100.0, 0.0),
+            ],
+            2.0,
+        );
+        let mut t = 0.0;
+        assert!(arch.find_y_extrema(&mut t));
+        assert!(t > 0.0 && t < 1.0, "t was {t}");
+
+        let rising = Conic::new(
+            [
+                Point::new(0.0, 0.0),
+                Point::new(50.0, 50.0),
+                Point::new(100.0, 100.0),
+            ],
+            2.0,
+        );
+        let mut t2 = 0.0;
+        assert!(!rising.find_y_extrema(&mut t2));
+    }
+
+    #[test]
+    fn conic_chop_at_y_extrema_snaps_control_points() {
+        let arch = Conic::new(
+            [
+                Point::new(0.0, 0.0),
+                Point::new(50.0, 100.0),
+                Point::new(100.0, 0.0),
+            ],
+            2.0,
+        );
+        let mut dst = [Conic::default(); 2];
+        assert!(arch.chop_at_y_extrema(&mut dst));
+
+        // The shared endpoint keeps the extremum's y, and the three control
+        // points around the split are snapped to it.
+        let value = dst[0].pts[2].y;
+        assert!(value > 0.0, "extremum y {value}");
+        assert!((dst[0].pts[1].y - value).abs() < 1e-6);
+        assert!((dst[1].pts[0].y - value).abs() < 1e-6);
+        assert!((dst[1].pts[1].y - value).abs() < 1e-6);
+        // The outer endpoints are unchanged.
+        assert!((dst[0].pts[0].y - 0.0).abs() < 1e-6);
+        assert!((dst[1].pts[2].y - 0.0).abs() < 1e-6);
+    }
 }

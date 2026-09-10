@@ -1747,25 +1747,118 @@ mod tests {
         assert!(p.contains(25.0, 25.0));
         assert!(!p.contains(15.0, 15.0));
     }
-}
-
-#[cfg(test)]
-mod contains_debug2 {
-    use super::*;
-    #[test]
-    fn debug_circle() {
+    /// Samples a curve into a dense polygon, giving a ground truth to check
+    /// the analytic `contains` against.
+    fn polygonize(f: impl Fn(f32) -> (f32, f32), steps: usize) -> Path {
         let mut p = Path::new();
-        p.add_circle(0.0, 0.0, 10.0);
-        let mut oc = 0;
-        for (verb, pts, w) in p.iter() {
-            let contrib = match verb {
-                Verb::Conic => {
-                    winding_conic(&[pts[0], pts[1], pts[2]], 9.0, 9.0, w.unwrap(), &mut oc)
-                }
-                _ => 0,
-            };
-            println!("{:?} {:?} w={:?} contrib={}", verb, pts, w, contrib);
+        let (x, y) = f(0.0);
+        p.move_to(x, y);
+        for i in 1..=steps {
+            let (x, y) = f(i as f32 / steps as f32);
+            p.line_to(x, y);
         }
-        println!("contains(9,9) = {}", p.contains(9.0, 9.0));
+        p.close();
+        p
+    }
+
+    fn agrees_with_polygon(curved: &Path, poly: &Path, lo: f32, hi: f32, steps: usize) {
+        let span = hi - lo;
+        for xi in 0..steps {
+            for yi in 0..steps {
+                let x = lo + span * (xi as f32 + 0.5) / steps as f32;
+                let y = lo + span * (yi as f32 + 0.5) / steps as f32;
+                assert_eq!(
+                    curved.contains(x, y),
+                    poly.contains(x, y),
+                    "disagreement at ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn contains_non_monotonic_quad() {
+        // An arch that rises then falls: the winding code must chop it at the
+        // y-extremum before counting crossings.
+        let mut path = Path::new();
+        path.move_to(0.0, 0.0);
+        path.quad_to(50.0, 100.0, 100.0, 0.0);
+        path.close();
+
+        let poly = polygonize(
+            |t| {
+                let mt = 1.0 - t;
+                (
+                    2.0 * mt * t * 50.0 + t * t * 100.0,
+                    2.0 * mt * t * 100.0,
+                )
+            },
+            200,
+        );
+        agrees_with_polygon(&path, &poly, 0.0, 100.0, 20);
+        // Spot checks inside and outside the filled lobe.
+        assert!(path.contains(50.0, 25.0));
+        assert!(!path.contains(50.0, 60.0));
+    }
+
+    #[test]
+    fn contains_non_monotonic_conic() {
+        let w = 2.0f32;
+        let mut path = Path::new();
+        path.move_to(0.0, 0.0);
+        path.conic_to(50.0, 100.0, 100.0, 0.0, w);
+        path.close();
+
+        let poly = polygonize(
+            |t| {
+                let mt = 1.0 - t;
+                let d = mt * mt + 2.0 * w * mt * t + t * t;
+                (
+                    (2.0 * w * mt * t * 50.0 + t * t * 100.0) / d,
+                    (2.0 * w * mt * t * 100.0) / d,
+                )
+            },
+            200,
+        );
+        agrees_with_polygon(&path, &poly, 0.0, 100.0, 20);
+    }
+
+    #[test]
+    fn contains_non_monotonic_cubic() {
+        let mut path = Path::new();
+        path.move_to(0.0, 0.0);
+        path.cubic_to(0.0, 100.0, 100.0, 100.0, 100.0, 0.0);
+        path.close();
+
+        let poly = polygonize(
+            |t| {
+                let mt = 1.0 - t;
+                (
+                    3.0 * mt * t * t * 100.0 + t * t * t * 100.0,
+                    3.0 * mt * mt * t * 100.0 + 3.0 * mt * t * t * 100.0,
+                )
+            },
+            200,
+        );
+        agrees_with_polygon(&path, &poly, 0.0, 100.0, 20);
+    }
+
+    #[test]
+    fn contains_circle_matches_radius() {
+        let mut path = Path::new();
+        path.add_circle(50.0, 50.0, 40.0);
+        for xi in 0..40 {
+            for yi in 0..40 {
+                let x = xi as f32 * 2.5 + 1.25;
+                let y = yi as f32 * 2.5 + 1.25;
+                let d = ((x - 50.0).powi(2) + (y - 50.0).powi(2)).sqrt();
+                // Skip the band right at the boundary, where the conic
+                // approximation and the exact circle legitimately differ.
+                if (d - 40.0).abs() < 1.0 {
+                    continue;
+                }
+                assert_eq!(path.contains(x, y), d < 40.0, "at ({x}, {y}), r = {d}");
+            }
+        }
     }
 }

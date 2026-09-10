@@ -163,6 +163,10 @@ pub fn simplify_debug(path: &Path, result: &mut Path, _test_name: Option<&str>) 
 ///
 /// The direction is chosen so the filled region lies to the edge's left, which
 /// is what lets [`assemble`] chain edges into consistently wound contours.
+/// A boundary edge identified by its quantized endpoints, used to spot
+/// coincident pieces.
+type EdgeKey = ((i32, i32), (i32, i32));
+
 #[derive(Clone, Copy, Debug)]
 struct Edge {
     /// Start point.
@@ -220,7 +224,7 @@ fn is_convex(path: &Path) -> bool {
 fn contour_points(path: &Path) -> Vec<Point> {
     let mut pts: Vec<Point> = Vec::new();
     let mut push = |p: Point| {
-        if pts.last().is_none_or(|last| Point::distance(*last, p) >= MIN_EDGE) {
+        if pts.last().map_or(true, |last| Point::distance(*last, p) >= MIN_EDGE) {
             pts.push(p);
         }
     };
@@ -263,7 +267,7 @@ fn build_edges(path: &Path) -> Vec<[Point; 2]> {
     let mut last = Point::default();
     let mut started = false;
 
-    let mut close_contour = |segs: &mut Vec<[Point; 2]>, last: Point, start: Point| {
+    let close_contour = |segs: &mut Vec<[Point; 2]>, last: Point, start: Point| {
         push_seg(segs, last, start);
     };
 
@@ -520,24 +524,21 @@ fn collect_boundary(pieces: &[[Point; 2]], path: &Path, even_odd: bool) -> Vec<E
 /// they are back-to-back boundaries of regions that both turned out to be
 /// filled, so the shared edge is interior to the result.
 fn dedup_coincident(edges: Vec<Edge>) -> Vec<Edge> {
-    let mut seen: std::collections::HashMap<((i32, i32), (i32, i32)), usize> =
-        std::collections::HashMap::new();
+    let mut seen: std::collections::HashMap<EdgeKey, usize> = std::collections::HashMap::new();
     let mut keep = vec![true; edges.len()];
 
     for (i, e) in edges.iter().enumerate() {
         let fwd = (key(e.from), key(e.to));
         let rev = (fwd.1, fwd.0);
-        if let Some(&j) = seen.get(&rev) {
+        if let Some(j) = seen.remove(&rev) {
             // Opposing pair: neither edge bounds the result.
             keep[i] = false;
             keep[j] = false;
-            seen.remove(&rev);
-        } else if let Some(&j) = seen.get(&fwd) {
-            // Same-direction duplicate: keep only the first.
-            let _ = j;
-            keep[i] = false;
+        } else if let std::collections::hash_map::Entry::Vacant(slot) = seen.entry(fwd) {
+            slot.insert(i);
         } else {
-            seen.insert(fwd, i);
+            // Same-direction duplicate: keep only the first.
+            keep[i] = false;
         }
     }
 
@@ -598,7 +599,7 @@ fn assemble(edges: &[Edge], fill_type: FillType) -> Path {
                 }
                 let out = edges[j].to - edges[j].from;
                 let ang = incoming.cross(out).atan2(incoming.dot(out));
-                if best.is_none_or(|(_, a)| ang > a) {
+                if best.map_or(true, |(_, a)| ang > a) {
                     best = Some((j, ang));
                 }
             }
