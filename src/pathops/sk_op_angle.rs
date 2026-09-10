@@ -181,6 +181,8 @@ pub struct CurveSweep {
     pub f_curve: [LinePoint; 4],
     /// The verb describing which of `f_curve` are in use.
     pub f_verb: Verb,
+    /// The conic weight; ignored for other verbs.
+    pub f_weight: f64,
     /// The two hull sweep vectors bounding the curve's direction.
     pub f_sweep: [AngleVector; 2],
     /// False when the curve is a line or is line-like.
@@ -194,6 +196,7 @@ impl Default for CurveSweep {
         Self {
             f_curve: [[0.0; 2]; 4],
             f_verb: Verb::Line,
+            f_weight: 1.0,
             f_sweep: [AngleVector::zero(); 2],
             f_is_curve: false,
             f_ordered: true,
@@ -299,6 +302,189 @@ impl CurveSweep {
 /// Port of `approximately_zero_when_compared_to` for f64 operands.
 fn approximately_zero_when_compared_to(x: f64, y: f64) -> bool {
     x == 0.0 || x.abs() < y.abs() * f64::from(f32::EPSILON)
+}
+
+/// Fills `out` with the piece of a curve between two t values.
+///
+/// Port of `SkOpSegment::subDivide(start, end, SkDCurve*)`, taking the
+/// geometry directly rather than a segment, since `SkOpSegment` is still on
+/// the pre-arena model until item 05.
+///
+/// `pts` holds the segment's control points, `0..=verb_to_points(verb)` of
+/// them in use. The endpoints come from the caller rather than being
+/// recomputed, matching C++, which uses the PtT nodes' cached points: the two
+/// can differ by rounding, and the cached ones are what the rest of the engine
+/// compares against.
+///
+/// Returns true when a real subdivision happened, false when the piece is the
+/// whole curve or a line and the control points were simply copied.
+#[allow(clippy::too_many_arguments)] // mirrors the C++ signature plus its segment fields
+pub fn sub_divide_curve(
+    pts: &[LinePoint],
+    verb: Verb,
+    weight: f64,
+    start_pt: LinePoint,
+    start_t: f64,
+    end_pt: LinePoint,
+    end_t: f64,
+    out: &mut CurveSweep,
+) -> bool {
+    let points = verb_to_points(verb);
+    out.f_verb = verb;
+    out.f_curve[0] = start_pt;
+    out.f_curve[points] = end_pt;
+    if verb == Verb::Line {
+        return false;
+    }
+    if (start_t == 0.0 || end_t == 0.0) && (start_t == 1.0 || end_t == 1.0) {
+        // The piece is the whole curve, so the midpoints are already known.
+        match verb {
+            Verb::Quad | Verb::Conic => {
+                out.f_curve[1] = pts[1];
+                out.f_weight = weight;
+            }
+            _ => {
+                // Cubic. Running backwards swaps the two control points.
+                if start_t == 0.0 {
+                    out.f_curve[1] = pts[1];
+                    out.f_curve[2] = pts[2];
+                } else {
+                    out.f_curve[1] = pts[2];
+                    out.f_curve[2] = pts[1];
+                }
+            }
+        }
+        return false;
+    }
+    match verb {
+        Verb::Quad => {
+            out.f_curve[1] = quad_sub_divide_control(pts, start_pt, end_pt, start_t, end_t);
+        }
+        Verb::Conic => {
+            let (ctrl, w) = conic_sub_divide_control(pts, weight, start_t, end_t);
+            out.f_curve[1] = ctrl;
+            out.f_weight = w;
+        }
+        _ => {
+            let (c1, c2) = cubic_sub_divide_controls(pts, start_pt, end_pt, start_t, end_t);
+            out.f_curve[1] = c1;
+            out.f_curve[2] = c2;
+        }
+    }
+    true
+}
+
+/// Returns a quad's value at `t`, in one coordinate.
+fn quad_at(p: &[f64; 3], t: f64) -> f64 {
+    let u = 1.0 - t;
+    u * u * p[0] + 2.0 * u * t * p[1] + t * t * p[2]
+}
+
+/// Returns the control point of the quad piece spanning `t1..t2`.
+///
+/// Port of `SkDQuad::SubDivide`: with both ends known, the piece's midpoint
+/// determines the control point.
+fn quad_sub_divide_control(
+    pts: &[LinePoint],
+    a: LinePoint,
+    c: LinePoint,
+    t1: f64,
+    t2: f64,
+) -> LinePoint {
+    let xs = [pts[0][0], pts[1][0], pts[2][0]];
+    let ys = [pts[0][1], pts[1][1], pts[2][1]];
+    let mid_t = (t1 + t2) / 2.0;
+    let dx = quad_at(&xs, mid_t);
+    let dy = quad_at(&ys, mid_t);
+    [
+        2.0 * dx - (a[0] + c[0]) / 2.0,
+        2.0 * dy - (a[1] + c[1]) / 2.0,
+    ]
+}
+
+/// Returns a conic's numerators and denominator at `t`.
+fn conic_homogeneous(xs: &[f64; 3], ys: &[f64; 3], w: f64, t: f64) -> (f64, f64, f64) {
+    if t == 0.0 {
+        return (xs[0], ys[0], 1.0);
+    }
+    if t == 1.0 {
+        return (xs[2], ys[2], 1.0);
+    }
+    let num = |src: &[f64; 3]| {
+        let src1w = src[1] * w;
+        let c = src[0];
+        let a = src[2] - 2.0 * src1w + c;
+        let b = 2.0 * (src1w - c);
+        (a * t + b) * t + c
+    };
+    let b = 2.0 * (w - 1.0);
+    let denom = (-b * t + b) * t + 1.0;
+    (num(xs), num(ys), denom)
+}
+
+/// Returns the control point and weight of the conic piece spanning `t1..t2`.
+///
+/// Port of `SkDConic::SubDivide`. Both ends are evaluated in homogeneous form,
+/// which is where the weight is carried; treating the conic as a quad here
+/// gives a piece that does not lie on the original curve.
+fn conic_sub_divide_control(pts: &[LinePoint], w: f64, t1: f64, t2: f64) -> (LinePoint, f64) {
+    let xs = [pts[0][0], pts[1][0], pts[2][0]];
+    let ys = [pts[0][1], pts[1][1], pts[2][1]];
+
+    let (ax, ay, az) = conic_homogeneous(&xs, &ys, w, t1);
+    let (cx, cy, cz) = conic_homogeneous(&xs, &ys, w, t2);
+    let mid_t = (t1 + t2) / 2.0;
+    let (dx, dy, dz) = conic_homogeneous(&xs, &ys, w, mid_t);
+
+    let bx = 2.0 * dx - (ax + cx) / 2.0;
+    let by = 2.0 * dy - (ay + cy) / 2.0;
+    let mut bz = 2.0 * dz - (az + cz) / 2.0;
+    if bz == 0.0 {
+        // A zero weight makes the control point irrelevant; any value serves.
+        bz = 1.0;
+    }
+    ([bx / bz, by / bz], bz / (az * cz).sqrt())
+}
+
+/// Returns a cubic's value at `t`, in one coordinate.
+fn cubic_at(p: &[f64; 4], t: f64) -> f64 {
+    let u = 1.0 - t;
+    u * u * u * p[0] + 3.0 * u * u * t * p[1] + 3.0 * u * t * t * p[2] + t * t * t * p[3]
+}
+
+/// Returns the two control points of the cubic piece spanning `t1..t2`.
+///
+/// Port of `SkDCubic::SubDivide`. With both ends pinned, sampling the original
+/// curve at a third and two thirds of the way along the piece gives two
+/// equations in the two unknown control points:
+///
+/// ```text
+/// B(1/3) = (8a + 12b + 6c +  d) / 27
+/// B(2/3) = ( a +  6b + 12c + 8d) / 27
+/// ```
+fn cubic_sub_divide_controls(
+    pts: &[LinePoint],
+    a: LinePoint,
+    d: LinePoint,
+    t1: f64,
+    t2: f64,
+) -> (LinePoint, LinePoint) {
+    let xs = [pts[0][0], pts[1][0], pts[2][0], pts[3][0]];
+    let ys = [pts[0][1], pts[1][1], pts[2][1], pts[3][1]];
+    let t_1_3 = t1 + (t2 - t1) / 3.0;
+    let t_2_3 = t1 + 2.0 * (t2 - t1) / 3.0;
+    let e = [cubic_at(&xs, t_1_3), cubic_at(&ys, t_1_3)];
+    let f = [cubic_at(&xs, t_2_3), cubic_at(&ys, t_2_3)];
+    let solve = |i: usize| {
+        let m = 27.0 * e[i] - 8.0 * a[i] - d[i];
+        let n = 27.0 * f[i] - a[i] - 8.0 * d[i];
+        let b = (2.0 * m - n) / 18.0;
+        let c = (2.0 * n - m) / 18.0;
+        (b, c)
+    };
+    let (bx, cx) = solve(0);
+    let (by, cy) = solve(1);
+    ([bx, by], [cx, cy])
 }
 
 /// A curve from a start point to an end point, sortable against other angles
@@ -1873,5 +2059,183 @@ mod tests {
         assert_eq!(SkOpAngle::mid_t_of(0.0, 1.0), 0.5);
         assert_eq!(SkOpAngle::mid_t_of(0.25, 0.75), 0.5);
         assert_eq!(SkOpAngle::mid_t_of(0.2, 0.4), 0.30000000000000004);
+    }
+
+    // --- sub_divide_curve (item 04, part 1 prerequisite) -----------------
+
+    /// Evaluates a quad at t.
+    fn quad_pt(p: &[LinePoint], t: f64) -> LinePoint {
+        let u = 1.0 - t;
+        [
+            u * u * p[0][0] + 2.0 * u * t * p[1][0] + t * t * p[2][0],
+            u * u * p[0][1] + 2.0 * u * t * p[1][1] + t * t * p[2][1],
+        ]
+    }
+
+    /// Evaluates a conic at t.
+    fn conic_pt(p: &[LinePoint], w: f64, t: f64) -> LinePoint {
+        let u = 1.0 - t;
+        let cross = 2.0 * u * t * w;
+        let denom = u * u + cross + t * t;
+        [
+            (u * u * p[0][0] + cross * p[1][0] + t * t * p[2][0]) / denom,
+            (u * u * p[0][1] + cross * p[1][1] + t * t * p[2][1]) / denom,
+        ]
+    }
+
+    /// Evaluates a cubic at t.
+    fn cubic_pt(p: &[LinePoint], t: f64) -> LinePoint {
+        let u = 1.0 - t;
+        [
+            u * u * u * p[0][0]
+                + 3.0 * u * u * t * p[1][0]
+                + 3.0 * u * t * t * p[2][0]
+                + t * t * t * p[3][0],
+            u * u * u * p[0][1]
+                + 3.0 * u * u * t * p[1][1]
+                + 3.0 * u * t * t * p[2][1]
+                + t * t * t * p[3][1],
+        ]
+    }
+
+    #[test]
+    fn sub_divide_a_line_just_copies_the_ends() {
+        let pts: [LinePoint; 4] = [[0.0, 0.0], [10.0, 10.0], [0.0, 0.0], [0.0, 0.0]];
+        let mut out = CurveSweep::new();
+        let did = sub_divide_curve(
+            &pts,
+            Verb::Line,
+            1.0,
+            [2.0, 2.0],
+            0.2,
+            [8.0, 8.0],
+            0.8,
+            &mut out,
+        );
+        assert!(!did, "a line needs no subdivision");
+        assert_eq!(out.f_curve[0], [2.0, 2.0]);
+        assert_eq!(out.f_curve[1], [8.0, 8.0]);
+    }
+
+    #[test]
+    fn sub_divide_the_whole_quad_keeps_its_control_point() {
+        let pts: [LinePoint; 4] = [[0.0, 0.0], [50.0, 100.0], [100.0, 0.0], [0.0, 0.0]];
+        let mut out = CurveSweep::new();
+        let did = sub_divide_curve(
+            &pts,
+            Verb::Quad,
+            1.0,
+            pts[0],
+            0.0,
+            pts[2],
+            1.0,
+            &mut out,
+        );
+        assert!(!did, "0..1 is the curve itself");
+        assert_eq!(out.f_curve[1], pts[1]);
+    }
+
+    #[test]
+    fn sub_divide_a_quad_piece_stays_on_the_curve() {
+        let pts: [LinePoint; 4] = [[0.0, 0.0], [50.0, 100.0], [100.0, 0.0], [0.0, 0.0]];
+        let (t1, t2) = (0.25, 0.75);
+        let mut out = CurveSweep::new();
+        assert!(sub_divide_curve(
+            &pts,
+            Verb::Quad,
+            1.0,
+            quad_pt(&pts, t1),
+            t1,
+            quad_pt(&pts, t2),
+            t2,
+            &mut out,
+        ));
+        // Every sample of the piece lies on the original quad.
+        for i in 0..=10 {
+            let s = f64::from(i) / 10.0;
+            let got = quad_pt(&out.f_curve, s);
+            let want = quad_pt(&pts, t1 + (t2 - t1) * s);
+            assert!(
+                (got[0] - want[0]).abs() < 1e-6 && (got[1] - want[1]).abs() < 1e-6,
+                "at s={s}: got {got:?}, want {want:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sub_divide_a_conic_piece_carries_the_weight() {
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let pts: [LinePoint; 4] = [[100.0, 0.0], [100.0, 100.0], [0.0, 100.0], [0.0, 0.0]];
+        let (t1, t2) = (0.2, 0.8);
+        let mut out = CurveSweep::new();
+        assert!(sub_divide_curve(
+            &pts,
+            Verb::Conic,
+            w,
+            conic_pt(&pts, w, t1),
+            t1,
+            conic_pt(&pts, w, t2),
+            t2,
+            &mut out,
+        ));
+        for i in 0..=10 {
+            let s = f64::from(i) / 10.0;
+            let got = conic_pt(&out.f_curve, out.f_weight, s);
+            let want = conic_pt(&pts, w, t1 + (t2 - t1) * s);
+            assert!(
+                (got[0] - want[0]).abs() < 1e-4 && (got[1] - want[1]).abs() < 1e-4,
+                "at s={s}: got {got:?}, want {want:?}"
+            );
+        }
+        // The piece of an arc is not a plain quadratic.
+        assert!((out.f_weight - 1.0).abs() > 1e-3, "weight {}", out.f_weight);
+    }
+
+    #[test]
+    fn sub_divide_a_cubic_piece_stays_on_the_curve() {
+        let pts: [LinePoint; 4] = [[0.0, 0.0], [30.0, 90.0], [70.0, -30.0], [100.0, 60.0]];
+        let (t1, t2) = (0.3, 0.9);
+        let mut out = CurveSweep::new();
+        assert!(sub_divide_curve(
+            &pts,
+            Verb::Cubic,
+            1.0,
+            cubic_pt(&pts, t1),
+            t1,
+            cubic_pt(&pts, t2),
+            t2,
+            &mut out,
+        ));
+        for i in 0..=10 {
+            let s = f64::from(i) / 10.0;
+            let got = cubic_pt(&out.f_curve, s);
+            let want = cubic_pt(&pts, t1 + (t2 - t1) * s);
+            assert!(
+                (got[0] - want[0]).abs() < 1e-5 && (got[1] - want[1]).abs() < 1e-5,
+                "at s={s}: got {got:?}, want {want:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sub_divide_a_reversed_cubic_swaps_the_controls() {
+        let pts: [LinePoint; 4] = [[0.0, 0.0], [30.0, 90.0], [70.0, -30.0], [100.0, 60.0]];
+        let mut out = CurveSweep::new();
+        // Running 1 -> 0 is the whole curve backwards.
+        let did = sub_divide_curve(
+            &pts,
+            Verb::Cubic,
+            1.0,
+            pts[3],
+            1.0,
+            pts[0],
+            0.0,
+            &mut out,
+        );
+        assert!(!did);
+        assert_eq!(out.f_curve[0], pts[3]);
+        assert_eq!(out.f_curve[3], pts[0]);
+        assert_eq!(out.f_curve[1], pts[2], "controls swap when reversed");
+        assert_eq!(out.f_curve[2], pts[1]);
     }
 }
