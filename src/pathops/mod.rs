@@ -10,6 +10,7 @@ use crate::core::{FillType, Path, Rect};
 use crate::error::PathKitError;
 
 mod boolean;
+pub mod sk_d_conic_line_intersection;
 pub mod sk_d_cubic_line_intersection;
 pub mod sk_d_cubic_to_quads;
 pub mod sk_d_quad_line_intersection;

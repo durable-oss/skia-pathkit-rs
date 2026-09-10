@@ -6,8 +6,8 @@ use crate::core::{Point, Scalar};
 
 use super::sk_path_ops_line::{pin_t, DLine};
 use super::sk_path_ops_types::{
-    almost_equal_ulps, approximately_zero, not_almost_dequal_ulps, not_almost_equal_ulps_pin,
-    precisely_between,
+    almost_equal_ulps, approximately_equal, approximately_zero, not_almost_dequal_ulps,
+    not_almost_equal_ulps_pin, precisely_between,
 };
 
 /// Maximum number of intersection points per curve pair
@@ -80,6 +80,24 @@ impl SkIntersections {
 
     pub fn pt(&self, index: usize) -> Point {
         self.f_pt[index]
+    }
+
+    /// Returns true when this curve already has an intersection at `t`.
+    ///
+    /// Port of `SkIntersections::hasT`.
+    #[must_use]
+    pub fn has_t(&self, t: Scalar) -> bool {
+        (0..self.f_used as usize)
+            .any(|i| approximately_equal(f64::from(self.f_t[0][i]), f64::from(t)))
+    }
+
+    /// Returns true when the *opposite* curve already has one at `t`.
+    ///
+    /// Port of `SkIntersections::hasOppT`.
+    #[must_use]
+    pub fn has_opposite_t(&self, t: Scalar) -> bool {
+        (0..self.f_used as usize)
+            .any(|i| approximately_equal(f64::from(self.f_t[1][i]), f64::from(t)))
     }
 
     pub fn is_coincident(&self, index: usize) -> bool {

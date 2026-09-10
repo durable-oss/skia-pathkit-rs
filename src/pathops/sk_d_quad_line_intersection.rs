@@ -614,26 +614,6 @@ impl Point {
     }
 }
 
-impl SkIntersections {
-    fn has_t(&self, t: Scalar) -> bool {
-        for i in 0..self.used() {
-            if approximately_equal(self.t(0, i), t) {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn has_opposite_t(&self, t: Scalar) -> bool {
-        for i in 0..self.used() {
-            if approximately_equal(self.t(1, i), t) {
-                return true;
-            }
-        }
-        false
-    }
-
-}
 
 // Public API functions
 
