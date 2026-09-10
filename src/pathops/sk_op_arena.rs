@@ -43,6 +43,7 @@
 use super::sk_op_angle::SkOpAngle;
 use super::sk_op_span::{is_zero_or_one, SkOpPtT, SkOpSpanBase, PK_MIN_S32};
 use super::sk_path_ops_types::{approximately_equal, OpPhase};
+use super::PathOp;
 use crate::core::Point;
 
 /// Maximum number of times winding computation is retried before giving up.
@@ -130,6 +131,49 @@ pub struct ChaseState {
     pub min: Option<SpanId>,
     /// Where the walk stopped, when it could not continue.
     pub last: Option<SpanId>,
+}
+
+/// Whether to keep an edge under a single-operand nonzero fill.
+///
+/// Port of `gUnaryActiveEdge`, indexed `[from][to]`. An edge is a boundary
+/// exactly when the winding is nonzero on one side and zero on the other.
+const UNARY_ACTIVE_EDGE: [[bool; 2]; 2] = [[false, true], [true, false]];
+
+/// Whether to keep an edge under a two-operand boolean.
+///
+/// Port of `gActiveEdge`, indexed
+/// `[op][mi_from][mi_to][su_from][su_to]`, where `mi` is the minuend operand
+/// and `su` the subtrahend. The op order matches
+/// [`active_edge_op_index`].
+#[rustfmt::skip]
+const ACTIVE_EDGE: [[[[[bool; 2]; 2]; 2]; 2]; 4] = [
+    // mi - su
+    [[[[false, false], [false, false]], [[true,  false], [true,  false]]],
+     [[[true,  true ], [false, false]], [[false, true ], [true,  false]]]],
+    // mi & su
+    [[[[false, false], [false, false]], [[false, true ], [false, true ]]],
+     [[[false, false], [true,  true ]], [[false, true ], [true,  false]]]],
+    // mi | su
+    [[[[false, true ], [true,  false]], [[true,  true ], [false, false]]],
+     [[[true,  false], [true,  false]], [[false, false], [false, false]]]],
+    // mi ^ su
+    [[[[false, true ], [true,  false]], [[true,  false], [false, true ]]],
+     [[[true,  false], [false, true ]], [[false, true ], [true,  false]]]],
+];
+
+/// Returns the row of [`ACTIVE_EDGE`] for `op`.
+///
+/// The table has four rows, in Skia's operator order: difference, intersect,
+/// union, xor. A reverse difference is a difference with the operands swapped,
+/// which the caller has already done by the time it reaches the table.
+#[must_use]
+pub fn active_edge_op_index(op: PathOp) -> usize {
+    match op {
+        PathOp::Difference | PathOp::ReverseDifference => 0,
+        PathOp::Intersect => 1,
+        PathOp::Union => 2,
+        PathOp::Xor => 3,
+    }
 }
 
 /// Returns true when two points are equal to within the grid tolerance.
@@ -1658,6 +1702,228 @@ impl OpArena {
             self.mark_winding(min, winding);
         }
         Some((success, state.last))
+    }
+
+
+    // --- active-edge predicates (item 05, part 6) -------------------------
+
+    /// Splits a winding sum into the value before and after this span.
+    ///
+    /// Port of `SkOpSegment::setUpWinding`. `sum_winding` goes in as the sum
+    /// at the far side and comes out as the sum at the near side; the returned
+    /// value is what it was.
+    pub fn set_up_winding(&self, start: SpanId, end: SpanId, sum_winding: &mut i32) -> i32 {
+        let delta_sum = self.span_sign(start, end);
+        let max_winding = *sum_winding;
+        if *sum_winding == PK_MIN_S32 {
+            return max_winding;
+        }
+        *sum_winding -= delta_sum;
+        max_winding
+    }
+
+    /// Splits both windings the same way.
+    ///
+    /// Port of the four-output `SkOpSegment::setUpWindings`. Returns
+    /// `(max_winding, opp_max_winding)`, with the two sums updated in place.
+    pub fn set_up_windings(
+        &self,
+        start: SpanId,
+        end: SpanId,
+        sum_winding: &mut i32,
+        opp_sum_winding: &mut i32,
+    ) -> (i32, i32) {
+        let max_winding = self.set_up_winding(start, end, sum_winding);
+        let opp_delta = self.opp_sign(start, end);
+        let opp_max_winding = *opp_sum_winding;
+        if *opp_sum_winding != PK_MIN_S32 {
+            *opp_sum_winding -= opp_delta;
+        }
+        (max_winding, opp_max_winding)
+    }
+
+    /// Returns true when the walk from `start` to `end` bounds the result
+    /// under a single-operand nonzero fill.
+    ///
+    /// Port of `SkOpSegment::activeWinding`. An edge is kept when the winding
+    /// is nonzero on exactly one side of it — which is what makes it a
+    /// boundary rather than an interior edge.
+    pub fn active_winding<F>(&mut self, start: SpanId, end: SpanId, sortable_top: F) -> bool
+    where
+        F: FnMut(&mut OpArena, SpanId) -> bool,
+    {
+        let mut sum_winding = self.update_winding(end, start, sortable_top);
+        self.active_winding_with(start, end, &mut sum_winding)
+    }
+
+    /// The half of [`Self::active_winding`] that takes an already-known sum.
+    ///
+    /// Port of the three-argument `SkOpSegment::activeWinding`.
+    pub fn active_winding_with(
+        &self,
+        start: SpanId,
+        end: SpanId,
+        sum_winding: &mut i32,
+    ) -> bool {
+        let max_winding = self.set_up_winding(start, end, sum_winding);
+        let from = max_winding != 0;
+        let to = *sum_winding != 0;
+        UNARY_ACTIVE_EDGE[usize::from(from)][usize::from(to)]
+    }
+
+    /// Returns true when the walk from `start` to `end` bounds the result of
+    /// `op` over two operands.
+    ///
+    /// Port of `SkOpSegment::activeOp`. `operand` says which of the two inputs
+    /// this segment came from, which decides how the two windings pair up.
+    /// `xor_mi_mask` and `xor_su_mask` are -1 for a nonzero fill and 1 for an
+    /// even-odd one, so masking picks the right parity rule per operand.
+    #[allow(clippy::too_many_arguments)] // mirrors the C++ signature
+    pub fn active_op<F>(
+        &mut self,
+        start: SpanId,
+        end: SpanId,
+        operand: bool,
+        xor_mi_mask: i32,
+        xor_su_mask: i32,
+        op: PathOp,
+        sortable_top: F,
+    ) -> bool
+    where
+        F: FnMut(&mut OpArena, SpanId) -> bool,
+    {
+        let mut sum_mi = self.update_winding(end, start, sortable_top);
+        let mut sum_su = self.update_opp_winding(end, start);
+        if operand {
+            std::mem::swap(&mut sum_mi, &mut sum_su);
+        }
+        self.active_op_with(
+            start,
+            end,
+            operand,
+            xor_mi_mask,
+            xor_su_mask,
+            op,
+            &mut sum_mi,
+            &mut sum_su,
+        )
+    }
+
+    /// The half of [`Self::active_op`] that takes already-known sums.
+    ///
+    /// Port of the eight-argument `SkOpSegment::activeOp`.
+    #[allow(clippy::too_many_arguments)] // mirrors the C++ signature
+    pub fn active_op_with(
+        &self,
+        start: SpanId,
+        end: SpanId,
+        operand: bool,
+        xor_mi_mask: i32,
+        xor_su_mask: i32,
+        op: PathOp,
+        sum_mi_winding: &mut i32,
+        sum_su_winding: &mut i32,
+    ) -> bool {
+        let (max_winding, opp_max_winding) =
+            self.set_up_windings(start, end, sum_mi_winding, sum_su_winding);
+        let (mi_from, mi_to, su_from, su_to) = if operand {
+            (
+                (opp_max_winding & xor_mi_mask) != 0,
+                (*sum_su_winding & xor_mi_mask) != 0,
+                (max_winding & xor_su_mask) != 0,
+                (*sum_mi_winding & xor_su_mask) != 0,
+            )
+        } else {
+            (
+                (max_winding & xor_mi_mask) != 0,
+                (*sum_mi_winding & xor_mi_mask) != 0,
+                (opp_max_winding & xor_su_mask) != 0,
+                (*sum_su_winding & xor_su_mask) != 0,
+            )
+        };
+        ACTIVE_EDGE[active_edge_op_index(op)][usize::from(mi_from)][usize::from(mi_to)]
+            [usize::from(su_from)][usize::from(su_to)]
+    }
+
+    /// Returns the angle to sort from, looking only at `start`'s own segment.
+    ///
+    /// Port of `SkOpSegment::activeAngleInner`. Sets `done` false when a span
+    /// that should have a winding sum does not have one yet.
+    pub fn active_angle_inner(
+        &self,
+        start: SpanId,
+        start_ptr: &mut Option<SpanId>,
+        end_ptr: &mut Option<SpanId>,
+        done: &mut bool,
+    ) -> Option<AngleId> {
+        // The edge leaving the junction.
+        if let Some(up_span) = self.span_upcastable(start) {
+            let s = self.span(up_span);
+            if s.wind_value() != 0 || s.opp_value() != 0 {
+                if let Some(next) = self.span_next(up_span) {
+                    if end_ptr.is_none() {
+                        *start_ptr = Some(start);
+                        *end_ptr = Some(next);
+                    }
+                    if !self.span(up_span).done() {
+                        if self.span(up_span).wind_sum() != PK_MIN_S32 {
+                            return self.walk_angle(start, next);
+                        }
+                        *done = false;
+                    }
+                }
+            }
+        }
+        // The edge leading into it.
+        if let Some(down_span) = self.span_prev(start) {
+            let s = self.span(down_span);
+            if s.wind_value() != 0 || s.opp_value() != 0 {
+                if end_ptr.is_none() {
+                    *start_ptr = Some(start);
+                    *end_ptr = Some(down_span);
+                }
+                if !self.span(down_span).done() {
+                    if self.span(down_span).wind_sum() != PK_MIN_S32 {
+                        return self.walk_angle(start, down_span);
+                    }
+                    *done = false;
+                }
+            }
+        }
+        None
+    }
+
+    /// Returns the angle to sort from, looking at the segment across the
+    /// junction.
+    ///
+    /// Port of `SkOpSegment::activeAngleOther`.
+    pub fn active_angle_other(
+        &self,
+        start: SpanId,
+        start_ptr: &mut Option<SpanId>,
+        end_ptr: &mut Option<SpanId>,
+        done: &mut bool,
+    ) -> Option<AngleId> {
+        let start_ptt = self.span_ptt(start)?;
+        let o_ptt = self.ptt_next(start_ptt);
+        let o_span = self.ptt_span(o_ptt)?;
+        self.active_angle_inner(o_span, start_ptr, end_ptr, done)
+    }
+
+    /// Returns the angle to sort from at `start`, trying this segment first.
+    ///
+    /// Port of `SkOpSegment::activeAngle`.
+    pub fn active_angle(
+        &self,
+        start: SpanId,
+        start_ptr: &mut Option<SpanId>,
+        end_ptr: &mut Option<SpanId>,
+        done: &mut bool,
+    ) -> Option<AngleId> {
+        if let Some(result) = self.active_angle_inner(start, start_ptr, end_ptr, done) {
+            return Some(result);
+        }
+        self.active_angle_other(start, start_ptr, end_ptr, done)
     }
 
     // --- graph roots -----------------------------------------------------
@@ -3268,5 +3534,254 @@ mod tests {
             last: None,
         };
         assert_eq!(arena.next_chase(&mut state), None);
+    }
+
+    // --- active-edge predicates (item 05, part 6) ------------------------
+
+    #[test]
+    fn the_unary_table_keeps_only_boundary_edges() {
+        // An edge is a boundary exactly when the fill differs across it.
+        for from in [false, true] {
+            for to in [false, true] {
+                let keep = UNARY_ACTIVE_EDGE[usize::from(from)][usize::from(to)];
+                assert_eq!(
+                    keep,
+                    from != to,
+                    "from={from} to={to}: an edge is kept iff the sides differ"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_binary_table_matches_each_operator() {
+        // Derive the expected answer from what each operator means rather
+        // than from the table, so the table is actually being checked.
+        let inside = |op: PathOp, mi: bool, su: bool| match op {
+            PathOp::Difference | PathOp::ReverseDifference => mi && !su,
+            PathOp::Intersect => mi && su,
+            PathOp::Union => mi || su,
+            PathOp::Xor => mi != su,
+        };
+        for op in [
+            PathOp::Difference,
+            PathOp::Intersect,
+            PathOp::Union,
+            PathOp::Xor,
+        ] {
+            for mi_from in [false, true] {
+                for mi_to in [false, true] {
+                    for su_from in [false, true] {
+                        for su_to in [false, true] {
+                            let keep = ACTIVE_EDGE[active_edge_op_index(op)]
+                                [usize::from(mi_from)][usize::from(mi_to)]
+                                [usize::from(su_from)][usize::from(su_to)];
+                            // The edge bounds the result when the result is
+                            // filled on one side of it and not the other.
+                            let want = inside(op, mi_from, su_from)
+                                != inside(op, mi_to, su_to);
+                            assert_eq!(
+                                keep, want,
+                                "{op:?} mi {mi_from}->{mi_to} su {su_from}->{su_to}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn set_up_winding_splits_the_sum_across_the_span() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+        arena.span_mut(head).set_wind_value(1);
+
+        // Walking forwards the sign is -1, so the near side is one greater.
+        let mut sum = 2;
+        let max = arena.set_up_winding(head, mid, &mut sum);
+        assert_eq!(max, 2, "the far side is what came in");
+        assert_eq!(sum, 3, "the near side has the span's contribution added");
+    }
+
+    #[test]
+    fn set_up_winding_leaves_an_unknown_sum_alone() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+        arena.span_mut(head).set_wind_value(1);
+
+        let mut sum = PK_MIN_S32;
+        let max = arena.set_up_winding(head, mid, &mut sum);
+        assert_eq!(max, PK_MIN_S32);
+        assert_eq!(sum, PK_MIN_S32, "an unknown sum stays unknown");
+    }
+
+    #[test]
+    fn active_winding_keeps_an_edge_the_fill_changes_across() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+        arena.span_mut(head).set_wind_value(1);
+
+        // The far side is outside; adding this span's contribution puts the
+        // near side inside. The fill changes across the edge, so it is kept.
+        let mut sum = 0;
+        assert!(arena.active_winding_with(head, mid, &mut sum));
+        assert_eq!(sum, 1, "the near side picked up the contribution");
+    }
+
+    #[test]
+    fn active_winding_discards_an_interior_edge() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+        // A span contributing nothing leaves the fill unchanged across it.
+        arena.span_mut(head).set_wind_value(0);
+
+        let mut sum = 0;
+        assert!(!arena.active_winding_with(head, mid, &mut sum), "outside both sides");
+        let mut sum = 2;
+        assert!(!arena.active_winding_with(head, mid, &mut sum), "inside both sides");
+        // And with a contribution, a side that stays inside is still interior.
+        arena.span_mut(head).set_wind_value(1);
+        let mut sum = 1;
+        assert!(!arena.active_winding_with(head, mid, &mut sum), "inside 1 -> 2");
+    }
+
+    #[test]
+    fn active_op_reads_the_table_for_each_operator() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+        arena.span_mut(head).set_wind_value(1);
+        arena.span_mut(head).set_opp_value(0);
+
+        // The first operand goes from outside to inside across this edge and
+        // the second is outside throughout. Union and difference keep such an
+        // edge; intersect does not, since the second is never filled.
+        let run = |arena: &OpArena, op: PathOp| {
+            let mut mi = 0;
+            let mut su = 0;
+            arena.active_op_with(head, mid, false, -1, -1, op, &mut mi, &mut su)
+        };
+        assert!(run(&arena, PathOp::Union));
+        assert!(run(&arena, PathOp::Difference));
+        assert!(!run(&arena, PathOp::Intersect));
+    }
+
+    #[test]
+    fn active_op_swaps_the_operands_for_the_second_input() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+        arena.span_mut(head).set_wind_value(1);
+
+        // The second operand contributes nothing across this edge, so which
+        // operand this segment came from is the only thing that differs.
+        let mut mi_a = 0;
+        let mut su_a = 0;
+        let first = arena.active_op_with(
+            head, mid, false, -1, -1, PathOp::Difference, &mut mi_a, &mut su_a,
+        );
+        let mut mi_b = 0;
+        let mut su_b = 0;
+        let second = arena.active_op_with(
+            head, mid, true, -1, -1, PathOp::Difference, &mut mi_b, &mut su_b,
+        );
+        // Which operand the segment came from changes which winding is which,
+        // so a difference does not treat the two sides alike.
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn active_angle_inner_reports_a_span_with_no_sum_yet() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+        arena.span_mut(head).set_wind_value(1);
+
+        let (mut start_ptr, mut end_ptr) = (None, None);
+        let mut done = true;
+        let angle = arena.active_angle_inner(head, &mut start_ptr, &mut end_ptr, &mut done);
+        assert_eq!(angle, None, "no angle yet, since no sum is known");
+        assert!(!done, "the walk is not finished here");
+        assert_eq!(start_ptr, Some(head));
+        assert_eq!(end_ptr, Some(mid));
+    }
+
+    #[test]
+    fn active_angle_inner_returns_the_angle_once_the_sum_is_known() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+        arena.span_mut(head).set_wind_value(1);
+        arena.span_set_wind_sum(head, 1);
+        let leaving = arena.alloc_angle(SkOpAngle::new());
+        arena.span_set_to_angle(head, Some(leaving));
+
+        let (mut start_ptr, mut end_ptr) = (None, None);
+        let mut done = true;
+        let angle = arena.active_angle_inner(head, &mut start_ptr, &mut end_ptr, &mut done);
+        assert_eq!(angle, Some(leaving));
+        assert!(done, "nothing was left unresolved");
+        let _ = mid;
+    }
+
+    #[test]
+    fn active_angle_falls_through_to_the_other_segment() {
+        // Nothing on this segment contributes, so the answer has to come from
+        // across the junction.
+        let mut arena = OpArena::new();
+        let a = arena.alloc_segment_with_ends(Point::new(0.0, 0.0), Point::new(100.0, 0.0));
+        let b = arena.alloc_segment_with_ends(Point::new(100.0, 0.0), Point::new(100.0, 100.0));
+        let a_tail = arena.segment(a).f_tail.expect("tail");
+        let b_head = arena.segment(b).f_head.expect("head");
+        let pa = arena.span_ptt(a_tail).expect("ptt");
+        let pb = arena.span_ptt(b_head).expect("ptt");
+        assert!(arena.ptt_add_opp(pa, pb));
+
+        arena.span_mut(b_head).set_wind_value(1);
+        arena.span_set_wind_sum(b_head, 1);
+        let leaving = arena.alloc_angle(SkOpAngle::new());
+        arena.span_set_to_angle(b_head, Some(leaving));
+
+        let (mut start_ptr, mut end_ptr) = (None, None);
+        let mut done = true;
+        let angle = arena.active_angle(a_tail, &mut start_ptr, &mut end_ptr, &mut done);
+        assert_eq!(angle, Some(leaving), "found across the junction");
     }
 }
