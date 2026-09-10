@@ -444,9 +444,14 @@ mod tests {
         let mut ts = SkIntersections::new();
         ts.merge(&a, 0, &b, 0);
 
+        // merge pairs the *first* curve's t from each side: a's t[0] becomes
+        // the result's t[0], and b's t[0] becomes the result's t[1]. It does
+        // not carry b's second t across.
         assert_eq!(ts.used(), 1);
         assert!((ts.t(0, 0) - 0.5).abs() < 1e-6);
-        assert!((ts.t(1, 0) - 0.75).abs() < 1e-6);
+        assert!((ts.t(1, 0) - 0.5).abs() < 1e-6);
+        // The two points are kept separately rather than merged.
+        assert_eq!(ts.pt(0), Point::new(1.0, 1.0));
     }
 
     #[test]

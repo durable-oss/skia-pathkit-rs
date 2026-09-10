@@ -21,12 +21,12 @@
 //! - `SkOpCoincidence` - Records overlapping segments
 
 use crate::pathops::{
-    SkOpContour::SkOpContour,
-    SkOpCoincidence::SkOpCoincidence,
+    sk_op_contour::SkOpContour,
+    sk_op_coincidence::SkOpCoincidence,
 };
 use crate::pathops::{
-    SkIntersections::SkIntersections,
-    SkIntersectionHelper::SkIntersectionHelper,
+    sk_intersections::SkIntersections,
+    sk_intersection_helper::{SegmentType, SkIntersectionHelper},
 };
 use crate::core::{Point, Scalar};
 
@@ -411,22 +411,12 @@ fn record_intersections(
     }
 }
 
-/// Segment type for intersection dispatch
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SegmentType { HorizontalLine = -1,
-    VerticalLine = 0,
-    Line = 1,
-    Quad = 2,
-    Conic = 3,
-    Cubic = 4,
-}
-
 /// Check bounds overlap with ULP tolerance
 fn bounds_intersects(
-    a: crate::pathops::SkIntersectionHelper::SkPathOpsBounds,
-    b: crate::pathops::SkIntersectionHelper::SkPathOpsBounds,
+    a: &crate::pathops::sk_intersection_helper::SkPathOpsBounds,
+    b: &crate::pathops::sk_intersection_helper::SkPathOpsBounds,
 ) -> bool {
-    crate::pathops::SkIntersectionHelper::SkPathOpsBounds::intersects(&a, &b)
+    crate::pathops::sk_intersection_helper::SkPathOpsBounds::intersects(a, b)
 }
 
 /// Compare using ULPs

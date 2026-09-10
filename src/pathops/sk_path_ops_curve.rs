@@ -215,6 +215,13 @@ impl std::ops::Add<SkDVector> for SkDPoint {
     }
 }
 
+impl std::ops::AddAssign<SkDVector> for SkDPoint {
+    fn add_assign(&mut self, rhs: SkDVector) {
+        self.fX += rhs.fX;
+        self.fY += rhs.fY;
+    }
+}
+
 impl std::ops::Sub<SkDVector> for SkDPoint {
     type Output = SkDPoint;
     fn sub(self, rhs: SkDVector) -> SkDPoint {
@@ -672,19 +679,34 @@ impl SkDCubic {
             [self.fPts[0].fY, self.fPts[1].fY, self.fPts[2].fY, self.fPts[3].fY]
         };
 
-        // Solve derivative = 0 for extrema
-        let a = points[3] - 3.0 * points[2] + 3.0 * points[1] - points[0];
-        let b = 3.0 * points[2] - 6.0 * points[1] + 3.0 * points[0];
-        let c = 3.0 * points[1] - 3.0 * points[0];
+        // B'(t)/3 as a quadratic in t. Matches SkDCubic::FindExtrema:
+        //   A = d - a + 3(b - c),  B = 2(a - 2b + c),  C = b - a
+        // The three must share a scale factor, or the roots come out wrong.
+        let a = points[3] - points[0] + 3.0 * (points[1] - points[2]);
+        let b = 2.0 * (points[0] - 2.0 * points[1] + points[2]);
+        let c = points[1] - points[0];
+
+        if a.abs() <= 1e-10 {
+            // Degenerates to a line: b*t + c == 0.
+            if b.abs() > 1e-10 {
+                let t = -c / b;
+                if (0.0..=1.0).contains(&t) {
+                    result.push(t);
+                }
+            }
+            return result;
+        }
 
         let det = b * b - 4.0 * a * c;
-        if det > 0.0 && a.abs() > 1e-10 {
-            let t1 = (-b - det.sqrt()) / (2.0 * a);
-            let t2 = (-b + det.sqrt()) / (2.0 * a);
+        if det >= 0.0 {
+            let root = det.sqrt();
+            let t1 = (-b - root) / (2.0 * a);
+            let t2 = (-b + root) / (2.0 * a);
             if (0.0..=1.0).contains(&t1) {
                 result.push(t1);
             }
-            if (0.0..=1.0).contains(&t2) {
+            // A repeated root must not be reported twice.
+            if (0.0..=1.0).contains(&t2) && (t2 - t1).abs() > 1e-12 {
                 result.push(t2);
             }
         }
@@ -1009,8 +1031,10 @@ mod tests {
             SkDPoint::new(1.0, 0.0),
         ]);
 
+        // B(1/2) = (p0 + 3p1 + 3p2 + p3)/8, so y = (0 + 3 + 3 + 0)/8.
         let pt = cubic.pt_at_t(0.5);
-        assert!((pt.fY - 0.5).abs() < 1e-6);
+        assert!((pt.fY - 0.75).abs() < 1e-6);
+        assert!((pt.fX - 0.5).abs() < 1e-6);
 
         let extrema = cubic.find_extrema(1);
         assert_eq!(extrema.len(), 1);

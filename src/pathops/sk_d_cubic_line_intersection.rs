@@ -66,8 +66,10 @@ impl DCubic {
 
     /// Find extrema (where derivative = 0)
     pub fn find_extrema(points: &[Point; 4], extrema_ts: &mut [Scalar; MAX_EXTREMA]) -> usize {
-        let a = points[3].x - 3.0 * points[2].x + 3.0 * points[1].x - points[0].x;
-        let b = 2.0 * (points[2].x - points[1].x) - (points[1].x - points[0].x);
+        // B'(t)/3 as a quadratic in t. Matches SkDCubic::FindExtrema:
+        //   A = d - a + 3(b - c),  B = 2(a - 2b + c),  C = b - a
+        let a = points[3].x - points[0].x + 3.0 * (points[1].x - points[2].x);
+        let b = 2.0 * (points[0].x - 2.0 * points[1].x + points[2].x);
         let c = points[1].x - points[0].x;
         
         let discriminant = b * b - 4.0 * a * c;
@@ -172,25 +174,44 @@ mod tests {
     }
 
     #[test]
-    fn test_cubic_extrema() {
+    fn test_cubic_extrema_none_when_x_is_monotonic() {
+        // find_extrema looks at x only. This arch rises and falls in y, but
+        // its x runs 0 -> 3 without turning, so it has no x extremum.
         let cubic = DCubic::new(
             Point::new(0.0, 0.0),
             Point::new(1.0, 3.0),
             Point::new(2.0, 3.0),
             Point::new(3.0, 0.0),
         );
-        
-        let mut extrema_ts = [0.0; 6];
+
+        let mut extrema_ts = [0.0; MAX_EXTREMA];
         let count = DCubic::find_extrema(
             &[cubic.p0, cubic.p1, cubic.p2, cubic.p3],
             &mut extrema_ts,
         );
-        
-        assert!(count > 0, "Should find extrema");
-        assert!(count <= 2, "Cubic can have at most 2 extrema");
-        
-        for i in 0..count {
-            assert!((0.0..=1.0).contains(&extrema_ts[i]), "Extrema t in [0,1]");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_cubic_extrema_finds_the_x_turn() {
+        // x doubles back: 0 -> 3 -> -1 -> 2, so dx/dt changes sign twice.
+        let cubic = DCubic::new(
+            Point::new(0.0, 0.0),
+            Point::new(3.0, 1.0),
+            Point::new(-1.0, 2.0),
+            Point::new(2.0, 3.0),
+        );
+
+        let mut extrema_ts = [0.0; MAX_EXTREMA];
+        let count = DCubic::find_extrema(
+            &[cubic.p0, cubic.p1, cubic.p2, cubic.p3],
+            &mut extrema_ts,
+        );
+
+        assert!(count > 0, "a cubic whose x doubles back has an extremum");
+        assert!(count <= 2, "a cubic has at most 2 x extrema");
+        for t in extrema_ts.iter().take(count) {
+            assert!((0.0..=1.0).contains(t), "extremum t {t} out of range");
         }
     }
 

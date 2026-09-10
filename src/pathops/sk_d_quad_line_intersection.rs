@@ -7,7 +7,7 @@
 //! t values where the quadratic intersects the line.
 
 use crate::core::{Point, Scalar};
-use SkIntersections::SkIntersections;
+use super::sk_intersections::SkIntersections;
 
 /// Maximum number of quadratic roots
 const MAX_QUAD_ROOTS: usize = 2;
@@ -362,7 +362,7 @@ impl<'a> LineQuadraticIntersections<'a> {
         }
 
         // Check for duplicate
-        if self.intersections.used() > 0 && approximately_equal(*self.intersections.t(1, 0), *line_t) {
+        if self.intersections.used() > 0 && approximately_equal(self.intersections.t(1, 0), *line_t) {
             return false;
         }
 
@@ -449,25 +449,32 @@ impl<'a> LineQuadraticIntersections<'a> {
     }
 
     fn check_coincident(&mut self) {
-        let last = self.intersections.used();
-        let mut index = 0;
+        // The loop reads index and index + 1, so it stops one short of the
+        // end. `last` also has to shrink with every removal, or the walk
+        // never terminates.
+        let mut last = self.intersections.used() as isize - 1;
+        let mut index: isize = 0;
         while index < last {
-            let quad_mid_t = (self.intersections.t(0, index) + self.intersections.t(0, index + 1)) / 2.0;
+            let i = index as usize;
+            let quad_mid_t =
+                (self.intersections.t(0, i) + self.intersections.t(0, i + 1)) / 2.0;
             let quad_mid_pt = self.quad.pt_at_t(quad_mid_t);
             let t = DLine::near_point(quad_mid_pt, self.line);
             if t < 0.0 {
                 index += 1;
                 continue;
             }
-            if self.intersections.is_coincident(index) {
-                self.intersections.remove_one(index);
-            } else if self.intersections.is_coincident(index + 1) {
-                self.intersections.remove_one(index + 1);
+            if self.intersections.is_coincident(i) {
+                self.intersections.remove_one(i);
+                last -= 1;
+            } else if self.intersections.is_coincident(i + 1) {
+                self.intersections.remove_one(i + 1);
+                last -= 1;
             } else {
-                self.intersections.set_coincident(index);
+                self.intersections.set_coincident(i);
                 index += 1;
             }
-            self.intersections.set_coincident(index);
+            self.intersections.set_coincident(index as usize);
         }
     }
 
@@ -626,21 +633,6 @@ impl SkIntersections {
         false
     }
 
-    fn remove_one(&mut self, index: usize) {
-        if index < self.used() - 1 {
-            for i in index..self.used() - 1 {
-                self.f_pt[i] = self.f_pt[i + 1];
-                self.f_t[0][i] = self.f_t[0][i + 1];
-                self.f_t[1][i] = self.f_t[1][i + 1];
-            }
-        }
-        self.f_used -= 1;
-    }
-
-    fn flip(&mut self) {
-        // Swap t values between curves
-        self.f_t.swap(0, 1);
-    }
 }
 
 // Public API functions
@@ -705,7 +697,8 @@ mod tests {
         assert!((pt0.x - 0.0).abs() < 1e-10);
         assert!((pt0.y - 0.0).abs() < 1e-10);
         assert!((pt1.x - 1.0).abs() < 1e-10);
-        assert!((pt1.y - 0.75).abs() < 1e-6);
+        // B(1/2) = p0/4 + p1/2 + p2/4, so y = 0/4 + 1/2 + 0/4.
+        assert!((pt1.y - 0.5).abs() < 1e-6);
         assert!((pt2.x - 2.0).abs() < 1e-10);
         assert!((pt2.y - 0.0).abs() < 1e-10);
     }
