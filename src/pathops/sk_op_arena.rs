@@ -95,6 +95,26 @@ impl_handle!(SegmentId);
 impl_handle!(AngleId);
 impl_handle!(CoinId);
 
+/// Largest i32, standing in for C++'s `PK_MaxS32`.
+pub const PK_MAX_S32: i32 = i32::MAX;
+
+/// Returns true when the inner winding is the one to keep.
+///
+/// Port of `SkOpSegment::UseInnerWinding`. The smaller magnitude wins, and a
+/// tie goes to the negative one.
+#[must_use]
+pub fn use_inner_winding(outer_winding: i32, inner_winding: i32) -> bool {
+    debug_assert_ne!(outer_winding, PK_MAX_S32);
+    debug_assert_ne!(inner_winding, PK_MAX_S32);
+    let abs_out = outer_winding.saturating_abs();
+    let abs_in = inner_winding.saturating_abs();
+    if abs_out == abs_in {
+        outer_winding < 0
+    } else {
+        abs_out < abs_in
+    }
+}
+
 /// Returns true when two points are equal to within the grid tolerance.
 ///
 /// Port of `SkDPoint::ApproximatelyEqual`.
@@ -1266,6 +1286,143 @@ impl OpArena {
         self.segment_mut(segment).f_tail = Some(tail);
         self.segment_mut(segment).f_count = 2;
         segment
+    }
+
+
+    // --- winding computation (item 05, parts 3 and 4) ---------------------
+
+    /// Returns the winding contribution of walking `start` to `end`.
+    ///
+    /// Port of `SkOpSegment::SpanSign`. Walking forwards subtracts the start
+    /// span's value; walking backwards adds the end span's. The asymmetry is
+    /// the point: it is what makes a contour traced one way cancel the same
+    /// contour traced the other.
+    #[must_use]
+    pub fn span_sign(&self, start: SpanId, end: SpanId) -> i32 {
+        if self.span(start).f_t < self.span(end).f_t {
+            -self.span(start).wind_value()
+        } else {
+            self.span(end).wind_value()
+        }
+    }
+
+    /// Returns the opposite operand's contribution over the same walk.
+    ///
+    /// Port of `SkOpSegment::OppSign`.
+    #[must_use]
+    pub fn opp_sign(&self, start: SpanId, end: SpanId) -> i32 {
+        if self.span(start).f_t < self.span(end).f_t {
+            -self.span(start).opp_value()
+        } else {
+            self.span(end).opp_value()
+        }
+    }
+
+    /// Returns the accumulated winding at the lesser of `start` and `end`.
+    ///
+    /// Port of `SkOpSegment::windSum(const SkOpAngle*)`, which reads the sum
+    /// from whichever span the angle starts at.
+    #[must_use]
+    pub fn wind_sum_between(&self, start: SpanId, end: SpanId) -> i32 {
+        match self.span_starter(start, end) {
+            Some(lesser) => self.span(lesser).wind_sum(),
+            None => PK_MIN_S32,
+        }
+    }
+
+    /// Returns the angle for the walk from `start` to `end`.
+    ///
+    /// Port of `SkOpSegment::spanToAngle`: forwards takes the angle leaving
+    /// the start, backwards the one arriving at it.
+    #[must_use]
+    pub fn walk_angle(&self, start: SpanId, end: SpanId) -> Option<AngleId> {
+        debug_assert_ne!(start, end);
+        if self.span(start).f_t < self.span(end).f_t {
+            self.span_to_angle_of(start)
+        } else {
+            self.span_from_angle(start)
+        }
+    }
+
+    /// Returns the angle leaving `id`, without the terminal-span assertion.
+    fn span_to_angle_of(&self, id: SpanId) -> Option<AngleId> {
+        self.span(id).f_to_angle.map(AngleId::new)
+    }
+
+    /// Returns the winding after walking `start` to `end`.
+    ///
+    /// Port of `SkOpSegment::updateWinding`. The sum at the lesser span is
+    /// computed if it is not known yet, then the span's own contribution is
+    /// removed when the inner winding is the one to keep.
+    ///
+    /// `sortable_top` is the search `computeWindSum` needs; see
+    /// [`Self::span_compute_wind_sum`].
+    pub fn update_winding<F>(&mut self, start: SpanId, end: SpanId, sortable_top: F) -> i32
+    where
+        F: FnMut(&mut OpArena, SpanId) -> bool,
+    {
+        let Some(lesser) = self.span_starter(start, end) else {
+            return PK_MIN_S32;
+        };
+        let mut winding = self.span(lesser).wind_sum();
+        if winding == PK_MIN_S32 {
+            winding = self.span_compute_wind_sum(lesser, sortable_top);
+        }
+        if winding == PK_MIN_S32 {
+            return winding;
+        }
+        let span_winding = self.span_sign(start, end);
+        if span_winding != 0
+            && use_inner_winding(winding - span_winding, winding)
+            && winding != PK_MAX_S32
+        {
+            winding -= span_winding;
+        }
+        winding
+    }
+
+    /// Returns the winding after walking `end` to `start`.
+    ///
+    /// Port of `SkOpSegment::updateWindingReverse`, which is the same walk
+    /// with its ends swapped.
+    pub fn update_winding_reverse<F>(
+        &mut self,
+        start: SpanId,
+        end: SpanId,
+        sortable_top: F,
+    ) -> i32
+    where
+        F: FnMut(&mut OpArena, SpanId) -> bool,
+    {
+        self.update_winding(end, start, sortable_top)
+    }
+
+    /// Returns the opposite operand's winding after walking `start` to `end`.
+    ///
+    /// Port of `SkOpSegment::updateOppWinding`. Unlike the winding case there
+    /// is no compute step: the opposite sum is either known or it is not.
+    #[must_use]
+    pub fn update_opp_winding(&self, start: SpanId, end: SpanId) -> i32 {
+        let Some(lesser) = self.span_starter(start, end) else {
+            return PK_MIN_S32;
+        };
+        let mut opp_winding = self.span(lesser).opp_sum();
+        let opp_span_winding = self.opp_sign(start, end);
+        if opp_span_winding != 0
+            && use_inner_winding(opp_winding - opp_span_winding, opp_winding)
+            && opp_winding != PK_MAX_S32
+        {
+            opp_winding -= opp_span_winding;
+        }
+        opp_winding
+    }
+
+    /// Returns the opposite operand's winding after walking `end` to `start`.
+    ///
+    /// Port of `SkOpSegment::updateOppWindingReverse`.
+    #[must_use]
+    pub fn update_opp_winding_reverse(&self, start: SpanId, end: SpanId) -> i32 {
+        self.update_opp_winding(end, start)
     }
 
     // --- graph roots -----------------------------------------------------
@@ -2494,5 +2651,201 @@ mod tests {
         assert_eq!(arena.span_contains_segment(span_a, b), Some(pb));
         let span_b = arena.ptt_span(pb).expect("span");
         assert_eq!(arena.span_contains_segment(span_b, a), Some(pa));
+    }
+
+    // --- winding computation (item 05, parts 3 and 4) --------------------
+
+    #[test]
+    fn use_inner_winding_prefers_the_smaller_magnitude() {
+        assert!(use_inner_winding(1, 2), "1 is inside 2");
+        assert!(!use_inner_winding(2, 1), "2 is not inside 1");
+        assert!(use_inner_winding(-1, 3));
+        assert!(!use_inner_winding(-3, 1));
+    }
+
+    #[test]
+    fn use_inner_winding_breaks_a_tie_toward_the_negative() {
+        assert!(use_inner_winding(-2, 2), "equal magnitude, outer negative");
+        assert!(!use_inner_winding(2, -2), "equal magnitude, outer positive");
+        assert!(!use_inner_winding(0, 0));
+    }
+
+    #[test]
+    fn span_sign_flips_with_the_direction_of_travel() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+        arena.span_mut(head).set_wind_value(1);
+        arena.span_mut(mid).set_wind_value(2);
+
+        // Forwards from the head subtracts the head's own value.
+        assert_eq!(arena.span_sign(head, mid), -1);
+        // Backwards adds the end span's value instead.
+        assert_eq!(arena.span_sign(mid, head), 1);
+    }
+
+    #[test]
+    fn opp_sign_behaves_the_same_on_the_opposite_operand() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+        arena.span_mut(head).set_opp_value(3);
+        arena.span_mut(mid).set_opp_value(4);
+
+        assert_eq!(arena.opp_sign(head, mid), -3);
+        assert_eq!(arena.opp_sign(mid, head), 3);
+    }
+
+    #[test]
+    fn wind_sum_between_reads_the_lesser_span() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+        arena.span_set_wind_sum(head, 4);
+        arena.span_set_wind_sum(mid, 9);
+
+        // Either order reads the head, the lesser t of the pair.
+        assert_eq!(arena.wind_sum_between(head, mid), 4);
+        assert_eq!(arena.wind_sum_between(mid, head), 4);
+    }
+
+    #[test]
+    fn walk_angle_picks_the_leaving_or_arriving_angle() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+        let leaving = arena.alloc_angle(SkOpAngle::new());
+        let arriving = arena.alloc_angle(SkOpAngle::new());
+        arena.span_set_to_angle(head, Some(leaving));
+        arena.span_set_from_angle(head, Some(arriving));
+        // The mid span gets its own pair, so the two walks cannot be confused.
+        let mid_leaving = arena.alloc_angle(SkOpAngle::new());
+        let mid_arriving = arena.alloc_angle(SkOpAngle::new());
+        arena.span_set_to_angle(mid, Some(mid_leaving));
+        arena.span_set_from_angle(mid, Some(mid_arriving));
+
+        // Walking forwards from the head takes the angle leaving the head.
+        assert_eq!(arena.walk_angle(head, mid), Some(leaving));
+        // Walking backwards from the mid takes the one arriving at the mid.
+        assert_eq!(arena.walk_angle(mid, head), Some(mid_arriving));
+    }
+
+    #[test]
+    fn update_winding_removes_the_spans_own_contribution() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+        arena.span_mut(head).set_wind_value(1);
+        arena.span_set_wind_sum(head, 1);
+
+        // span_sign is -1 here, and use_inner_winding(1 - -1, 1) is
+        // use_inner_winding(2, 1), which is false: the outer winding stands.
+        let w = arena.update_winding(head, mid, |_, _| true);
+        assert_eq!(w, 1);
+    }
+
+    #[test]
+    fn update_winding_subtracts_when_the_inner_winding_wins() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+        arena.span_mut(head).set_wind_value(1);
+        arena.span_set_wind_sum(head, 2);
+
+        // Walking backwards: span_sign is +1, so the candidate is 2 - 1 = 1,
+        // and use_inner_winding(1, 2) is true.
+        let w = arena.update_winding(mid, head, |_, _| true);
+        assert_eq!(w, 1, "the span's own contribution came off");
+    }
+
+    #[test]
+    fn update_winding_computes_an_unknown_sum() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+        assert_eq!(arena.span(head).wind_sum(), PK_MIN_S32);
+
+        // The search writes the sum, and update_winding then uses it.
+        let w = arena.update_winding(head, mid, |a, id| {
+            a.span_set_wind_sum(id, 5);
+            true
+        });
+        assert_eq!(w, 5);
+    }
+
+    #[test]
+    fn update_winding_gives_up_when_the_sum_stays_unknown() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+        let w = arena.update_winding(head, mid, |_, _| false);
+        assert_eq!(w, PK_MIN_S32);
+    }
+
+    #[test]
+    fn update_winding_reverse_is_the_walk_the_other_way() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+        arena.span_mut(head).set_wind_value(1);
+        arena.span_set_wind_sum(head, 2);
+
+        let forward = arena.update_winding(head, mid, |_, _| true);
+        let reverse = arena.update_winding_reverse(mid, head, |_, _| true);
+        assert_eq!(forward, reverse, "reverse swaps the ends back");
+    }
+
+    #[test]
+    fn update_opp_winding_mirrors_the_winding_case() {
+        let mut arena = OpArena::new();
+        let seg = horizontal_segment(&mut arena);
+        let p = arena
+            .segment_add_t(seg, 0.5, Point::new(50.0, 0.0))
+            .expect("inserted");
+        let mid = arena.ptt_span(p).expect("span");
+        let head = arena.segment(seg).f_head.expect("head");
+        arena.span_mut(head).set_opp_value(1);
+        arena.span_set_opp_sum(head, 2);
+
+        // Backwards: opp_sign is +1, candidate 2 - 1 = 1, inner wins.
+        assert_eq!(arena.update_opp_winding(mid, head), 1);
+        // And the reverse form swaps the ends.
+        assert_eq!(arena.update_opp_winding_reverse(head, mid), 1);
     }
 }
