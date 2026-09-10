@@ -117,3 +117,54 @@ finely-tessellated input, so it is probably worth doing anyway.
   20 — no non-monotonic gaps.
 - A contour that cannot be closed does not silently produce an empty result.
 - Existing tests still pass.
+
+---
+
+## Resolution (2026-09-10)
+
+Fixed. All acceptance criteria pass, with tests in `boolean.rs`:
+`union_of_many_vertex_polygons_stays_one_contour`,
+`union_of_polygons_is_scale_invariant`,
+`union_of_polygons_holds_across_offsets`,
+`union_keeps_coincident_shared_edges`, `union_of_offset_discs_is_one_contour`.
+
+The diagnosis in this file was right about `assemble` discarding contours, but
+the fixed 1/256 grid turned out to be only half of it. Three changes:
+
+1. **`VertexWeld` replaces `key`.** Endpoints are clustered with a tolerance
+   derived from the scene's extent (`WELD_REL_TOL`), then chains are walked on
+   cluster identity. This is fix direction 1 from above, and it removes the
+   scale dependence.
+
+2. **`classify_edge` samples within the available clearance.** This was the
+   larger cause. `clearance_at` measures the distance from an edge's midpoint
+   to the nearest *other* split piece; the perpendicular step is bounded by
+   half of that, and halved further until the two samples disagree. Where two
+   boundaries ran within ~0.1 units of each other, the fixed 0.25 step landed
+   outside *both* shapes, so `in_left != in_right` and an interior edge was
+   wrongly kept as boundary — which is what actually broke the ring. Note this
+   is not the same as the offset clamp in `0ff3a2f`, which this file correctly
+   reports as ineffective: clamping to the edge's own length does nothing when
+   the edge is long and the *neighbouring* boundary is what is close.
+
+   Coincident twins are skipped when measuring clearance. A shared edge has a
+   duplicate at distance zero, which would otherwise drive the step to zero and
+   lose the edge — that regressed hexagons before it was handled.
+
+3. **Partial chains are kept as a fallback** (fix direction 3), and rings
+   enclosing no area are dropped. `sk_path_ops_simplify.rs` already did both.
+
+Also: `path_op` now picks the flattening tolerance from how close the two
+inputs are (`flatten_tolerance`). Two arcs flattened independently each deviate
+by up to the tolerance, so where the inputs are closer together than that their
+chords interleave and the crossings come out scrambled. This is what fixed
+discs at offsets 1 and 2.
+
+### Known residual
+
+Two discs of radius 40 offset by **0.5** (99.4% overlap) still union to 4
+contours rather than 1. At that separation the near-tangency at top and bottom
+throws up a sliver contour that consumes edges the main ring needs. This is a
+different failure from the one this item describes — the polygon cases, the
+radius sweep, the offset sweep and discs from offset 1 upward are all correct —
+and it is a limitation of the substitute engine that item 09 replaces.

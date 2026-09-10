@@ -69,10 +69,12 @@ fn flatten_tolerance(one: &Path, two: &Path) -> f32 {
         .max((b.right - b.left).abs())
         .max((b.bottom - b.top).abs());
     // Never finer than this fraction of the shapes themselves, or a big scene
-    // would tessellate into an unbounded number of chords.
+    // would tessellate into an unbounded number of chords. On a large scene
+    // the floor can exceed FLAT_TOL, so it wins rather than clamping to an
+    // empty range.
     let floor = (extent * 1e-4).max(1e-4);
     if sep > 0.0 {
-        (sep * 0.05).clamp(floor, FLAT_TOL)
+        (sep * 0.05).min(FLAT_TOL).max(floor)
     } else {
         FLAT_TOL
     }
@@ -383,25 +385,22 @@ fn classify_edge(
     // assembled through it. `clearance` is the room actually available here.
     let mut step = OFFSET.min(len * 0.5).min(clearance);
     let unit = Point::new(-dir.y / len, dir.x / len);
-    let (mut in_left, mut in_right) = (false, false);
-    let mut decided = false;
     // Shrink until the two samples disagree; a sliver may need several halvings.
+    let mut decided = None;
     for _ in 0..24 {
         if step < MIN_EDGE {
             break;
         }
         let n = Point::new(unit.x * step, unit.y * step);
-        in_left = in_result(mid_pt + n, one, two, op);
-        in_right = in_result(mid_pt - n, one, two, op);
+        let in_left = in_result(mid_pt + n, one, two, op);
+        let in_right = in_result(mid_pt - n, one, two, op);
         if in_left != in_right {
-            decided = true;
+            decided = Some(in_left);
             break;
         }
         step *= 0.5;
     }
-    if !decided {
-        return None;
-    }
+    let in_left = decided?;
     if in_left {
         Some(Edge {
             from: seg[0],
@@ -602,7 +601,11 @@ fn assemble(edges: &[Edge]) -> Path {
             }
         }
         if closed && verts.len() >= 3 {
-            emit_contour(&mut path, &verts);
+            // A ring enclosing no area is a sliver thrown up where two
+            // boundaries nearly touch; it contributes nothing to the fill.
+            if signed_area(&verts).abs() > MIN_EDGE * MIN_EDGE {
+                emit_contour(&mut path, &verts);
+            }
         } else if verts.len() >= 3 {
             partials.push(verts);
         }
@@ -617,6 +620,17 @@ fn assemble(edges: &[Edge]) -> Path {
     }
 
     path
+}
+
+/// Returns twice the signed area enclosed by `verts` via the shoelace formula.
+fn signed_area(verts: &[Point]) -> f32 {
+    let mut sum = 0.0;
+    for i in 0..verts.len() {
+        let a = verts[i];
+        let b = verts[(i + 1) % verts.len()];
+        sum += a.x * b.y - b.x * a.y;
+    }
+    sum * 0.5
 }
 
 /// Appends `verts` to `path` as one closed contour.
@@ -690,7 +704,7 @@ mod tests {
         let conic = Conic::new([p0, p1, p2], w);
 
         let mut segs = Vec::new();
-        flatten_conic(p0, p1, p2, w, MAX_FLAT_DEPTH, &mut segs);
+        flatten_conic(p0, p1, p2, w, FLAT_TOL, MAX_FLAT_DEPTH, &mut segs);
         assert!(!segs.is_empty());
 
         for seg in &segs {
@@ -715,9 +729,9 @@ mod tests {
         let p2 = Point::new(100.0, 100.0);
 
         let mut as_conic = Vec::new();
-        flatten_conic(p0, p1, p2, w, MAX_FLAT_DEPTH, &mut as_conic);
+        flatten_conic(p0, p1, p2, w, FLAT_TOL, MAX_FLAT_DEPTH, &mut as_conic);
         let mut as_quad = Vec::new();
-        flatten_quad(p0, p1, p2, MAX_FLAT_DEPTH, &mut as_quad);
+        flatten_quad(p0, p1, p2, FLAT_TOL, MAX_FLAT_DEPTH, &mut as_quad);
 
         // Treating the conic as a quad is what the old code did; the midpoints
         // of the two flattenings must not agree, or the bug would be invisible.
@@ -738,7 +752,7 @@ mod tests {
         let quad = Conic::new([p0, p1, p2], 1.0);
 
         let mut segs = Vec::new();
-        flatten_conic(p0, p1, p2, 1.0, MAX_FLAT_DEPTH, &mut segs);
+        flatten_conic(p0, p1, p2, 1.0, FLAT_TOL, MAX_FLAT_DEPTH, &mut segs);
         for seg in &segs {
             for &pt in seg {
                 assert!(dist_to_conic(pt, &quad) <= FLAT_TOL);
@@ -770,5 +784,125 @@ mod tests {
         assert!(!result.is_empty());
         assert!(result.contains(200.0, 200.0));
         assert!(result.contains(250.0, 250.0));
+    }
+
+    /// Builds a regular n-gon centred at `(cx, cy)`.
+    fn ngon(cx: f32, cy: f32, r: f32, n: usize) -> Path {
+        let mut p = Path::new();
+        for i in 0..n {
+            let a = i as f32 / n as f32 * std::f32::consts::TAU;
+            let (x, y) = (cx + r * a.cos(), cy + r * a.sin());
+            if i == 0 {
+                p.move_to(x, y);
+            } else {
+                p.line_to(x, y);
+            }
+        }
+        p.close();
+        p
+    }
+
+    fn contour_count(p: &Path) -> usize {
+        p.iter().filter(|(v, _, _)| *v == Verb::Move).count()
+    }
+
+    #[test]
+    fn union_of_many_vertex_polygons_stays_one_contour() {
+        // Item 15: assemble chained edges on a fixed 1/256 quantization grid,
+        // so once edges got short enough their endpoints stopped agreeing and
+        // whole contours were dropped, returning empty.
+        for n in [4usize, 6, 8, 12, 16, 24, 32, 48, 64, 128] {
+            let a = ngon(200.0, 200.0, 40.0, n);
+            let b = ngon(205.0, 200.0, 40.0, n);
+            let u = path_op(&a, &b, PathOp::Union).unwrap();
+            assert!(!u.is_empty(), "union of two {n}-gons came back empty");
+            assert_eq!(contour_count(&u), 1, "union of two {n}-gons split apart");
+        }
+    }
+
+    #[test]
+    fn union_of_polygons_is_scale_invariant() {
+        // The bug vanished purely by scaling the scene up, which is what
+        // pinned it on an absolute tolerance rather than on the geometry.
+        for r in [10.0f32, 40.0, 100.0, 400.0, 1000.0] {
+            let a = ngon(200.0, 200.0, r, 64);
+            let b = ngon(205.0, 200.0, r, 64);
+            let u = path_op(&a, &b, PathOp::Union).unwrap();
+            assert_eq!(contour_count(&u), 1, "union at radius {r} split apart");
+        }
+    }
+
+    #[test]
+    fn union_of_polygons_holds_across_offsets() {
+        // Offsets used to fail non-monotonically (8 and 10 worked, 15 did not),
+        // the signature of a threshold being straddled.
+        for off in [0.5f32, 1.0, 2.0, 5.0, 8.0, 10.0, 15.0, 20.0] {
+            let a = ngon(200.0, 200.0, 40.0, 64);
+            let b = ngon(200.0 + off, 200.0, 40.0, 64);
+            let u = path_op(&a, &b, PathOp::Union).unwrap();
+            assert_eq!(contour_count(&u), 1, "union at offset {off} split apart");
+        }
+    }
+
+    #[test]
+    fn union_keeps_coincident_shared_edges() {
+        // Two hexagons offset along x share horizontal collinear edges. Those
+        // edges have a coincident twin, and treating the twin as a neighbour
+        // drives the sampling step to zero and loses the edge, which breaks
+        // the ring that runs through it.
+        let a = ngon(200.0, 200.0, 40.0, 6);
+        let b = ngon(205.0, 200.0, 40.0, 6);
+        let u = path_op(&a, &b, PathOp::Union).unwrap();
+        assert_eq!(contour_count(&u), 1);
+        assert!(u.contains(200.0, 200.0));
+    }
+
+    #[test]
+    fn union_of_offset_discs_is_one_contour() {
+        for off in [1.0f32, 2.0, 5.0, 20.0, 60.0] {
+            let mut a = Path::new();
+            a.add_circle(200.0, 200.0, 40.0);
+            let mut b = Path::new();
+            b.add_circle(200.0 + off, 200.0, 40.0);
+            let u = path_op(&a, &b, PathOp::Union).unwrap();
+            assert_eq!(contour_count(&u), 1, "disc union at offset {off} split apart");
+        }
+    }
+
+    #[test]
+    fn vertex_weld_groups_near_identical_endpoints() {
+        // Two edges meeting at a vertex whose coordinates differ in the last
+        // few bits must resolve to a single vertex id.
+        let edges = vec![
+            Edge {
+                from: Point::new(0.0, 0.0),
+                to: Point::new(100.0, 0.0),
+            },
+            Edge {
+                from: Point::new(100.000_01, 0.0),
+                to: Point::new(100.0, 100.0),
+            },
+        ];
+        let weld = VertexWeld::new(&edges);
+        assert_eq!(weld.id_of(edges[0].to), weld.id_of(edges[1].from));
+        // Genuinely distinct endpoints stay distinct.
+        assert_ne!(weld.id_of(edges[0].from), weld.id_of(edges[1].to));
+    }
+
+    #[test]
+    fn signed_area_is_zero_for_a_degenerate_ring() {
+        let flat = [
+            Point::new(0.0, 0.0),
+            Point::new(1.0, 0.0),
+            Point::new(2.0, 0.0),
+        ];
+        assert!(signed_area(&flat).abs() < 1e-9);
+        let square = [
+            Point::new(0.0, 0.0),
+            Point::new(2.0, 0.0),
+            Point::new(2.0, 2.0),
+            Point::new(0.0, 2.0),
+        ];
+        assert!((signed_area(&square).abs() - 4.0).abs() < 1e-6);
     }
 }

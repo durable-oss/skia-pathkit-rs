@@ -71,3 +71,23 @@ should be revisited once the flattener is correct.
   `Conic::eval_at`, so a quad-vs-conic regression is caught directly rather
   than as a mysterious empty result.
 - The existing 617 tests still pass.
+
+---
+
+## Resolution (2026-09-10)
+
+Fixed. `flatten_conic` in both `boolean.rs` and `sk_path_ops_simplify.rs`
+subdivides with `Conic::chop`, which splits in the rational form, so both
+halves stay on the true curve. `Verb::Conic` no longer shares the `Verb::Quad`
+arm, and the weight from `Path::iter()` is passed through instead of dropped.
+`Conic` is now re-exported from `core`.
+
+Tests in `boolean.rs`: `flatten_conic_stays_on_the_true_curve` (every emitted
+point within tolerance of `Conic::eval_at`, which is the regression guard this
+file asked for), `flatten_conic_differs_from_flatten_quad_when_weighted`,
+`flatten_conic_with_unit_weight_matches_a_quad`,
+`boolean_ops_on_discs_are_not_empty`, `union_of_a_disc_and_a_rect_is_not_empty`.
+
+Disc ∪ rect and all three disc booleans return non-empty. Note that fixing this
+alone left discs empty at small offsets; that turned out to be item 15, and
+both had to land before curved booleans worked across the range.
