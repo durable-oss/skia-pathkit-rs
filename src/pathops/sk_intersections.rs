@@ -4,6 +4,12 @@
 
 use crate::core::{Point, Scalar};
 
+use super::sk_path_ops_line::{pin_t, DLine};
+use super::sk_path_ops_types::{
+    almost_equal_ulps, approximately_zero, not_almost_dequal_ulps, not_almost_equal_ulps_pin,
+    precisely_between,
+};
+
 /// Maximum number of intersection points per curve pair
 const MAX_INTERSECTIONS: usize = 13;
 
@@ -30,6 +36,7 @@ pub struct SkIntersections {
     f_swap: bool,
 }
 
+#[allow(clippy::needless_range_loop)] // the index doubles as an endpoint's t
 impl SkIntersections {
     pub fn new() -> Self {
         Self {
@@ -155,92 +162,399 @@ impl SkIntersections {
         index as i32
     }
 
-    pub fn line_line(&mut self, a: &[Point; 2], b: &[Point; 2]) -> u8 {
+    /// Intersects two lines treated as infinite rays.
+    ///
+    /// Port of `SkIntersections::intersectRay`. Unlike [`Self::intersect`] the
+    /// t values are not clipped to the segments, so a caller gets the crossing
+    /// of the underlying lines even when it lies outside both.
+    ///
+    /// Coincident rays report both ends rather than nothing, since there is no
+    /// single meaningful crossing point.
+    pub fn intersect_ray(&mut self, a: &DLine, b: &DLine) -> u8 {
         self.f_max = 2;
-        self.reset();
-
-        let dx1 = a[1].x - a[0].x;
-        let dy1 = a[1].y - a[0].y;
-        let dx2 = b[1].x - b[0].x;
-        let dy2 = b[1].y - b[0].y;
-
-        let det = dx1 * dy2 - dy1 * dx2;
-
-        if det.abs() < 1e-10 {
-            // Parallel lines
-            return 0;
-        }
-
-        let t1 = ((b[0].x - a[0].x) * dy2 - (b[0].y - a[0].y) * dx2) / det;
-        let t2 = ((b[0].x - a[0].x) * dy1 - (b[0].y - a[0].y) * dx1) / det;
-
-        if (0.0..=1.0).contains(&t1) && (0.0..=1.0).contains(&t2) {
-            let pt = Point::new(
-                a[0].x + t1 * dx1,
-                a[0].y + t1 * dy1,
-            );
-            let _ = self.insert(t1, t2, pt);
-            1
+        let a_len = Point::new(a.p[1].x - a.p[0].x, a.p[1].y - a.p[0].y);
+        let b_len = Point::new(b.p[1].x - b.p[0].x, b.p[1].y - b.p[0].y);
+        // Slopes match exactly when this denominator goes to zero.
+        let denom = b_len.y * a_len.x - a_len.y * b_len.x;
+        #[allow(clippy::needless_late_init)] // mirrors the C++ branch structure
+        let used;
+        if !approximately_zero(denom as f64) {
+            let ab0 = Point::new(a.p[0].x - b.p[0].x, a.p[0].y - b.p[0].y);
+            let numer_a = ab0.y * b_len.x - b_len.y * ab0.x;
+            let numer_b = ab0.y * a_len.x - a_len.y * ab0.x;
+            self.f_t[0][0] = numer_a / denom;
+            self.f_t[1][0] = numer_b / denom;
+            used = 1;
         } else {
-            0
+            // Parallel. They only coincide if their axis intercepts match too.
+            if !almost_equal_ulps(
+                a_len.x * a.p[0].y - a_len.y * a.p[0].x,
+                a_len.x * b.p[0].y - a_len.y * b.p[0].x,
+            ) {
+                self.f_used = 0;
+                return 0;
+            }
+            // No good answer for coincident rays; report the whole span.
+            self.f_t[0][0] = 0.0;
+            self.f_t[1][0] = 0.0;
+            self.f_t[0][1] = 1.0;
+            self.f_t[1][1] = 1.0;
+            used = 2;
+        }
+        self.compute_points(a, used);
+        self.f_used
+    }
+
+    /// Intersects two line segments.
+    ///
+    /// Port of `SkIntersections::intersect`. Endpoints that land exactly on the
+    /// other line are recorded first, so a vertex shared by two adjacent
+    /// segments registers once rather than as two near-misses, and collinear
+    /// overlapping runs report both ends of the overlap.
+    ///
+    /// Only valid when neither line is horizontal or vertical; use
+    /// [`Self::horizontal`] and [`Self::vertical`] for those.
+    pub fn intersect(&mut self, a: &DLine, b: &DLine) -> u8 {
+        // Three, so a third can be inserted before cleanup trims back to two.
+        self.f_max = 3;
+        for i_a in 0..2 {
+            let t = b.exact_point(a.p[i_a]);
+            if t >= 0.0 {
+                let _ = self.insert(i_a as Scalar, t, a.p[i_a]);
+            }
+        }
+        for i_b in 0..2 {
+            let t = a.exact_point(b.p[i_b]);
+            if t >= 0.0 {
+                let _ = self.insert(t, i_b as Scalar, b.p[i_b]);
+            }
+        }
+        let ax_len = a.p[1].x - a.p[0].x;
+        let ay_len = a.p[1].y - a.p[0].y;
+        let bx_len = b.p[1].x - b.p[0].x;
+        let by_len = b.p[1].y - b.p[0].y;
+        let ax_by_len = ax_len * by_len;
+        let ay_bx_len = ay_len * bx_len;
+        // Parallel is detected the same way here and in SkOpAngle's ordering,
+        // so that "not parallel" also means "sortable".
+        let unparallel = if self.f_allow_near {
+            not_almost_equal_ulps_pin(ax_by_len, ay_bx_len)
+        } else {
+            not_almost_dequal_ulps(ax_by_len, ay_bx_len)
+        };
+        if unparallel && self.f_used == 0 {
+            let ab0y = a.p[0].y - b.p[0].y;
+            let ab0x = a.p[0].x - b.p[0].x;
+            let numer_a = ab0y * bx_len - by_len * ab0x;
+            let numer_b = ab0y * ax_len - ay_len * ab0x;
+            let denom = ax_by_len - ay_bx_len;
+            if between(0.0, numer_a, denom) && between(0.0, numer_b, denom) {
+                self.f_t[0][0] = numer_a / denom;
+                self.f_t[1][0] = numer_b / denom;
+                self.compute_points(a, 1);
+            }
+        }
+        // Track that both sets of end points are near each other - the lines
+        // are entirely coincident - even when the end points are not exactly
+        // equal. Either end is then free to mate with the next set of lines
+        // without the pair folding back over itself.
+        if self.f_allow_near || !unparallel {
+            let mut a_near_b = [0.0f32; 2];
+            let mut b_near_a = [0.0f32; 2];
+            let mut a_not_b = [false; 2];
+            let mut b_not_a = [false; 2];
+            let mut near_count = 0;
+            for index in 0..2 {
+                let mut flag = false;
+                a_near_b[index] = b.near_point(a.p[index], Some(&mut flag));
+                a_not_b[index] = flag;
+                near_count += i32::from(a_near_b[index] >= 0.0);
+                let mut flag = false;
+                b_near_a[index] = a.near_point(b.p[index], Some(&mut flag));
+                b_not_a[index] = flag;
+                near_count += i32::from(b_near_a[index] >= 0.0);
+            }
+            if near_count > 0 {
+                // Skip when each segment contributes just one end point.
+                if near_count != 2 || a_not_b[0] == a_not_b[1] {
+                    for i_a in 0..2 {
+                        if !a_not_b[i_a] {
+                            continue;
+                        }
+                        let nearer = usize::from(a_near_b[i_a] > 0.5);
+                        if !b_not_a[nearer] {
+                            continue;
+                        }
+                        let _ = self.insert_near(
+                            i_a as Scalar,
+                            nearer as Scalar,
+                            a.p[i_a],
+                            b.p[nearer],
+                        );
+                        a_near_b[i_a] = -1.0;
+                        b_near_a[nearer] = -1.0;
+                        near_count -= 2;
+                    }
+                }
+                if near_count > 0 {
+                    for i_a in 0..2 {
+                        if a_near_b[i_a] >= 0.0 {
+                            let _ = self.insert(i_a as Scalar, a_near_b[i_a], a.p[i_a]);
+                        }
+                    }
+                    for i_b in 0..2 {
+                        if b_near_a[i_b] >= 0.0 {
+                            let _ = self.insert(b_near_a[i_b], i_b as Scalar, b.p[i_b]);
+                        }
+                    }
+                }
+            }
+        }
+        self.clean_up_parallel_lines(!unparallel);
+        debug_assert!(self.f_used <= 2);
+        self.f_used
+    }
+
+    /// Returns the t at which `line` crosses the horizontal `y`.
+    ///
+    /// Port of `SkIntersections::HorizontalIntercept`.
+    #[must_use]
+    pub fn horizontal_intercept(line: &DLine, y: Scalar) -> Scalar {
+        debug_assert!(line.p[1].y != line.p[0].y);
+        pin_t((y - line.p[0].y) / (line.p[1].y - line.p[0].y))
+    }
+
+    /// Intersects `line` with the horizontal span from `left` to `right` at `y`.
+    ///
+    /// Port of `SkIntersections::horizontal`. `flipped` reverses the span's
+    /// parameterization, for callers that walk it right to left.
+    pub fn horizontal(
+        &mut self,
+        line: &DLine,
+        left: Scalar,
+        right: Scalar,
+        y: Scalar,
+        flipped: bool,
+    ) -> u8 {
+        // Cleaning up parallel lines at the end limits the result to 2.
+        self.f_max = 3;
+        let left_pt = Point::new(left, y);
+        let t = line.exact_point(left_pt);
+        if t >= 0.0 {
+            let _ = self.insert(t, Scalar::from(u8::from(flipped)), left_pt);
+        }
+        if left != right {
+            let right_pt = Point::new(right, y);
+            let t = line.exact_point(right_pt);
+            if t >= 0.0 {
+                let _ = self.insert(t, Scalar::from(u8::from(!flipped)), right_pt);
+            }
+            for index in 0..2 {
+                let t = DLine::exact_point_h(line.p[index], left, right, y);
+                if t >= 0.0 {
+                    let ty = if flipped { 1.0 - t } else { t };
+                    let _ = self.insert(index as Scalar, ty, line.p[index]);
+                }
+            }
+        }
+        let result = horizontal_coincident(line, y);
+        if result == 1 && self.f_used == 0 {
+            self.f_t[0][0] = Self::horizontal_intercept(line, y);
+            let x_intercept = line.p[0].x + self.f_t[0][0] * (line.p[1].x - line.p[0].x);
+            if between(left, x_intercept, right) {
+                self.f_t[1][0] = (x_intercept - left) / (right - left);
+                if flipped {
+                    for index in 0..result as usize {
+                        self.f_t[1][index] = 1.0 - self.f_t[1][index];
+                    }
+                }
+                self.f_pt[0] = Point::new(x_intercept, y);
+                self.f_used = 1;
+            }
+        }
+        if self.f_allow_near || result == 2 {
+            let t = line.near_point(left_pt, None);
+            if t >= 0.0 {
+                let _ = self.insert(t, Scalar::from(u8::from(flipped)), left_pt);
+            }
+            if left != right {
+                let right_pt = Point::new(right, y);
+                let t = line.near_point(right_pt, None);
+                if t >= 0.0 {
+                    let _ = self.insert(t, Scalar::from(u8::from(!flipped)), right_pt);
+                }
+                for index in 0..2 {
+                    let t = DLine::near_point_h(line.p[index], left, right, y);
+                    if t >= 0.0 {
+                        let ty = if flipped { 1.0 - t } else { t };
+                        let _ = self.insert(index as Scalar, ty, line.p[index]);
+                    }
+                }
+            }
+        }
+        self.clean_up_parallel_lines(result == 2);
+        self.f_used
+    }
+
+    /// Returns the t at which `line` crosses the vertical `x`.
+    ///
+    /// Port of `SkIntersections::VerticalIntercept`.
+    #[must_use]
+    pub fn vertical_intercept(line: &DLine, x: Scalar) -> Scalar {
+        debug_assert!(line.p[1].x != line.p[0].x);
+        pin_t((x - line.p[0].x) / (line.p[1].x - line.p[0].x))
+    }
+
+    /// Intersects `line` with the vertical span from `top` to `bottom` at `x`.
+    ///
+    /// Port of `SkIntersections::vertical`.
+    pub fn vertical(
+        &mut self,
+        line: &DLine,
+        top: Scalar,
+        bottom: Scalar,
+        x: Scalar,
+        flipped: bool,
+    ) -> u8 {
+        self.f_max = 3;
+        let top_pt = Point::new(x, top);
+        let t = line.exact_point(top_pt);
+        if t >= 0.0 {
+            let _ = self.insert(t, Scalar::from(u8::from(flipped)), top_pt);
+        }
+        if top != bottom {
+            let bottom_pt = Point::new(x, bottom);
+            let t = line.exact_point(bottom_pt);
+            if t >= 0.0 {
+                let _ = self.insert(t, Scalar::from(u8::from(!flipped)), bottom_pt);
+            }
+            for index in 0..2 {
+                let t = DLine::exact_point_v(line.p[index], top, bottom, x);
+                if t >= 0.0 {
+                    let ty = if flipped { 1.0 - t } else { t };
+                    let _ = self.insert(index as Scalar, ty, line.p[index]);
+                }
+            }
+        }
+        let result = vertical_coincident(line, x);
+        if result == 1 && self.f_used == 0 {
+            self.f_t[0][0] = Self::vertical_intercept(line, x);
+            let y_intercept = line.p[0].y + self.f_t[0][0] * (line.p[1].y - line.p[0].y);
+            if between(top, y_intercept, bottom) {
+                self.f_t[1][0] = (y_intercept - top) / (bottom - top);
+                if flipped {
+                    for index in 0..result as usize {
+                        self.f_t[1][index] = 1.0 - self.f_t[1][index];
+                    }
+                }
+                self.f_pt[0] = Point::new(x, y_intercept);
+                self.f_used = 1;
+            }
+        }
+        if self.f_allow_near || result == 2 {
+            let t = line.near_point(top_pt, None);
+            if t >= 0.0 {
+                let _ = self.insert(t, Scalar::from(u8::from(flipped)), top_pt);
+            }
+            if top != bottom {
+                let bottom_pt = Point::new(x, bottom);
+                let t = line.near_point(bottom_pt, None);
+                if t >= 0.0 {
+                    let _ = self.insert(t, Scalar::from(u8::from(!flipped)), bottom_pt);
+                }
+                for index in 0..2 {
+                    let t = DLine::near_point_v(line.p[index], top, bottom, x);
+                    if t >= 0.0 {
+                        let ty = if flipped { 1.0 - t } else { t };
+                        let _ = self.insert(index as Scalar, ty, line.p[index]);
+                    }
+                }
+            }
+        }
+        self.clean_up_parallel_lines(result == 2);
+        debug_assert!(self.f_used <= 2);
+        self.f_used
+    }
+
+    /// Trims a line/line result down to at most two intersections.
+    ///
+    /// Port of `SkIntersections::cleanUpParallelLines`. Two surviving entries
+    /// are marked coincident, which is how a collinear overlap is reported.
+    fn clean_up_parallel_lines(&mut self, parallel: bool) {
+        while self.f_used > 2 {
+            self.remove_one(1);
+        }
+        if self.f_used == 2 && !parallel {
+            let start_match = self.f_t[0][0] == 0.0 || zero_or_one(self.f_t[1][0]);
+            let end_match = self.f_t[0][1] == 1.0 || zero_or_one(self.f_t[1][1]);
+            if (!start_match && !end_match)
+                || (self.f_t[0][0] - self.f_t[0][1]).abs() < f32::EPSILON
+            {
+                if start_match
+                    && end_match
+                    && (self.f_t[0][0] != 0.0 || !zero_or_one(self.f_t[1][0]))
+                    && self.f_t[0][1] == 1.0
+                    && zero_or_one(self.f_t[1][1])
+                {
+                    self.remove_one(0);
+                } else {
+                    self.remove_one(usize::from(end_match));
+                }
+            }
+        }
+        if self.f_used == 2 {
+            self.f_is_coincident[0] = 0x03;
+            self.f_is_coincident[1] = 0x03;
         }
     }
 
-    pub fn line_horizontal(&mut self, pts: &[Point; 2], left: Scalar, right: Scalar, y: Scalar, flipped: bool) -> u8 {
-        self.f_max = 2;
-        self.reset();
-
-        // Find intersection of line with horizontal line y
-        // Line from pts[0] to pts[1]
-        let dx = pts[1].x - pts[0].x;
-        let dy = pts[1].y - pts[0].y;
-
-        if dy.abs() < 1e-10 {
-            // Horizontal line - check for overlap
-            return 0;
+    /// Fills in the intersection points from the t values on `line`.
+    ///
+    /// Port of `SkIntersections::computePoints`.
+    fn compute_points(&mut self, line: &DLine, used: u8) {
+        self.f_pt[0] = line.pt_at_t(self.f_t[0][0]);
+        self.f_used = used;
+        if used == 2 {
+            self.f_pt[1] = line.pt_at_t(self.f_t[0][1]);
         }
-
-        // t for y coordinate
-        let t = (y - pts[0].y) / dy;
-
-        if (0.0..=1.0).contains(&t) {
-            let x = pts[0].x + t * dx;
-            if (left..=right).contains(&x) {
-                let pt = Point::new(x, y);
-                let t_insert = if flipped { 1.0 - t } else { t };
-                let _ = self.insert(t_insert, t, pt);
-                return 1;
-            }
-        }
-
-        0
     }
 
-    pub fn line_vertical(&mut self, pts: &[Point; 2], top: Scalar, bottom: Scalar, x: Scalar, flipped: bool) -> u8 {
-        self.f_max = 2;
+    /// Intersects two lines given as raw point pairs.
+    ///
+    /// Convenience wrapper over [`Self::intersect`].
+    pub fn line_line(&mut self, a: &[Point; 2], b: &[Point; 2]) -> u8 {
         self.reset();
+        self.intersect(&DLine::new(a[0], a[1]), &DLine::new(b[0], b[1]))
+    }
 
-        let dx = pts[1].x - pts[0].x;
-        let dy = pts[1].y - pts[0].y;
+    /// Intersects a line with a horizontal span.
+    ///
+    /// Convenience wrapper over [`Self::horizontal`].
+    pub fn line_horizontal(
+        &mut self,
+        pts: &[Point; 2],
+        left: Scalar,
+        right: Scalar,
+        y: Scalar,
+        flipped: bool,
+    ) -> u8 {
+        self.reset();
+        self.horizontal(&DLine::new(pts[0], pts[1]), left, right, y, flipped)
+    }
 
-        if dx.abs() < 1e-10 {
-            // Vertical line - check for overlap
-            return 0;
-        }
-
-        let t = (x - pts[0].x) / dx;
-
-        if (0.0..=1.0).contains(&t) {
-            let y = pts[0].y + t * dy;
-            if (top..=bottom).contains(&y) {
-                let pt = Point::new(x, y);
-                let t_insert = if flipped { 1.0 - t } else { t };
-                let _ = self.insert(t_insert, t, pt);
-                return 1;
-            }
-        }
-
-        0
+    /// Intersects a line with a vertical span.
+    ///
+    /// Convenience wrapper over [`Self::vertical`].
+    pub fn line_vertical(
+        &mut self,
+        pts: &[Point; 2],
+        top: Scalar,
+        bottom: Scalar,
+        x: Scalar,
+        flipped: bool,
+    ) -> u8 {
+        self.reset();
+        self.vertical(&DLine::new(pts[0], pts[1]), top, bottom, x, flipped)
     }
 
     pub fn closest_to(&self, range_start: Scalar, range_end: Scalar, test_pt: Point, closest_dist: &mut Scalar) -> i32 {
@@ -339,6 +653,45 @@ impl SkIntersections {
                 .wrapping_sub(((self.f_is_coincident[side] >> 1) & keep_mask) + co_bit);
         }
     }
+}
+
+
+/// Returns 0 when `line` misses the horizontal at `y`, 2 when it lies along
+/// it, and 1 otherwise.
+///
+/// Port of `horizontal_coincident`.
+fn horizontal_coincident(line: &DLine, y: Scalar) -> u8 {
+    let mut min = line.p[0].y;
+    let mut max = line.p[1].y;
+    if min > max {
+        std::mem::swap(&mut min, &mut max);
+    }
+    if min > y || max < y {
+        return 0;
+    }
+    if almost_equal_ulps(min, max) && max - min < (line.p[0].x - line.p[1].x).abs() {
+        return 2;
+    }
+    1
+}
+
+/// Returns 0 when `line` misses the vertical at `x`, 2 when it lies along it,
+/// and 1 otherwise.
+///
+/// Port of `vertical_coincident`.
+fn vertical_coincident(line: &DLine, x: Scalar) -> u8 {
+    let mut min = line.p[0].x;
+    let mut max = line.p[1].x;
+    if min > max {
+        std::mem::swap(&mut min, &mut max);
+    }
+    if !precisely_between(min as f64, x as f64, max as f64) {
+        return 0;
+    }
+    if almost_equal_ulps(min, max) {
+        return 2;
+    }
+    1
 }
 
 impl Default for SkIntersections {
@@ -541,5 +894,163 @@ mod tests {
         assert_eq!(count, 1);
         assert!((ts.pt(0).x - 1.0).abs() < 1e-6);
         assert!((ts.pt(0).y - 1.0).abs() < 1e-6);
+    }
+
+    // --- item 12: line/line intersection ---------------------------------
+
+    fn dline(x0: f32, y0: f32, x1: f32, y1: f32) -> DLine {
+        DLine::new(Point::new(x0, y0), Point::new(x1, y1))
+    }
+
+    #[test]
+    fn crossing_lines_meet_once_in_the_middle() {
+        let mut ts = SkIntersections::new();
+        let a = dline(0.0, 0.0, 10.0, 10.0);
+        let b = dline(0.0, 10.0, 10.0, 0.0);
+        assert_eq!(ts.intersect(&a, &b), 1);
+        assert!((ts.t(0, 0) - 0.5).abs() < 1e-5);
+        assert!((ts.t(1, 0) - 0.5).abs() < 1e-5);
+        assert!((ts.pt(0).x - 5.0).abs() < 1e-4);
+        assert!((ts.pt(0).y - 5.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn parallel_lines_never_meet() {
+        let mut ts = SkIntersections::new();
+        let a = dline(0.0, 0.0, 10.0, 10.0);
+        let b = dline(0.0, 5.0, 10.0, 15.0);
+        assert_eq!(ts.intersect(&a, &b), 0);
+    }
+
+    #[test]
+    fn collinear_overlapping_lines_report_both_ends() {
+        // b starts inside a and runs past its end.
+        let mut ts = SkIntersections::new();
+        let a = dline(0.0, 0.0, 10.0, 10.0);
+        let b = dline(5.0, 5.0, 15.0, 15.0);
+        let count = ts.intersect(&a, &b);
+        assert_eq!(count, 2, "an overlapping run has two ends");
+        // The overlap is marked coincident, which is how callers tell it apart
+        // from two ordinary crossings.
+        assert!(ts.is_coincident(0));
+        assert!(ts.is_coincident(1));
+    }
+
+    #[test]
+    fn collinear_disjoint_lines_do_not_meet() {
+        let mut ts = SkIntersections::new();
+        let a = dline(0.0, 0.0, 4.0, 4.0);
+        let b = dline(10.0, 10.0, 14.0, 14.0);
+        assert_eq!(ts.intersect(&a, &b), 0);
+    }
+
+    #[test]
+    fn a_shared_endpoint_registers_once() {
+        // Two adjacent segments of a contour meeting at a vertex. This is the
+        // case the exact-endpoint handling exists for: without it the shared
+        // corner reads as two near-misses instead of one meeting.
+        let mut ts = SkIntersections::new();
+        let a = dline(0.0, 0.0, 10.0, 0.0);
+        let b = dline(10.0, 0.0, 10.0, 10.0);
+        let count = ts.intersect(&a, &b);
+        assert_eq!(count, 1);
+        assert!((ts.t(0, 0) - 1.0).abs() < 1e-5, "end of a");
+        assert!((ts.t(1, 0) - 0.0).abs() < 1e-5, "start of b");
+    }
+
+    #[test]
+    fn intersect_ray_finds_crossings_outside_the_segments() {
+        // The segments stop short of each other, but the rays through them
+        // cross. intersect() would find nothing here.
+        let mut ts = SkIntersections::new();
+        let a = dline(0.0, 0.0, 1.0, 1.0);
+        let b = dline(10.0, 0.0, 9.0, 1.0);
+        assert_eq!(ts.intersect_ray(&a, &b), 1);
+        assert!(ts.t(0, 0) > 1.0, "crossing lies past the end of a");
+
+        let mut seg = SkIntersections::new();
+        assert_eq!(seg.intersect(&a, &b), 0);
+    }
+
+    #[test]
+    fn intersect_ray_reports_the_span_for_coincident_rays() {
+        let mut ts = SkIntersections::new();
+        let a = dline(0.0, 0.0, 10.0, 10.0);
+        let b = dline(2.0, 2.0, 5.0, 5.0);
+        assert_eq!(ts.intersect_ray(&a, &b), 2);
+        assert!((ts.t(0, 0) - 0.0).abs() < 1e-6);
+        assert!((ts.t(0, 1) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn intersect_ray_misses_parallel_rays_that_do_not_coincide() {
+        let mut ts = SkIntersections::new();
+        let a = dline(0.0, 0.0, 10.0, 10.0);
+        let b = dline(0.0, 5.0, 10.0, 15.0);
+        assert_eq!(ts.intersect_ray(&a, &b), 0);
+    }
+
+    #[test]
+    fn horizontal_span_crosses_a_line_once() {
+        let mut ts = SkIntersections::new();
+        // A vertical-ish line crossing y = 5 between x = 0 and x = 10.
+        let line = dline(5.0, 0.0, 5.0, 10.0);
+        assert_eq!(ts.horizontal(&line, 0.0, 10.0, 5.0, false), 1);
+        assert!((ts.t(0, 0) - 0.5).abs() < 1e-5);
+        assert!((ts.pt(0).x - 5.0).abs() < 1e-4);
+        assert!((ts.pt(0).y - 5.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn horizontal_flipped_reverses_the_span_parameter() {
+        let mut plain = SkIntersections::new();
+        let line = dline(2.5, 0.0, 2.5, 10.0);
+        assert_eq!(plain.horizontal(&line, 0.0, 10.0, 5.0, false), 1);
+        let straight = plain.t(1, 0);
+
+        let mut flipped = SkIntersections::new();
+        assert_eq!(flipped.horizontal(&line, 0.0, 10.0, 5.0, true), 1);
+        assert!((flipped.t(1, 0) - (1.0 - straight)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn horizontal_span_misses_a_line_outside_it() {
+        let mut ts = SkIntersections::new();
+        let line = dline(50.0, 0.0, 50.0, 10.0);
+        assert_eq!(ts.horizontal(&line, 0.0, 10.0, 5.0, false), 0);
+    }
+
+    #[test]
+    fn vertical_span_crosses_a_line_once() {
+        let mut ts = SkIntersections::new();
+        let line = dline(0.0, 5.0, 10.0, 5.0);
+        assert_eq!(ts.vertical(&line, 0.0, 10.0, 5.0, false), 1);
+        assert!((ts.t(0, 0) - 0.5).abs() < 1e-5);
+        assert!((ts.pt(0).x - 5.0).abs() < 1e-4);
+        assert!((ts.pt(0).y - 5.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn vertical_flipped_reverses_the_span_parameter() {
+        let mut plain = SkIntersections::new();
+        let line = dline(0.0, 2.5, 10.0, 2.5);
+        assert_eq!(plain.vertical(&line, 0.0, 10.0, 5.0, false), 1);
+        let straight = plain.t(1, 0);
+
+        let mut flipped = SkIntersections::new();
+        assert_eq!(flipped.vertical(&line, 0.0, 10.0, 5.0, true), 1);
+        assert!((flipped.t(1, 0) - (1.0 - straight)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn intercept_helpers_agree_with_the_full_routines() {
+        let line = dline(0.0, 0.0, 10.0, 20.0);
+        // Crossing y = 10 happens halfway along.
+        assert!((SkIntersections::horizontal_intercept(&line, 10.0) - 0.5).abs() < 1e-6);
+        // Crossing x = 5 also happens halfway.
+        assert!((SkIntersections::vertical_intercept(&line, 5.0) - 0.5).abs() < 1e-6);
+        // Out of range values pin to the ends rather than running off.
+        assert_eq!(SkIntersections::horizontal_intercept(&line, -100.0), 0.0);
+        assert_eq!(SkIntersections::horizontal_intercept(&line, 100.0), 1.0);
     }
 }

@@ -248,7 +248,7 @@ fn between(a: Scalar, b: Scalar, c: Scalar) -> bool {
 }
 
 /// Pins t to valid range with looser tolerance
-fn pin_t(t: Scalar) -> Scalar {
+pub fn pin_t(t: Scalar) -> Scalar {
     t.clamp(0.0, 1.0)
 }
 
