@@ -18,16 +18,22 @@ const OFFSET: f32 = 0.25;
 const T_EPS: f32 = 1e-6;
 
 pub(super) fn path_op(one: &Path, two: &Path, op: PathOp) -> Result<Path, PathKitError> {
-    let mut segs = flatten(one);
-    segs.extend(flatten(two));
+    // Flatten finely enough that the two boundaries stay distinguishable.
+    // Two arcs flattened independently each deviate from the true curve by up
+    // to the tolerance, so where the inputs run closer together than that,
+    // their chords interleave and the crossings come out scrambled.
+    let tol = flatten_tolerance(one, two);
+    let mut segs = flatten(one, tol);
+    segs.extend(flatten(two, tol));
     if segs.is_empty() {
         return Ok(Path::new());
     }
 
     let pieces = split_segments(&segs);
     let mut edges: Vec<Edge> = Vec::new();
-    for piece in pieces {
-        if let Some(edge) = classify_edge(piece, one, two, op) {
+    for (i, piece) in pieces.iter().enumerate() {
+        let clearance = clearance_at(&pieces, i);
+        if let Some(edge) = classify_edge(*piece, one, two, op, clearance) {
             edges.push(edge);
         }
     }
@@ -43,7 +49,36 @@ struct Edge {
     to: Point,
 }
 
-fn flatten(path: &Path) -> Vec<[Point; 2]> {
+/// Returns a flattening tolerance fine enough to keep `one` and `two` apart.
+///
+/// Bounded below so that nearly-identical inputs do not tessellate without
+/// limit, and above by [`FLAT_TOL`], which is accurate enough whenever the two
+/// paths are comfortably separated.
+fn flatten_tolerance(one: &Path, two: &Path) -> f32 {
+    let (a, b) = (one.bounds(), two.bounds());
+    // How far the two bounding boxes are from coinciding. For shapes that
+    // nearly overlap this is small, and the tolerance follows it down.
+    let sep = (a.left - b.left)
+        .abs()
+        .max((a.top - b.top).abs())
+        .max((a.right - b.right).abs())
+        .max((a.bottom - b.bottom).abs());
+    let extent = (a.right - a.left)
+        .abs()
+        .max((a.bottom - a.top).abs())
+        .max((b.right - b.left).abs())
+        .max((b.bottom - b.top).abs());
+    // Never finer than this fraction of the shapes themselves, or a big scene
+    // would tessellate into an unbounded number of chords.
+    let floor = (extent * 1e-4).max(1e-4);
+    if sep > 0.0 {
+        (sep * 0.05).clamp(floor, FLAT_TOL)
+    } else {
+        FLAT_TOL
+    }
+}
+
+fn flatten(path: &Path, tol: f32) -> Vec<[Point; 2]> {
     let mut segs = Vec::new();
     let mut contour_start = Point::default();
     let mut last = Point::default();
@@ -61,7 +96,7 @@ fn flatten(path: &Path) -> Vec<[Point; 2]> {
                 last = pts[1];
             }
             Verb::Quad => {
-                flatten_quad(pts[0], pts[1], pts[2], MAX_FLAT_DEPTH, &mut segs);
+                flatten_quad(pts[0], pts[1], pts[2], tol, MAX_FLAT_DEPTH, &mut segs);
                 last = pts[2];
             }
             Verb::Conic => {
@@ -70,6 +105,7 @@ fn flatten(path: &Path) -> Vec<[Point; 2]> {
                     pts[1],
                     pts[2],
                     weight.unwrap_or(1.0),
+                    tol,
                     MAX_FLAT_DEPTH,
                     &mut segs,
                 );
@@ -81,6 +117,7 @@ fn flatten(path: &Path) -> Vec<[Point; 2]> {
                     pts[1],
                     pts[2],
                     pts[3],
+                    tol,
                     MAX_FLAT_DEPTH,
                     &mut segs,
                 );
@@ -102,16 +139,16 @@ fn push_seg(segs: &mut Vec<[Point; 2]>, a: Point, b: Point) {
     }
 }
 
-fn flatten_quad(p0: Point, p1: Point, p2: Point, depth: u32, out: &mut Vec<[Point; 2]>) {
-    if depth == 0 || dist_to_line(p1, p0, p2) <= FLAT_TOL {
+fn flatten_quad(p0: Point, p1: Point, p2: Point, tol: f32, depth: u32, out: &mut Vec<[Point; 2]>) {
+    if depth == 0 || dist_to_line(p1, p0, p2) <= tol {
         push_seg(out, p0, p2);
         return;
     }
     let p01 = mid(p0, p1);
     let p12 = mid(p1, p2);
     let p012 = mid(p01, p12);
-    flatten_quad(p0, p01, p012, depth - 1, out);
-    flatten_quad(p012, p12, p2, depth - 1, out);
+    flatten_quad(p0, p01, p012, tol, depth - 1, out);
+    flatten_quad(p012, p12, p2, tol, depth - 1, out);
 }
 
 /// Flattens a conic into chords, honouring its weight.
@@ -123,10 +160,18 @@ fn flatten_quad(p0: Point, p1: Point, p2: Point, depth: u32, out: &mut Vec<[Poin
 ///
 /// Subdivision uses [`Conic::chop`], which splits in the rational form and so
 /// keeps both halves on the original curve.
-fn flatten_conic(p0: Point, p1: Point, p2: Point, w: Scalar, depth: u32, out: &mut Vec<[Point; 2]>) {
+fn flatten_conic(
+    p0: Point,
+    p1: Point,
+    p2: Point,
+    w: Scalar,
+    tol: f32,
+    depth: u32,
+    out: &mut Vec<[Point; 2]>,
+) {
     // A weight of 1 is exactly the quadratic, and the control point's distance
     // to the chord bounds the error of the straight-line approximation.
-    if depth == 0 || dist_to_line(p1, p0, p2) <= FLAT_TOL {
+    if depth == 0 || dist_to_line(p1, p0, p2) <= tol {
         push_seg(out, p0, p2);
         return;
     }
@@ -143,6 +188,7 @@ fn flatten_conic(p0: Point, p1: Point, p2: Point, w: Scalar, depth: u32, out: &m
         halves[0].pts[1],
         halves[0].pts[2],
         halves[0].w,
+        tol,
         depth - 1,
         out,
     );
@@ -151,6 +197,7 @@ fn flatten_conic(p0: Point, p1: Point, p2: Point, w: Scalar, depth: u32, out: &m
         halves[1].pts[1],
         halves[1].pts[2],
         halves[1].w,
+        tol,
         depth - 1,
         out,
     );
@@ -161,12 +208,11 @@ fn flatten_cubic(
     p1: Point,
     p2: Point,
     p3: Point,
+    tol: f32,
     depth: u32,
     out: &mut Vec<[Point; 2]>,
 ) {
-    if depth == 0
-        || (dist_to_line(p1, p0, p3) <= FLAT_TOL && dist_to_line(p2, p0, p3) <= FLAT_TOL)
-    {
+    if depth == 0 || (dist_to_line(p1, p0, p3) <= tol && dist_to_line(p2, p0, p3) <= tol) {
         push_seg(out, p0, p3);
         return;
     }
@@ -176,8 +222,8 @@ fn flatten_cubic(
     let p012 = mid(p01, p12);
     let p123 = mid(p12, p23);
     let p0123 = mid(p012, p123);
-    flatten_cubic(p0, p01, p012, p0123, depth - 1, out);
-    flatten_cubic(p0123, p123, p23, p3, depth - 1, out);
+    flatten_cubic(p0, p01, p012, p0123, tol, depth - 1, out);
+    flatten_cubic(p0123, p123, p23, p3, tol, depth - 1, out);
 }
 
 fn mid(a: Point, b: Point) -> Point {
@@ -273,20 +319,87 @@ fn lerp(a: Point, b: Point, t: f32) -> Point {
     Point::new(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
 }
 
-fn classify_edge(seg: [Point; 2], one: &Path, two: &Path, op: PathOp) -> Option<Edge> {
+/// Returns how far the midpoint of `pieces[i]` sits from every other piece.
+///
+/// The pieces have already been split at every crossing, so no other piece
+/// passes through this one's interior. Half that distance is therefore a step
+/// that is guaranteed to stay in the region on either side of this edge and
+/// not spill across a neighbouring boundary.
+fn clearance_at(pieces: &[[Point; 2]], i: usize) -> f32 {
+    let mid_pt = mid(pieces[i][0], pieces[i][1]);
+    let mut best = f32::INFINITY;
+    for (j, other) in pieces.iter().enumerate() {
+        if j == i {
+            continue;
+        }
+        let d = dist_to_segment(mid_pt, other[0], other[1]);
+        // A piece lying on top of this one is a coincident edge, where the two
+        // input paths share a boundary. It says nothing about how far there is
+        // to step, and taking it would drive the step to zero and lose the
+        // edge entirely, breaking the contour that runs through it.
+        if d <= MIN_EDGE {
+            continue;
+        }
+        if d < best {
+            best = d;
+        }
+    }
+    if best.is_finite() {
+        // Half, so the sample lands strictly between the two boundaries.
+        best * 0.5
+    } else {
+        OFFSET
+    }
+}
+
+/// Returns the distance from `p` to the segment `a`-`b`.
+fn dist_to_segment(p: Point, a: Point, b: Point) -> f32 {
+    let ab = b - a;
+    let len2 = ab.dot(ab);
+    if len2 < 1e-16 {
+        return Point::distance(p, a);
+    }
+    let t = ((p - a).dot(ab) / len2).clamp(0.0, 1.0);
+    Point::distance(p, Point::new(a.x + ab.x * t, a.y + ab.y * t))
+}
+
+fn classify_edge(
+    seg: [Point; 2],
+    one: &Path,
+    two: &Path,
+    op: PathOp,
+    clearance: f32,
+) -> Option<Edge> {
     let dir = seg[1] - seg[0];
     let len = dir.length();
     if len < MIN_EDGE {
         return None;
     }
-    let step = OFFSET.min(len * 0.5);
-    let n = Point::new(-dir.y / len * step, dir.x / len * step);
     let mid_pt = mid(seg[0], seg[1]);
-    let left = mid_pt + n;
-    let right = mid_pt - n;
-    let in_left = in_result(left, one, two, op);
-    let in_right = in_result(right, one, two, op);
-    if in_left == in_right {
+    // Step perpendicular far enough to leave this edge, but not so far as to
+    // cross a different one. Where two boundaries run close together - a
+    // near-tangent sliver - a fixed step lands beyond both and the edge is
+    // misread as a boundary, which breaks the contour that should have been
+    // assembled through it. `clearance` is the room actually available here.
+    let mut step = OFFSET.min(len * 0.5).min(clearance);
+    let unit = Point::new(-dir.y / len, dir.x / len);
+    let (mut in_left, mut in_right) = (false, false);
+    let mut decided = false;
+    // Shrink until the two samples disagree; a sliver may need several halvings.
+    for _ in 0..24 {
+        if step < MIN_EDGE {
+            break;
+        }
+        let n = Point::new(unit.x * step, unit.y * step);
+        in_left = in_result(mid_pt + n, one, two, op);
+        in_right = in_result(mid_pt - n, one, two, op);
+        if in_left != in_right {
+            decided = true;
+            break;
+        }
+        step *= 0.5;
+    }
+    if !decided {
         return None;
     }
     if in_left {
@@ -314,43 +427,156 @@ fn in_result(p: Point, one: &Path, two: &Path, op: PathOp) -> bool {
     }
 }
 
-fn key(p: Point) -> (i32, i32) {
-    (
-        (p.x * 256.0).round() as i32,
-        (p.y * 256.0).round() as i32,
-    )
+/// Relative tolerance for welding two edge endpoints into one vertex.
+///
+/// Endpoints come from intersections computed in f32, so the two edges meeting
+/// at a vertex rarely land on bit-identical coordinates. Anything closer than
+/// this fraction of the scene's size is the same vertex.
+const WELD_REL_TOL: f32 = 1e-5;
+
+/// Groups edge endpoints that are the same vertex, so chains can be walked by
+/// exact identity afterwards.
+///
+/// A fixed quantization grid cannot do this job: two endpoints straddling a
+/// cell boundary stay apart no matter how fine the grid, and a coarse grid
+/// welds points that are genuinely distinct. The tolerance here scales with
+/// the input instead, which is what the failure demanded - the same shapes
+/// assembled correctly once the scene was scaled up.
+struct VertexWeld {
+    /// Cluster representatives, indexed by cluster id.
+    reps: Vec<Point>,
+    /// Cell size used for the lookup grid; at least one cell per tolerance.
+    cell: f32,
+    /// Cluster id per occupied grid cell.
+    cells: std::collections::HashMap<(i32, i32), Vec<usize>>,
+}
+
+impl VertexWeld {
+    /// Builds a weld over every endpoint in `edges`.
+    fn new(edges: &[Edge]) -> Self {
+        // Size the tolerance from the extent of the geometry, not from a
+        // constant, so that scaling the scene does not change the outcome.
+        let mut min_x = f32::INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        for e in edges {
+            for p in [e.from, e.to] {
+                min_x = min_x.min(p.x);
+                min_y = min_y.min(p.y);
+                max_x = max_x.max(p.x);
+                max_y = max_y.max(p.y);
+            }
+        }
+        let extent = (max_x - min_x).max(max_y - min_y);
+        let tol = if extent.is_finite() && extent > 0.0 {
+            extent * WELD_REL_TOL
+        } else {
+            WELD_REL_TOL
+        };
+        let mut weld = VertexWeld {
+            reps: Vec::new(),
+            // One cell per tolerance: a point's cluster is then always in its
+            // own cell or one of the eight neighbours.
+            cell: tol.max(f32::MIN_POSITIVE),
+            cells: std::collections::HashMap::new(),
+        };
+        for e in edges {
+            weld.intern(e.from);
+            weld.intern(e.to);
+        }
+        weld
+    }
+
+    /// Returns the grid cell `p` falls in.
+    fn cell_of(&self, p: Point) -> (i32, i32) {
+        (
+            (p.x / self.cell).floor() as i32,
+            (p.y / self.cell).floor() as i32,
+        )
+    }
+
+    /// Returns the cluster id for `p`, creating one if nothing is near enough.
+    fn intern(&mut self, p: Point) -> usize {
+        if let Some(existing) = self.find(p) {
+            return existing;
+        }
+        let id = self.reps.len();
+        self.reps.push(p);
+        let (cx, cy) = self.cell_of(p);
+        self.cells.entry((cx, cy)).or_default().push(id);
+        id
+    }
+
+    /// Returns the cluster `p` belongs to, if there is one within tolerance.
+    fn find(&self, p: Point) -> Option<usize> {
+        let (cx, cy) = self.cell_of(p);
+        let tol2 = self.cell * self.cell;
+        let mut best: Option<(usize, f32)> = None;
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                let Some(ids) = self.cells.get(&(cx + dx, cy + dy)) else {
+                    continue;
+                };
+                for &id in ids {
+                    let r = self.reps[id];
+                    let d2 = (r.x - p.x).powi(2) + (r.y - p.y).powi(2);
+                    if d2 <= tol2 && best.map_or(true, |(_, b)| d2 < b) {
+                        best = Some((id, d2));
+                    }
+                }
+            }
+        }
+        best.map(|(id, _)| id)
+    }
+
+    /// Returns the cluster id for a point known to have been interned.
+    fn id_of(&self, p: Point) -> usize {
+        self.find(p).expect("every endpoint was interned")
+    }
 }
 
 fn assemble(edges: &[Edge]) -> Path {
     let n = edges.len();
-    let mut outgoing: std::collections::HashMap<(i32, i32), Vec<usize>> =
+    if n == 0 {
+        return Path::new();
+    }
+    // Weld endpoints first so the chain walk can match on exact identity.
+    let weld = VertexWeld::new(edges);
+    let from_id: Vec<usize> = edges.iter().map(|e| weld.id_of(e.from)).collect();
+    let to_id: Vec<usize> = edges.iter().map(|e| weld.id_of(e.to)).collect();
+
+    let mut outgoing: std::collections::HashMap<usize, Vec<usize>> =
         std::collections::HashMap::new();
-    for (i, e) in edges.iter().enumerate() {
-        outgoing.entry(key(e.from)).or_default().push(i);
+    for (i, &id) in from_id.iter().enumerate() {
+        outgoing.entry(id).or_default().push(i);
     }
 
     let mut used = vec![false; n];
     let mut path = Path::new();
     path.set_fill_type(FillType::Winding);
+    // Chains that never returned to their origin, kept as a fallback so a
+    // single unmatched endpoint cannot silently delete the whole result.
+    let mut partials: Vec<Vec<Point>> = Vec::new();
 
     for start in 0..n {
         if used[start] {
             continue;
         }
         let mut idx = start;
-        let origin = edges[idx].from;
-        let mut verts: Vec<Point> = vec![origin];
+        let origin = from_id[start];
+        let mut verts: Vec<Point> = vec![weld.reps[origin]];
         let mut incoming = edges[idx].to - edges[idx].from;
         let mut closed = false;
         loop {
             used[idx] = true;
-            let cur = edges[idx].to;
-            if key(cur) == key(origin) && verts.len() >= 3 {
+            let cur = to_id[idx];
+            if cur == origin && verts.len() >= 3 {
                 closed = true;
                 break;
             }
-            verts.push(cur);
-            let Some(cands) = outgoing.get(&key(cur)) else {
+            verts.push(weld.reps[cur]);
+            let Some(cands) = outgoing.get(&cur) else {
                 break;
             };
             let mut best: Option<(usize, f32)> = None;
@@ -375,17 +601,31 @@ fn assemble(edges: &[Edge]) -> Path {
                 break;
             }
         }
-        if !closed || verts.len() < 3 {
-            continue;
+        if closed && verts.len() >= 3 {
+            emit_contour(&mut path, &verts);
+        } else if verts.len() >= 3 {
+            partials.push(verts);
         }
-        path.move_to(verts[0].x, verts[0].y);
-        for v in verts.iter().skip(1) {
-            path.line_to(v.x, v.y);
+    }
+
+    // Only fall back to partial chains if nothing closed. Closing them is a
+    // visible approximation, which still beats returning nothing at all.
+    if path.is_empty() {
+        for verts in partials {
+            emit_contour(&mut path, &verts);
         }
-        path.close();
     }
 
     path
+}
+
+/// Appends `verts` to `path` as one closed contour.
+fn emit_contour(path: &mut Path, verts: &[Point]) {
+    path.move_to(verts[0].x, verts[0].y);
+    for v in verts.iter().skip(1) {
+        path.line_to(v.x, v.y);
+    }
+    path.close();
 }
 
 #[cfg(test)]
