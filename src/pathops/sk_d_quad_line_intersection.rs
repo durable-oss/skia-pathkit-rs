@@ -8,6 +8,7 @@
 
 use crate::core::{Point, Scalar};
 use super::sk_intersections::SkIntersections;
+use super::sk_path_ops_types::{almost_between_ulps, almost_equal_ulps_pin, between};
 
 /// Maximum number of quadratic roots
 const MAX_QUAD_ROOTS: usize = 2;
@@ -155,38 +156,65 @@ impl DLine {
         }
     }
 
-    /// Find t for point exactly on line (returns -1.0 if not exact)
+    /// Returns 0 if `pt` is the line's first endpoint, 1 if it is the second,
+    /// -1 otherwise.
+    ///
+    /// Port of `SkDLine::exactPoint` (`SkPathOpsLine.cpp:22`). This is an
+    /// endpoint identity test, not a projection: it answers "is this point one
+    /// of my two ends?", and the tolerance-based work belongs to
+    /// [`near_point`](Self::near_point).
     pub fn exact_point(pt: Point, line: &DLine) -> Scalar {
-        let dx = line.p1.x - line.p0.x;
-        let dy = line.p1.y - line.p0.y;
-
-        if dx.abs() > 1e-10 {
-            let t = (pt.x - line.p0.x) / dx;
-            if approximately_one_or_less_double(t) && approximately_zero_or_more_double(t) {
-                return t;
-            }
+        if pt == line.p0 {
+            return 0.0;
         }
-        if dy.abs() > 1e-10 {
-            let t = (pt.y - line.p0.y) / dy;
-            if approximately_one_or_less_double(t) && approximately_zero_or_more_double(t) {
-                return t;
-            }
+        if pt == line.p1 {
+            return 1.0;
         }
         -1.0
     }
 
     /// Find t for point near line (returns -1.0 if outside segment)
+    ///
+    /// Port of `SkDLine::nearPoint`. Both coordinates have to land within the
+    /// line's range before the perpendicular projection runs; projecting on
+    /// the dominant axis alone would accept points well off the line.
     pub fn near_point(pt: Point, line: &DLine) -> Scalar {
-        let dx = line.p1.x - line.p0.x;
-        let dy = line.p1.y - line.p0.y;
-
-        if dx.abs() > dy.abs() {
-            let t = (pt.x - line.p0.x) / dx;
-            if (0.0..=1.0).contains(&t) { t } else { -1.0 }
-        } else {
-            let t = (pt.y - line.p0.y) / dy;
-            if (0.0..=1.0).contains(&t) { t } else { -1.0 }
+        if !almost_between_ulps(line.p0.x, pt.x, line.p1.x)
+            || !almost_between_ulps(line.p0.y, pt.y, line.p1.y)
+        {
+            return -1.0;
         }
+
+        // Project a perpendicular ray from the point onto the line.
+        let len_x = line.p1.x - line.p0.x;
+        let len_y = line.p1.y - line.p0.y;
+        let denom = len_x * len_x + len_y * len_y;
+        let ab0_x = pt.x - line.p0.x;
+        let ab0_y = pt.y - line.p0.y;
+        let numer = len_x * ab0_x + len_y * ab0_y;
+
+        if !between(0.0, numer, denom) {
+            return -1.0;
+        }
+        if denom == 0.0 {
+            return 0.0;
+        }
+
+        let t = numer / denom;
+        let real_pt = line.pt_at_t(t);
+        let dist = ((real_pt.x - pt.x).powi(2) + (real_pt.y - pt.y).powi(2)).sqrt();
+
+        // Measure the distance against the largest magnitude in the line, so
+        // the ULPS tolerance scales with the coordinates in play.
+        let tiniest = line.p0.x.min(line.p0.y).min(line.p1.x).min(line.p1.y);
+        let largest = line.p0.x.max(line.p0.y).max(line.p1.x).max(line.p1.y);
+        let largest = largest.max(-tiniest);
+
+        if !almost_equal_ulps_pin(largest, largest + dist) {
+            return -1.0;
+        }
+
+        pin_t(t)
     }
 
     /// Find t for point on horizontal line y (returns -1.0 if not in range)
@@ -305,25 +333,65 @@ impl<'a> LineQuadraticIntersections<'a> {
             if self.intersections.has_opposite_t(line_t) {
                 continue;
             }
-            let quad_t = Self::quad_near_point(self.line.point(l_index), self.line.point(!l_index));
+            let quad_t =
+                self.quad_near_point(self.line.point(l_index), self.line.point(1 - l_index));
             if quad_t >= 0.0 {
                 let _ = self.intersections.insert(quad_t, line_t, self.line.point(l_index));
             }
         }
     }
 
-    fn quad_near_point(pt: Point, line_dir: Point) -> Scalar {
-        // Project point to quadratic (approximate using line to endpoints)
-        let dx = line_dir.x;
-        let dy = line_dir.y;
-
-        if dx.abs() > dy.abs() {
-            let t = (pt.x - line_dir.x) / dx;
-            if (0.0..=1.0).contains(&t) { t } else { -1.0 }
-        } else {
-            let t = (pt.y - line_dir.y) / dy;
-            if (0.0..=1.0).contains(&t) { t } else { -1.0 }
+    /// Returns the quad t nearest to `pt`, or -1 if the quad does not come
+    /// within ULPS tolerance of it.
+    ///
+    /// Port of `SkDCurve::nearPoint` (`SkPathOpsCurve.cpp:14`) for the quad
+    /// verb. `opp` is the line's *other* endpoint; it only orients the
+    /// perpendicular ray that is cast through `pt` to find where the curve
+    /// crosses it.
+    fn quad_near_point(&self, pt: Point, opp: Point) -> Scalar {
+        // Reject early if the point is outside the control hull's box; the
+        // curve is contained by it, so nothing inside can be near.
+        let min_x = self.quad.p0.x.min(self.quad.p1.x).min(self.quad.p2.x);
+        let max_x = self.quad.p0.x.max(self.quad.p1.x).max(self.quad.p2.x);
+        if !almost_between_ulps(min_x, pt.x, max_x) {
+            return -1.0;
         }
+        let min_y = self.quad.p0.y.min(self.quad.p1.y).min(self.quad.p2.y);
+        let max_y = self.quad.p0.y.max(self.quad.p1.y).max(self.quad.p2.y);
+        if !almost_between_ulps(min_y, pt.y, max_y) {
+            return -1.0;
+        }
+
+        // Cast a ray through `pt` perpendicular to the line, and take the
+        // closest place the quad crosses it.
+        let perp = DLine::new(
+            pt,
+            Point::new(pt.x + opp.y - pt.y, pt.y + pt.x - opp.x),
+        );
+        let mut roots = [0.0; MAX_QUAD_ROOTS];
+        let mut scratch = SkIntersections::new();
+        let count = LineQuadraticIntersections::new(self.quad, &perp, &mut scratch)
+            .intersect_ray(&mut roots);
+
+        let mut min_dist = Scalar::MAX;
+        let mut min_t = -1.0;
+        for &root in roots.iter().take(count) {
+            let on_curve = self.quad.pt_at_t(root);
+            let dist = ((on_curve.x - pt.x).powi(2) + (on_curve.y - pt.y).powi(2)).sqrt();
+            if dist < min_dist {
+                min_dist = dist;
+                min_t = root;
+            }
+        }
+        if min_t < 0.0 {
+            return -1.0;
+        }
+
+        let largest = max_x.max(max_y).max(-min_x.min(min_y));
+        if !almost_equal_ulps_pin(largest, largest + min_dist) {
+            return -1.0;
+        }
+        pin_t(min_t)
     }
 
     fn find_line_t(&self, t: Scalar) -> Scalar {
@@ -730,6 +798,105 @@ mod tests {
 
         let count = intersect(&quad, &line, true);
         assert!(count > 0, "Should find intersections");
+    }
+
+    /// The `lineQuadTests` table from Skia's
+    /// `tests/PathOpsQuadLineIntersectionTest.cpp`, with the intersection
+    /// count upstream expects for each row.
+    #[test]
+    fn upstream_line_quad_tests_report_the_expected_counts() {
+        let cases: [([(Scalar, Scalar); 3], [(Scalar, Scalar); 2], usize); 5] = [
+            ([(1.0, 1.0), (2.0, 1.0), (0.0, 2.0)], [(0.0, 0.0), (1.0, 1.0)], 1),
+            ([(0.0, 0.0), (1.0, 1.0), (3.0, 1.0)], [(0.0, 0.0), (3.0, 1.0)], 2),
+            ([(2.0, 0.0), (1.0, 1.0), (2.0, 2.0)], [(0.0, 0.0), (0.0, 2.0)], 0),
+            ([(4.0, 0.0), (0.0, 1.0), (4.0, 2.0)], [(3.0, 1.0), (4.0, 1.0)], 0),
+            ([(0.0, 0.0), (0.0, 1.0), (1.0, 1.0)], [(0.0, 1.0), (1.0, 0.0)], 1),
+        ];
+
+        for (index, (q, l, expected)) in cases.iter().enumerate() {
+            let quad = DQuad::new(
+                Point::new(q[0].0, q[0].1),
+                Point::new(q[1].0, q[1].1),
+                Point::new(q[2].0, q[2].1),
+            );
+            let line = DLine::new(
+                Point::new(l[0].0, l[0].1),
+                Point::new(l[1].0, l[1].1),
+            );
+            assert_eq!(
+                intersect(&quad, &line, true),
+                *expected,
+                "lineQuadTests[{index}]"
+            );
+        }
+    }
+
+    #[test]
+    fn every_reported_hit_has_agreeing_points() {
+        // Upstream's own check on this table: for each intersection, the two
+        // curves evaluated at their reported t must land on the same point.
+        // A hit invented by a bad endpoint test fails this even when the
+        // count happens to look right.
+        let cases: [([(Scalar, Scalar); 3], [(Scalar, Scalar); 2]); 5] = [
+            ([(1.0, 1.0), (2.0, 1.0), (0.0, 2.0)], [(0.0, 0.0), (1.0, 1.0)]),
+            ([(0.0, 0.0), (1.0, 1.0), (3.0, 1.0)], [(0.0, 0.0), (3.0, 1.0)]),
+            ([(2.0, 0.0), (1.0, 1.0), (2.0, 2.0)], [(0.0, 0.0), (0.0, 2.0)]),
+            ([(4.0, 0.0), (0.0, 1.0), (4.0, 2.0)], [(3.0, 1.0), (4.0, 1.0)]),
+            ([(0.0, 0.0), (0.0, 1.0), (1.0, 1.0)], [(0.0, 1.0), (1.0, 0.0)]),
+        ];
+
+        for (index, (q, l)) in cases.iter().enumerate() {
+            let quad = DQuad::new(
+                Point::new(q[0].0, q[0].1),
+                Point::new(q[1].0, q[1].1),
+                Point::new(q[2].0, q[2].1),
+            );
+            let line = DLine::new(
+                Point::new(l[0].0, l[0].1),
+                Point::new(l[1].0, l[1].1),
+            );
+
+            let mut intersections = SkIntersections::new();
+            let used = {
+                let mut solver =
+                    LineQuadraticIntersections::new(&quad, &line, &mut intersections);
+                solver.intersect()
+            };
+
+            for i in 0..used {
+                let on_quad = quad.pt_at_t(intersections.t(0, i));
+                let on_line = line.pt_at_t(intersections.t(1, i));
+                assert!(
+                    (on_quad.x - on_line.x).abs() < 1e-4
+                        && (on_quad.y - on_line.y).abs() < 1e-4,
+                    "lineQuadTests[{index}] hit {i}: quad {on_quad:?} vs line {on_line:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn exact_point_is_an_endpoint_test_not_a_projection() {
+        // A point sharing the line's x but nowhere near it must not report a
+        // t. This is what made every disjoint quad/line pair claim two hits.
+        let line = DLine::new(Point::new(0.0, 0.0), Point::new(0.0, 2.0));
+        assert_eq!(DLine::exact_point(Point::new(0.0, 0.0), &line), 0.0);
+        assert_eq!(DLine::exact_point(Point::new(0.0, 2.0), &line), 1.0);
+        assert_eq!(DLine::exact_point(Point::new(0.0, 1.0), &line), -1.0);
+
+        let diagonal = DLine::new(Point::new(0.0, 0.0), Point::new(2.0, 2.0));
+        // x = 1 lands inside the line's x-range, but (1, 50) is far off it.
+        assert_eq!(DLine::exact_point(Point::new(1.0, 50.0), &diagonal), -1.0);
+    }
+
+    #[test]
+    fn near_point_checks_both_coordinates() {
+        // The old projection tested one axis and returned, so a point level
+        // with the line but far above it passed.
+        let line = DLine::new(Point::new(0.0, 0.0), Point::new(10.0, 0.0));
+        assert!((DLine::near_point(Point::new(5.0, 0.0), &line) - 0.5).abs() < 1e-6);
+        assert_eq!(DLine::near_point(Point::new(5.0, 40.0), &line), -1.0);
+        assert_eq!(DLine::near_point(Point::new(-5.0, 0.0), &line), -1.0);
     }
 
     #[test]
