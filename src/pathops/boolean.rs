@@ -859,6 +859,11 @@ mod tests {
 
     #[test]
     fn union_of_offset_discs_is_one_contour() {
+        // Offset 0.5 is deliberately absent: it still fragments into 4
+        // contours (6 for intersect). That is the substitute engine flattening
+        // two arcs whose separation is below the flattening deviation, and it
+        // goes away with the engine itself — see
+        // `TODO/16-union-of-near-coincident-discs-fragments.md`.
         for off in [1.0f32, 2.0, 5.0, 20.0, 60.0] {
             let mut a = Path::new();
             a.add_circle(200.0, 200.0, 40.0);
