@@ -107,7 +107,6 @@ hard-coded `true`.
 
 | item | what |
 |---|---|
-| 01 | 5 of 7 orphans compiled; 5 real bugs found by doing so |
 | 02 | the arena — `sk_op_arena.rs` |
 | 03 | span/PtT linkage, all six sub-parts |
 | 10 | conic weight in flatten (**was a live bug**) |
@@ -121,22 +120,25 @@ Also landed outside the numbered items: `SkLineParameters` (item 15 in `done/`),
 `SkOpSegment::subDivide(…, SkDCurve*)` overload that `setSpans` needs, which
 did not exist in either form.
 
-## Bugs found along the way
+## Bug index
 
-Compiling the orphaned files and running clippy over them turned up five
-defects that had been invisible:
+Every defect found this pass has its own file. Fixed ones are in `done/`.
 
-1. **Infinite loop** in `check_coincident` (quad/line): `last` was `used()`
-   rather than `used() - 1` and never decremented on removal.
-2. **`SkIntersections::remove_one` did not always decrement.** Removing the
-   last entry did nothing, which is what made (1) spin. It also never shifted
-   the coincidence bitmask.
-3. **`SkDConic::sub_divide` was not a subdivision** — de Casteljau on the
-   projected points, weight discarded, control point emitted twice.
-4. **Both cubic `find_extrema`** solved the wrong quadratic, so extrema were
-   silently missed. `monotonic_in_x`/`_y` are built on one of them.
-5. Four test expectations were wrong (never having run); each was the test, not
-   the code.
+| bug | file | state |
+|---|---|---|
+| `check_coincident` never terminates | `done/2026-09-10-bug-check-coincident-infinite-loop.md` | fixed |
+| `remove_one` skips the last entry, loses coincidence flags | `done/2026-09-10-bug-remove-one-skips-the-last-entry.md` | fixed |
+| `SkDConic::sub_divide` discards the weight | `done/2026-09-10-bug-conic-subdivide-discards-the-weight.md` | fixed |
+| both cubic `find_extrema` solve the wrong quadratic | `done/2026-09-10-bug-cubic-find-extrema-wrong-quadratic.md` | fixed |
+| four tests asserted the wrong answer | `done/2026-09-10-bug-four-wrong-test-expectations.md` | fixed |
+| conic weight ignored when flattening | `done/10-conic-weight-ignored-in-flatten.md` | fixed |
+| `assemble` drops contours | `done/15-union-assemble-drops-contours.md` | fixed |
+| near-coincident discs fragment | `16-union-of-near-coincident-discs-fragments.md` | **open** |
+
+The first five were invisible because their files were absent from `mod.rs` and
+so never compiled — see `01-wire-orphaned-modules.md`, which stays open for the
+two orphans that remain (`sk_add_intersections`, `SkPathOpsOp`; both blocked on
+items 08 and 09).
 
 ## Where item 04 stands
 

@@ -2122,7 +2122,7 @@ mod tests {
         // and backwards, ending where the walk began.
         let mut arena = OpArena::new();
         let (seg_a, spans_a) = linked_segment(&mut arena, 4);
-        let (seg_b, spans_b) = linked_segment(&mut arena, 3);
+        let (seg_b, _) = linked_segment(&mut arena, 3);
 
         // The two segments are distinct and each knows its own spans.
         assert_ne!(seg_a, seg_b);
