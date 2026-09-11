@@ -135,7 +135,7 @@ Every defect found this pass has its own file. Fixed ones are in `done/`.
 | `assemble` drops contours | `done/15-union-assemble-drops-contours.md` | fixed |
 | quad/line `exact_point` is not an endpoint test | `done/2026-09-11-bug-quad-line-exact-point-is-not-an-endpoint-test.md` | fixed |
 | near-coincident discs fragment | `16-union-of-near-coincident-discs-fragments.md` | **open** |
-| `tight_bounds` does not collapse a degenerate quad | `2026-09-11-bug-tight-bounds-tiny-quad-not-collapsed.md` | **open** |
+| `tight_bounds` does not collapse a degenerate quad | `done/2026-09-11-bug-tight-bounds-tiny-quad-not-collapsed.md` | fixed |
 
 The first five were invisible because their files were absent from `mod.rs` and
 so never compiled — see `01-wire-orphaned-modules.md`, which stays open for the

@@ -74,3 +74,40 @@ simplification and stroking of near-zero-length segments.
 - The other `PathOpsTightBoundsTest.cpp` one-offs keep passing — they are
   covered in `sk_path_ops_tight_bounds.rs` as `upstream_tight_bounds_*`, and
   `Tiny` joins them when this is fixed.
+
+---
+
+## Fixed, 2026-09-11
+
+Took the general reduction, not the narrow special case.
+
+`compute_tight_bounds_full` now runs the path through
+`reduce_degenerate_curves` before measuring it. That helper walks the verbs and
+puts each curve through `sk_reduce_order` — `reduce_quad_path`,
+`reduce_conic_path`, `reduce_cubic_path` — replacing any curve that reduces to
+a point or a line with a line to its own endpoint. Curves that genuinely bend
+are emitted unchanged. It returns `None` when nothing reduced, so the ordinary
+case measures the original path rather than a rebuilt copy.
+
+This is where upstream does the same work: `TightBounds`
+(`SkPathOpsTightBounds.cpp:12`) reaches its fallback through `SkOpEdgeBuilder`,
+which runs `SkReduceOrder` on every curve on the way to making it a segment.
+The port's fallback delegates to `Path::compute_tight_bounds`, which has no
+such step and measures every quad's extrema, so a degenerate curve reported an
+apex upstream had already discarded. Putting the reduction in the pathops
+module keeps `core::Path` untouched — its `compute_tight_bounds` is still a
+faithful extrema measurement, which is what its own callers want.
+
+Worth knowing: a quad whose endpoints coincide reduces to a point *regardless
+of how far the control point sits*, so `(1,1) (5,1) (1,1)` contributes only
+`(1,1)`. That is `SkReduceOrder`'s behaviour, not an approximation introduced
+here.
+
+### Acceptance
+
+- `upstream_tight_bounds_tiny` — the case yields exactly `{1, 1, 1, 1}` and
+  differs from `path.bounds()`.
+- `a_curved_quad_is_still_measured_after_the_reduction_pass` — guards the other
+  direction, that the reduction does not swallow curves that really bend.
+- The other `upstream_tight_bounds_*` one-offs and both `core::path`
+  tight-bounds tests still pass. 873 lib tests green.

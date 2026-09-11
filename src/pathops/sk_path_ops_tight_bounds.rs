@@ -3,6 +3,7 @@
 //! Port of Skia's SkPathOpsTightBounds.cpp
 
 use crate::core::{Path, Rect, Scalar, Verb};
+use super::sk_reduce_order::{reduce_conic_path, reduce_cubic_path, reduce_quad_path, ReduceResult};
 
 /// Threshold for floating point comparisons
 const SMALL_TOLERANCE: Scalar = 1e-10;
@@ -93,14 +94,99 @@ fn compute_move_bounds(path: &Path) -> Rect {
     }
 }
 
-/// Compute tight bounds using the pathops engine
+/// Compute tight bounds using the pathops engine.
+///
+/// Upstream reaches this through `SkOpEdgeBuilder`, which runs every curve
+/// through `SkReduceOrder` on the way to becoming a segment. A curve that
+/// reduces to a point or a line contributes only the reduced points, so its
+/// control-point excursion never reaches the bounds. `Path::compute_tight_bounds`
+/// has no such step and measures each curve's true extrema, which for a
+/// degenerate curve means reporting an apex that upstream discards. Do the
+/// reduction here, then measure whatever survives it.
 fn compute_tight_bounds_full(path: &Path, _move_bounds: Rect) -> Option<Rect> {
-    // For paths with curves, use the Path's built-in tight bounds computation
-    // which properly handles curve extrema
     if path.is_empty() {
         return Some(Rect::empty());
     }
-    Some(path.compute_tight_bounds())
+
+    let reduced = reduce_degenerate_curves(path);
+    Some(reduced.as_ref().unwrap_or(path).compute_tight_bounds())
+}
+
+/// Rebuilds `path` with every degenerate curve replaced by its reduction.
+///
+/// Returns `None` when nothing reduced, so the common case keeps using the
+/// original path rather than a copy of it. A curve reducing to a point becomes
+/// a line to its own endpoint; one reducing to a line becomes that line. Both
+/// keep the contour connected, which matters because the caller measures
+/// points, not segments.
+fn reduce_degenerate_curves(path: &Path) -> Option<Path> {
+    let pts = path.points();
+    let weights = path.conic_weights();
+    let mut out = Path::new();
+    let mut reduced_any = false;
+    let mut pi = 0usize;
+    let mut wi = 0usize;
+
+    for verb in path.verbs() {
+        match verb {
+            Verb::Move => {
+                out.move_to(pts[pi].x, pts[pi].y);
+                pi += 1;
+            }
+            Verb::Line => {
+                out.line_to(pts[pi].x, pts[pi].y);
+                pi += 1;
+            }
+            Verb::Quad => {
+                let hull = [pts[pi - 1], pts[pi], pts[pi + 1]];
+                match reduce_quad_path(&hull) {
+                    ReduceResult::Point | ReduceResult::Line => {
+                        reduced_any = true;
+                        out.line_to(hull[2].x, hull[2].y);
+                    }
+                    _ => {
+                        out.quad_to(hull[1].x, hull[1].y, hull[2].x, hull[2].y);
+                    }
+                }
+                pi += 2;
+            }
+            Verb::Conic => {
+                let hull = [pts[pi - 1], pts[pi], pts[pi + 1]];
+                let w = weights[wi];
+                match reduce_conic_path(&hull, w) {
+                    ReduceResult::Point | ReduceResult::Line => {
+                        reduced_any = true;
+                        out.line_to(hull[2].x, hull[2].y);
+                    }
+                    _ => {
+                        out.conic_to(hull[1].x, hull[1].y, hull[2].x, hull[2].y, w);
+                    }
+                }
+                pi += 2;
+                wi += 1;
+            }
+            Verb::Cubic => {
+                let hull = [pts[pi - 1], pts[pi], pts[pi + 1], pts[pi + 2]];
+                match reduce_cubic_path(&hull) {
+                    ReduceResult::Point | ReduceResult::Line => {
+                        reduced_any = true;
+                        out.line_to(hull[3].x, hull[3].y);
+                    }
+                    _ => {
+                        out.cubic_to(
+                            hull[1].x, hull[1].y, hull[2].x, hull[2].y, hull[3].x, hull[3].y,
+                        );
+                    }
+                }
+                pi += 3;
+            }
+            Verb::Close => {
+                out.close();
+            }
+        }
+    }
+
+    reduced_any.then_some(out)
 }
 
 /// Compute the tight bounding box of a path, accounting for curve extrema.
@@ -383,6 +469,35 @@ mod tests {
         assert_ne!(tight, loose);
         assert!(tight.right < loose.right);
         assert!(tight.bottom < loose.bottom);
+    }
+
+    #[test]
+    fn upstream_tight_bounds_tiny() {
+        // PathOpsTightBoundsTiny: a quad that starts and ends at the same
+        // point with the control one ULP away. The curve is degenerate, so
+        // the bounds collapse to the point and differ from the loose bounds,
+        // which still carry the control point's excursion.
+        let mut path = Path::new();
+        path.move_to(1.0, 1.0);
+        path.quad_to(1.000001, 1.0, 1.0, 1.0);
+
+        let tight = tight_bounds(&path).unwrap();
+        assert_eq!(tight, Rect::from_ltrb(1.0, 1.0, 1.0, 1.0));
+        assert_ne!(tight, path.bounds());
+    }
+
+    #[test]
+    fn a_curved_quad_is_still_measured_after_the_reduction_pass() {
+        // The reduction must not swallow curves that genuinely bend: this
+        // quad's apex lies outside its endpoints and has to survive.
+        let mut path = Path::new();
+        path.move_to(0.0, 0.0);
+        path.quad_to(1.0, 2.0, 2.0, 0.0);
+
+        let tight = tight_bounds(&path).unwrap();
+        // Apex of B(1/2) in y is 1.0, not the control point's 2.0.
+        assert!((tight.bottom - 1.0).abs() < 1e-5, "got {tight:?}");
+        assert!((tight.right - 2.0).abs() < 1e-5, "got {tight:?}");
     }
 
     #[test]
