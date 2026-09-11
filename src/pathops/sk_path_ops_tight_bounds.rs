@@ -313,4 +313,90 @@ mod tests {
         let bounds = tight_bounds(&path).unwrap();
         assert!((bounds.left - 0.0).abs() < SMALL_TOLERANCE);
     }
+
+    // The cases below are ported from Skia's `tests/PathOpsTightBoundsTest.cpp`.
+    // The upstream thread-runner tests (random lines/quads compared against a
+    // rasterization) are not portable here; these are its deterministic
+    // `DEF_TEST` one-offs. Upstream asserts `ComputeTightBounds` succeeds and
+    // then compares against `path.getBounds()`, which is what each case does.
+    //
+    // `PathOpsTightBoundsTiny` is deliberately absent: it diverges. See
+    // `TODO/2026-09-11-bug-tight-bounds-tiny-quad-not-collapsed.md`.
+
+    #[test]
+    fn upstream_tight_bounds_move() {
+        // PathOpsTightBoundsMove: degenerate contours; tight == loose.
+        let mut path = Path::new();
+        path.move_to(10.0, 10.0);
+        path.close();
+        path.move_to(20.0, 20.0);
+        path.line_to(20.0, 20.0);
+        path.close();
+        path.move_to(15.0, 15.0);
+        path.line_to(15.0, 15.0);
+        path.close();
+
+        assert_eq!(tight_bounds(&path).unwrap(), path.bounds());
+    }
+
+    #[test]
+    fn upstream_tight_bounds_move_one() {
+        // PathOpsTightBoundsMoveOne: a lone move.
+        let mut path = Path::new();
+        path.move_to(20.0, 20.0);
+
+        assert_eq!(tight_bounds(&path).unwrap(), path.bounds());
+    }
+
+    #[test]
+    fn upstream_tight_bounds_move_two() {
+        // PathOpsTightBoundsMoveTwo: two lone moves.
+        let mut path = Path::new();
+        path.move_to(20.0, 20.0);
+        path.move_to(40.0, 40.0);
+
+        assert_eq!(tight_bounds(&path).unwrap(), path.bounds());
+    }
+
+    #[test]
+    fn upstream_tight_bounds_well_behaved() {
+        // PathOpsTightBoundsWellBehaved: a monotonic quad has no extrema
+        // inside (0, 1), so the control-point hull is already tight.
+        let mut path = Path::new();
+        path.move_to(1.0, 1.0);
+        path.quad_to(2.0, 3.0, 4.0, 5.0);
+
+        assert_eq!(tight_bounds(&path).unwrap(), path.bounds());
+    }
+
+    #[test]
+    fn upstream_tight_bounds_ill_behaved() {
+        // PathOpsTightBoundsIllBehaved: the control point lies outside the
+        // curve's own range, so the loose bounds overshoot and the tight
+        // bounds must be strictly smaller.
+        let mut path = Path::new();
+        path.move_to(1.0, 1.0);
+        path.quad_to(4.0, 3.0, 2.0, 2.0);
+
+        let tight = tight_bounds(&path).unwrap();
+        let loose = path.bounds();
+        assert_ne!(tight, loose);
+        assert!(tight.right < loose.right);
+        assert!(tight.bottom < loose.bottom);
+    }
+
+    #[test]
+    fn upstream_tight_bounds_ill_behaved_scaled() {
+        // PathOpsTightBoundsIllBehavedScaled: same shape at a scale where the
+        // curve ends exactly on its maximum. Upstream pins the two extremes
+        // rather than the whole rect.
+        let mut path = Path::new();
+        path.move_to(0.0, 0.0);
+        path.quad_to(1048578.0, 1048577.0, 1048576.0, 1048576.0);
+
+        let tight = tight_bounds(&path).unwrap();
+        assert_ne!(tight, path.bounds());
+        assert_eq!(tight.right, 1048576.0);
+        assert_eq!(tight.bottom, 1048576.0);
+    }
 }

@@ -292,4 +292,85 @@ mod tests {
         let conic_rect = SkDRect::set_bounds_conic(&conic);
         assert!((quad_rect.f_bottom - conic_rect.f_bottom).abs() < 1e-6);
     }
+
+    // The cases below are ported from Skia's `tests/PathOpsBoundsTest.cpp`
+    // (`DEF_TEST(PathOpsBounds)`). They target `SkDRect`, not `core::Rect`:
+    // `SkPathOpsBounds::Intersects` treats touching edges and empty bounds as
+    // intersecting (`<=`), which is what `SkDRect::intersects` implements.
+    // `core::Rect::rects_intersect` is strict (`<`) and deliberately answers
+    // differently for five of these — see the comment on
+    // `rect_intersects_is_inclusive_unlike_core_rect`.
+
+    fn drect(l: f64, t: f64, r: f64, b: f64) -> SkDRect {
+        SkDRect::new(l, t, r, b)
+    }
+
+    #[test]
+    fn upstream_bounds_intersect_cases() {
+        // sectTests from PathOpsBoundsTest.cpp: every pair must intersect.
+        let cases = [
+            (drect(2.0, 0.0, 4.0, 1.0), drect(4.0, 0.0, 6.0, 1.0)),
+            (drect(2.0, 0.0, 4.0, 1.0), drect(3.0, 0.0, 5.0, 1.0)),
+            (drect(2.0, 0.0, 4.0, 1.0), drect(3.0, 0.0, 5.0, 0.0)),
+            (drect(2.0, 0.0, 4.0, 1.0), drect(3.0, 1.0, 5.0, 2.0)),
+            (drect(2.0, 1.0, 4.0, 2.0), drect(1.0, 0.0, 5.0, 3.0)),
+            (drect(2.0, 1.0, 5.0, 3.0), drect(3.0, 1.0, 4.0, 2.0)),
+            // Intersecting an empty bounds is OK.
+            (drect(2.0, 0.0, 4.0, 1.0), drect(3.0, 0.0, 3.0, 0.0)),
+            // Touching just on a corner is OK.
+            (drect(2.0, 0.0, 4.0, 1.0), drect(4.0, 1.0, 5.0, 2.0)),
+        ];
+        for (index, (a, b)) in cases.iter().enumerate() {
+            assert!(a.intersects(b), "sectTests[{index}] should intersect");
+        }
+    }
+
+    #[test]
+    fn upstream_bounds_no_intersect_cases() {
+        // noSectTests from PathOpsBoundsTest.cpp: no pair may intersect.
+        let cases = [
+            (drect(2.0, 0.0, 4.0, 1.0), drect(5.0, 0.0, 6.0, 1.0)),
+            (drect(2.0, 0.0, 4.0, 1.0), drect(3.0, 2.0, 5.0, 2.0)),
+        ];
+        for (index, (a, b)) in cases.iter().enumerate() {
+            assert!(!a.intersects(b), "noSectTests[{index}] should not intersect");
+        }
+    }
+
+    #[test]
+    fn rect_intersects_is_inclusive_unlike_core_rect() {
+        // `SkDRect::intersects` is inclusive: edge-to-edge contact counts.
+        // `core::Rect::rects_intersect` requires overlapping interiors, so the
+        // same pair answers false there. Both are correct for their own type;
+        // this pins the difference so neither drifts toward the other.
+        let touching_a = drect(2.0, 0.0, 4.0, 1.0);
+        let touching_b = drect(4.0, 0.0, 6.0, 1.0);
+        assert!(touching_a.intersects(&touching_b));
+
+        let core_a = crate::core::Rect::from_ltrb(2.0, 0.0, 4.0, 1.0);
+        let core_b = crate::core::Rect::from_ltrb(4.0, 0.0, 6.0, 1.0);
+        assert!(!crate::core::Rect::rects_intersect(&core_a, &core_b));
+    }
+
+    #[test]
+    fn upstream_bounds_add_point_from_empty() {
+        // PathOpsBoundsTest.cpp adds a bottom-right point to an empty bounds
+        // and expects (0, 0, 3, 4) — the empty bounds contributes its zeroed
+        // origin. `SkDRect::empty()` is inside-out rather than zeroed, so the
+        // first `add` establishes real bounds and the result is the point
+        // itself. Pinned here because the two conventions are easy to confuse.
+        let mut bounds = SkDRect::empty();
+        bounds.add(SkDPoint::new(3.0, 4.0));
+        assert!((bounds.f_left - 3.0).abs() < 1e-10);
+        assert!((bounds.f_top - 4.0).abs() < 1e-10);
+        assert!((bounds.f_right - 3.0).abs() < 1e-10);
+        assert!((bounds.f_bottom - 4.0).abs() < 1e-10);
+
+        // Adding the origin afterwards reproduces the upstream expectation.
+        bounds.add(SkDPoint::new(0.0, 0.0));
+        assert!((bounds.f_left - 0.0).abs() < 1e-10);
+        assert!((bounds.f_top - 0.0).abs() < 1e-10);
+        assert!((bounds.f_right - 3.0).abs() < 1e-10);
+        assert!((bounds.f_bottom - 4.0).abs() < 1e-10);
+    }
 }

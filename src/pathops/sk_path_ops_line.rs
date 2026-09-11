@@ -464,4 +464,70 @@ mod tests {
         assert_eq!(max3(1.0, 3.0, 2.0), 3.0);
         assert_eq!(max4(1.0, 4.0, 2.0, 3.0), 4.0);
     }
+
+    /// The `tests` table from Skia's `tests/PathOpsDLineTest.cpp`, covering the
+    /// degenerate (zero-length), axis-aligned, and diagonal cases together.
+    const UPSTREAM_LINES: [[(Scalar, Scalar); 2]; 6] = [
+        [(2.0, 1.0), (2.0, 1.0)],
+        [(2.0, 1.0), (1.0, 1.0)],
+        [(2.0, 1.0), (2.0, 2.0)],
+        [(1.0, 1.0), (2.0, 2.0)],
+        [(3.0, 0.0), (2.0, 1.0)],
+        [(3.0, 2.0), (1.0, 1.0)],
+    ];
+
+    #[test]
+    fn upstream_line_utilities_midpoint() {
+        // DEF_TEST(PathOpsLineUtilities): ptAtT(.5) is the average of the
+        // endpoints, degenerate lines included.
+        for (index, pts) in UPSTREAM_LINES.iter().enumerate() {
+            let line = DLine::new(Point::new(pts[0].0, pts[0].1), Point::new(pts[1].0, pts[1].1));
+            let mid = line.pt_at_t(0.5);
+            assert!(
+                (mid.x - (pts[0].0 + pts[1].0) / 2.0).abs() < 1e-6,
+                "tests[{index}] x"
+            );
+            assert!(
+                (mid.y - (pts[0].1 + pts[1].1) / 2.0).abs() < 1e-6,
+                "tests[{index}] y"
+            );
+        }
+    }
+
+    #[test]
+    fn upstream_line_utilities_round_trip_through_points() {
+        // Upstream rebuilds each line from its two SkPoints and requires the
+        // endpoints to survive. `DLine` already stores `core::Point`, so this
+        // checks that construction preserves them and that t=0/t=1 return them
+        // exactly rather than through the interpolation path.
+        for (index, pts) in UPSTREAM_LINES.iter().enumerate() {
+            let p0 = Point::new(pts[0].0, pts[0].1);
+            let p1 = Point::new(pts[1].0, pts[1].1);
+            let line = DLine::new(p0, p1);
+            assert_eq!(*line.get(0), p0, "tests[{index}] p0");
+            assert_eq!(*line.get(1), p1, "tests[{index}] p1");
+            assert_eq!(line.pt_at_t(0.0), p0, "tests[{index}] t=0");
+            assert_eq!(line.pt_at_t(1.0), p1, "tests[{index}] t=1");
+        }
+    }
+
+    #[test]
+    fn upstream_line_exact_point_matches_endpoints() {
+        // `exact_point` is upstream's cheapest endpoint test: 0 for p0, 1 for
+        // p1, -1 for anything else. The degenerate first case returns 0 for
+        // both, since p0 == p1.
+        for (index, pts) in UPSTREAM_LINES.iter().enumerate() {
+            let p0 = Point::new(pts[0].0, pts[0].1);
+            let p1 = Point::new(pts[1].0, pts[1].1);
+            let line = DLine::new(p0, p1);
+            assert_eq!(line.exact_point(p0), 0.0, "tests[{index}] p0");
+            let expected_p1 = if p0 == p1 { 0.0 } else { 1.0 };
+            assert_eq!(line.exact_point(p1), expected_p1, "tests[{index}] p1");
+            assert_eq!(
+                line.exact_point(Point::new(100.0, 100.0)),
+                -1.0,
+                "tests[{index}] off-line"
+            );
+        }
+    }
 }
