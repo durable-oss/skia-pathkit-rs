@@ -319,14 +319,28 @@ a way that leaves the running total one too high.
 zero-winding `continue` and where `last` is assigned. So the suspect moves
 one step earlier, to **`ray_check`: which spans it reports a hit against.**
 
-It attributes each root to a span via `winding_span_at_t`, which walks the
-span chain and returns the interval the t falls in. After coincidence has
-split segments at the run's ends, a ray crossing near one of those splits can
-be attributed to the neighbouring interval — and the neighbouring interval is
-exactly the one coincidence zeroed. A hit attributed to the zeroed span is
-skipped; a hit attributed to the live one next to it is counted. Either way
-the total is off by one, in a way that only shows up on geometry where a
-coincident run ends mid-segment.
+### Correction again, and the real remaining question
 
-Everything upstream of that - the graph, the angle rings, the coincidence
-records, the active-edge gate, `accumulate` - is known good on this input.
+Casting a ray directly from segment 6's head gives `ws = -1, os = 0` — the
+right answer, one crossing below and nothing above. The `-2 / -2` the walk
+sees is therefore on a *different span* of that segment, not a bad cast of
+the same one.
+
+`span_set_wind_sum` and `span_set_opp_sum` both refuse to overwrite a
+differing sum (they set `winding_failed` instead), and `mark_winding_opp`
+and the chase match C++ line for line, so nothing is clobbering a good value
+with a bad one. Which leaves: **the ring member at (20, 20) is not the span
+the probe cast from.**
+
+Segment 6 is `(28,20)->(8,20)` with spans at t = 0, 0.4, 1. The walk's
+candidate `(20,20)->(28,20)` runs *backwards* along it, so its starter is the
+t = 0 span — which is what the probe used. But the dump earlier showed
+segment 6's t = 0.4 span zeroed by coincidence, and `span_starter` picks by
+lesser t, so a candidate spanning t = 0..0.4 starts at t = 0 and one spanning
+0.4..1 starts at 0.4.
+
+Next step: print the actual `SpanId` for that ring member alongside the
+`SpanId` the probe casts from. If they differ, the question is why the ring
+holds an angle on the zeroed span; if they match, something between the cast
+and the gate is reading a stale value, and `winding_failed` should be
+checked — nothing currently looks at it.

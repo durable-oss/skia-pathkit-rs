@@ -406,6 +406,11 @@ fn accumulate(arena: &mut OpArena, hits: &[SkOpRayHit], dir: SkOpRayDir) -> bool
         if sum_set {
             // Spread the newly known winding along the segments that follow,
             // in both directions from this span.
+            //
+            // `mark_and_chase_winding_opp` only writes onto a span whose sum
+            // is still unknown, so a value already resolved by its own ray
+            // is never overwritten by one chased in from a neighbour. C++
+            // relies on the same property of `markAndChaseWinding`.
             if let Some(next) = arena.span_next(span) {
                 arena.mark_and_chase_winding_opp(span, next, wind_sum, opp_sum);
                 arena.mark_and_chase_winding_opp(next, span, wind_sum, opp_sum);
