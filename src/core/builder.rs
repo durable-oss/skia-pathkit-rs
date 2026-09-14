@@ -221,10 +221,8 @@ impl PathBuilder {
 
     /// Adds an oval inscribed in `rect` as a new contour.
     pub fn add_oval(&mut self, rect: Rect, dir: Direction, _start: u32) -> &mut Self {
-        let center_x = rect.left + rect.right - rect.left / 2.0;
-        let center_y = rect.top + rect.bottom - rect.top / 2.0;
-        let r_x = rect.right - rect.left / 2.0;
-        let r_y = rect.bottom - rect.top / 2.0;
+        let center_x = rect.left + (rect.right - rect.left) / 2.0;
+        let center_y = rect.top + (rect.bottom - rect.top) / 2.0;
 
         let oval_pts = [
             Point::new(center_x, rect.top),
@@ -291,7 +289,6 @@ impl PathBuilder {
     /// Appends the contours of `path` to this builder.
     pub fn add_path(&mut self, path: &Path) -> &mut Self {
         for (i, &verb) in path.verbs().iter().enumerate() {
-            let pt_count = verb.point_count();
             let start_idx = path.points().len().saturating_sub(
                 path.verbs()
                     .iter()
@@ -507,6 +504,21 @@ mod tests {
         b.offset(5.0, 10.0);
         assert_eq!(b.points[0], Point::new(5.0, 10.0));
         assert_eq!(b.points[1], Point::new(15.0, 30.0));
+    }
+
+    #[test]
+    fn add_oval_centers_on_a_rect_away_from_the_origin() {
+        // The four on-curve points of an oval are the midpoints of the
+        // bounding rect's sides, so each must sit on the rect's centre lines.
+        let mut b = PathBuilder::new();
+        b.add_oval(Rect::from_ltrb(20.0, 40.0, 120.0, 140.0), Direction::Cw, 0);
+
+        let cx = 70.0;
+        let cy = 90.0;
+        assert_eq!(b.points[0], Point::new(cx, 40.0));
+        assert!(b.points.contains(&Point::new(120.0, cy)));
+        assert!(b.points.contains(&Point::new(cx, 140.0)));
+        assert!(b.points.contains(&Point::new(20.0, cy)));
     }
 
     #[test]
