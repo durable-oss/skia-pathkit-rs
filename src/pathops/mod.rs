@@ -70,11 +70,12 @@ pub enum PathOp {
 /// flattened, split at intersections, and classified with
 /// [`Path::contains`], so the result is a polyline.
 ///
-/// The curve-preserving engine in [`sk_op_engine`] is built and tested but
-/// is **not** wired in here yet: its walk still returns wrong answers on
-/// `Intersect` and can fail to terminate on some inputs. Making it the
-/// default before that is fixed would trade flattened-but-correct results
-/// for curve-shaped wrong ones. See `TODO/09-bridge-winding-xor.md`.
+/// The curve-preserving engine in [`sk_op_engine`] is built and tested, and
+/// keeps curves through an operation, but is **not** wired in here yet: it
+/// still fragments the result into several contours when the two inputs
+/// share a collinear edge. Making it the default before that is fixed would
+/// trade flattened-but-correct results for curve-shaped wrong ones. See
+/// `TODO/09-bridge-winding-xor.md`.
 ///
 /// # Errors
 ///

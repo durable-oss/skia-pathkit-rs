@@ -197,6 +197,12 @@ fn intersect_pair(graph: &mut OpGraph, a: SegmentId, b: SegmentId) {
     {
         return;
     }
+    // Collinear segments that overlap do not cross, so the crossing search
+    // finds nothing for them. They are coincident instead, and that has to
+    // be recorded or the shared run's winding is counted on both sides.
+    if record_if_coincident(graph, a, b) {
+        return;
+    }
     let crossings = find_crossings(&graph.arena, a, b);
     for (ta, tb, pt) in crossings {
         let pa = graph.arena.segment_add_t(a, ta, pt);
@@ -211,6 +217,92 @@ fn intersect_pair(graph: &mut OpGraph, a: SegmentId, b: SegmentId) {
         }
     }
 }
+
+/// Records `a` and `b` as coincident when they are two lines running along
+/// the same infinite line with overlapping extents.
+///
+/// Returns true when a record was made, in which case the pair has no
+/// crossing to look for: they meet everywhere along the shared run, not at a
+/// point.
+///
+/// Only the line/line case is detected. Curve coincidence needs the
+/// t-section machinery in `sk_path_ops_tsect`; two identical curves are rare
+/// in practice next to two rectangles sharing an edge, which is the case
+/// that makes a union of overlapping boxes wrong.
+fn record_if_coincident(graph: &mut OpGraph, a: SegmentId, b: SegmentId) -> bool {
+    let (a_pts, a_verb, _) = graph.arena.segment_curve(a);
+    let (b_pts, b_verb, _) = graph.arena.segment_curve(b);
+    if a_verb != Verb::Line || b_verb != Verb::Line {
+        return false;
+    }
+    let (a0, a1) = (a_pts[0], a_pts[1]);
+    let (b0, b1) = (b_pts[0], b_pts[1]);
+    let a_dir = (a1.x - a0.x, a1.y - a0.y);
+    let b_dir = (b1.x - b0.x, b1.y - b0.y);
+    // Parallel, and b's start on a's line: the two share an infinite line.
+    let cross = a_dir.0 * b_dir.1 - a_dir.1 * b_dir.0;
+    let len_sq = a_dir.0 * a_dir.0 + a_dir.1 * a_dir.1;
+    if len_sq == 0.0 || cross.abs() > COLLINEAR_TOL * len_sq.sqrt() {
+        return false;
+    }
+    let off = (b0.x - a0.x, b0.y - a0.y);
+    let side = a_dir.0 * off.1 - a_dir.1 * off.0;
+    if side.abs() > COLLINEAR_TOL * len_sq.sqrt() {
+        return false;
+    }
+
+    // Project both of b's ends onto a's parameter, and see where the two
+    // extents overlap.
+    let project = |p: Point| ((p.x - a0.x) * a_dir.0 + (p.y - a0.y) * a_dir.1) / len_sq;
+    let (tb0, tb1) = (project(b0), project(b1));
+    let (lo, hi) = if tb0 <= tb1 { (tb0, tb1) } else { (tb1, tb0) };
+    let start = lo.max(0.0);
+    let end = hi.min(1.0);
+    if end - start <= COLLINEAR_TOL {
+        // They touch at a point at most, which is not a run.
+        return false;
+    }
+
+    // Split both segments at the run's ends and record the pair.
+    let a_start_pt = graph.arena.segment_pt_at_t(a, start);
+    let a_end_pt = graph.arena.segment_pt_at_t(a, end);
+    let Some(ca) = graph.arena.segment_add_t(a, start, a_start_pt) else {
+        return false;
+    };
+    let Some(cb) = graph.arena.segment_add_t(a, end, a_end_pt) else {
+        return false;
+    };
+    // The same two points, as parameters along b.
+    let inv = |p: Point| {
+        let d = (p.x - b0.x) * b_dir.0 + (p.y - b0.y) * b_dir.1;
+        let l = b_dir.0 * b_dir.0 + b_dir.1 * b_dir.1;
+        if l == 0.0 {
+            0.0
+        } else {
+            (d / l).clamp(0.0, 1.0)
+        }
+    };
+    let (ta, tb) = (inv(a_start_pt), inv(a_end_pt));
+    let Some(oa) = graph.arena.segment_add_t(b, ta, a_start_pt) else {
+        return false;
+    };
+    let Some(ob) = graph.arena.segment_add_t(b, tb, a_end_pt) else {
+        return false;
+    };
+    // Join the matching points, so each end of the run is one place.
+    for (x, y) in [(ca, oa), (cb, ob)] {
+        if x != y {
+            graph.arena.ptt_add_opp(x, y);
+        }
+    }
+    let mut coincidence = std::mem::take(&mut graph.coincidence);
+    coincidence.add_or_extend(&mut graph.arena, ca, cb, oa, ob);
+    graph.coincidence = coincidence;
+    true
+}
+
+/// How far off a line a point may sit and still count as on it.
+const COLLINEAR_TOL: f32 = 1e-4;
 
 /// How finely a curve is sampled when looking for crossings.
 ///
@@ -1107,6 +1199,60 @@ mod tests {
             got.verbs().contains(&Verb::Cubic),
             "a cut through a disc leaves curved pieces: {:?}",
             got.verbs()
+        );
+    }
+
+    #[test]
+    fn rectangles_sharing_a_collinear_edge_are_recorded_as_coincident() {
+        // Both span y 0..20, so their top and bottom edges lie along the same
+        // lines and overlap. Those edges do not cross anywhere: they coincide,
+        // and the crossing search finds nothing for them.
+        let a = rect_path(0.0, 0.0, 20.0, 20.0);
+        let b = rect_path(8.0, 0.0, 28.0, 20.0);
+        let graph = build(&a, Some(&b), false, false).expect("builds");
+        assert_eq!(
+            graph.coincidence.count(&graph.arena),
+            2,
+            "the shared top run and the shared bottom run"
+        );
+    }
+
+    #[test]
+    fn rectangles_that_only_cross_record_no_coincidence() {
+        // Offset in both axes, so no pair of edges is collinear.
+        let a = rect_path(0.0, 0.0, 10.0, 10.0);
+        let b = rect_path(5.0, 5.0, 15.0, 15.0);
+        let graph = build(&a, Some(&b), false, false).expect("builds");
+        assert_eq!(graph.coincidence.count(&graph.arena), 0);
+    }
+
+    #[test]
+    fn two_rectangles_flush_against_each_other_share_one_whole_edge() {
+        // A's right side and B's left side are the same segment, traced
+        // opposite ways. That is a coincident run of full length, not a
+        // point touch: the two rectangles' top and bottom edges meet only at
+        // a corner, but this pair overlaps completely.
+        let a = rect_path(0.0, 0.0, 10.0, 10.0);
+        let b = rect_path(10.0, 0.0, 20.0, 10.0);
+        let graph = build(&a, Some(&b), false, false).expect("builds");
+        assert_eq!(
+            graph.coincidence.count(&graph.arena),
+            1,
+            "the shared vertical edge, and nothing from the corner touches"
+        );
+    }
+
+    #[test]
+    fn rectangles_meeting_at_only_a_corner_record_nothing() {
+        // Diagonal neighbours: they touch at (10, 10) and nowhere else, so
+        // no pair of edges overlaps with any width.
+        let a = rect_path(0.0, 0.0, 10.0, 10.0);
+        let b = rect_path(10.0, 10.0, 20.0, 20.0);
+        let graph = build(&a, Some(&b), false, false).expect("builds");
+        assert_eq!(
+            graph.coincidence.count(&graph.arena),
+            0,
+            "a touch is not a run"
         );
     }
 }
