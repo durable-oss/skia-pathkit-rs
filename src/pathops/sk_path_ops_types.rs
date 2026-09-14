@@ -393,6 +393,9 @@ impl Default for OpPhase {
 /// precision contexts.
 pub const FLT_EPSILON: f64 = f32::EPSILON as f64;
 const FLT_EPSILON_ORDERABLE_ERR: f64 = FLT_EPSILON * 16.0;
+/// A tolerance 64 times `FLT_EPSILON`, for comparisons that should
+/// survive accumulated error. Matches Skia's `ROUGH_EPSILON`.
+pub const ROUGH_EPSILON: f64 = FLT_EPSILON * 64.0;
 const DBL_EPSILON_ERR: f64 = f64::EPSILON * 4.0;
 
 /// True if `x` is `0` or `1` exactly.
@@ -414,6 +417,14 @@ pub fn precisely_zero(x: f64) -> bool {
 /// True if `x` is zero relative to `y`'s magnitude.
 pub fn approximately_zero_when_compared_to(x: f64, y: f64) -> bool {
     x == 0.0 || x.abs() < (y * FLT_EPSILON).abs()
+}
+
+/// True if `x` is zero relative to `y`'s magnitude, at the looser
+/// [`ROUGH_EPSILON`] tolerance.
+///
+/// Port of `roughly_zero_when_compared_to` in `SkPathOpsTypes.h`.
+pub fn roughly_zero_when_compared_to(x: f64, y: f64) -> bool {
+    x == 0.0 || x.abs() < (y * ROUGH_EPSILON).abs()
 }
 
 /// True if `x` and `y` are within `FLT_EPSILON` of each other. Intended for

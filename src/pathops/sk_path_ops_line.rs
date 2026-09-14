@@ -5,7 +5,10 @@
 //! This module provides line segment geometry operations including
 //! point-on-line tests, interpolation, and near-point calculations.
 
-use super::sk_path_ops_types::{almost_between_ulps, almost_equal_ulps, roughly_equal_ulps};
+use super::sk_path_ops_point::SkDPoint;
+use super::sk_path_ops_types::{
+    almost_between_ulps, almost_equal_ulps, between_d, roughly_equal_ulps,
+};
 use crate::core::{Point, Scalar};
 
 /// A line segment defined by two points
@@ -276,9 +279,255 @@ fn max4(a: Scalar, b: Scalar, c: Scalar, d: Scalar) -> Scalar {
     a.max(b).max(c).max(d)
 }
 
+/// A double-precision line segment.
+///
+/// Port of Skia's `SkDLine`. [`DLine`] is the single-precision variant the
+/// intersection code uses on `Point`; this one works on [`SkDPoint`] and so
+/// composes with the other double-precision curve types.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SkDLine {
+    /// The two endpoints, at t == 0 and t == 1.
+    pub f_pts: [SkDPoint; 2],
+}
+
+impl SkDLine {
+    /// Constructs a line from its two endpoints.
+    #[must_use]
+    pub fn new(pts: [SkDPoint; 2]) -> Self {
+        Self { f_pts: pts }
+    }
+
+    /// Constructs a line running from `p0` to `p1`.
+    #[must_use]
+    pub fn from_points(p0: SkDPoint, p1: SkDPoint) -> Self {
+        Self { f_pts: [p0, p1] }
+    }
+
+    /// The point on the segment at parameter `t`.
+    #[must_use]
+    pub fn pt_at_t(&self, t: f64) -> SkDPoint {
+        if t == 0.0 {
+            return self.f_pts[0];
+        }
+        if t == 1.0 {
+            return self.f_pts[1];
+        }
+        let one_t = 1.0 - t;
+        SkDPoint::new(
+            one_t * self.f_pts[0].f_x + t * self.f_pts[1].f_x,
+            one_t * self.f_pts[0].f_y + t * self.f_pts[1].f_y,
+        )
+    }
+
+    /// Returns the t of the endpoint exactly equal to `xy`, or -1 if neither
+    /// endpoint matches.
+    ///
+    /// Port of `SkDLine::exactPoint`.
+    #[must_use]
+    pub fn exact_point(&self, xy: SkDPoint) -> f64 {
+        if xy == self.f_pts[0] {
+            return 0.0;
+        }
+        if xy == self.f_pts[1] {
+            return 1.0;
+        }
+        -1.0
+    }
+
+    /// Returns the t at which the segment passes through `xy`, or -1 if `xy`
+    /// is not on the segment within ULP tolerance.
+    ///
+    /// Port of `SkDLine::nearPoint`. A perpendicular is dropped from `xy` to
+    /// the line and the resulting t is kept only if it lands inside the
+    /// segment and the distance is negligible at the segment's own scale.
+    /// `unequal` reports whether that distance was non-zero in float
+    /// precision.
+    pub fn near_point(&self, xy: SkDPoint, unequal: Option<&mut bool>) -> f64 {
+        if !almost_between_ulps(
+            self.f_pts[0].f_x as f32,
+            xy.f_x as f32,
+            self.f_pts[1].f_x as f32,
+        ) || !almost_between_ulps(
+            self.f_pts[0].f_y as f32,
+            xy.f_y as f32,
+            self.f_pts[1].f_y as f32,
+        ) {
+            return -1.0;
+        }
+
+        // Project a perpendicular ray from the point to the line; find the t.
+        let len = self.f_pts[1] - self.f_pts[0];
+        let denom = len.f_x * len.f_x + len.f_y * len.f_y;
+        let ab0 = xy - self.f_pts[0];
+        let numer = len.f_x * ab0.f_x + ab0.f_y * len.f_y;
+
+        if !between_d(0.0, numer, denom) {
+            return -1.0;
+        }
+        if denom == 0.0 {
+            return 0.0;
+        }
+
+        let t = numer / denom;
+        let real_pt = self.pt_at_t(t);
+        let dist = real_pt.distance(xy);
+
+        // Compare against the largest coordinate in the line, so the
+        // tolerance scales with the geometry rather than being absolute.
+        let largest = self.largest_coordinate();
+        if !almost_equal_ulps(largest as f32, (largest + dist) as f32) {
+            return -1.0;
+        }
+
+        if let Some(flag) = unequal {
+            *flag = (largest as f32) != ((largest + dist) as f32);
+        }
+
+        let t = pin_t(t as Scalar) as f64;
+        debug_assert!(between_d(0.0, t, 1.0));
+        t
+    }
+
+    /// True if `xy` lies on the infinite line through this segment, within
+    /// ULP tolerance. Unlike [`near_point`](Self::near_point) the projection
+    /// is not required to land between the endpoints.
+    ///
+    /// Port of `SkDLine::nearRay`.
+    #[must_use]
+    pub fn near_ray(&self, xy: SkDPoint) -> bool {
+        let len = self.f_pts[1] - self.f_pts[0];
+        let denom = len.f_x * len.f_x + len.f_y * len.f_y;
+        let ab0 = xy - self.f_pts[0];
+        let numer = len.f_x * ab0.f_x + ab0.f_y * len.f_y;
+        let t = numer / denom;
+        let real_pt = self.pt_at_t(t);
+        let dist = real_pt.distance(xy);
+
+        let largest = self.largest_coordinate();
+        roughly_equal_ulps(largest as f32, (largest + dist) as f32)
+    }
+
+    /// The largest magnitude among the endpoints' coordinates, used to scale
+    /// the ULP tolerances.
+    fn largest_coordinate(&self) -> f64 {
+        let tiniest = self.f_pts[0]
+            .f_x
+            .min(self.f_pts[0].f_y)
+            .min(self.f_pts[1].f_x)
+            .min(self.f_pts[1].f_y);
+        let largest = self.f_pts[0]
+            .f_x
+            .max(self.f_pts[0].f_y)
+            .max(self.f_pts[1].f_x)
+            .max(self.f_pts[1].f_y);
+        largest.max(-tiniest)
+    }
+}
+
+impl std::ops::Index<usize> for SkDLine {
+    type Output = SkDPoint;
+
+    fn index(&self, n: usize) -> &SkDPoint {
+        assert!(n < 2, "Index must be 0 or 1");
+        &self.f_pts[n]
+    }
+}
+
+impl std::ops::IndexMut<usize> for SkDLine {
+    fn index_mut(&mut self, n: usize) -> &mut SkDPoint {
+        assert!(n < 2, "Index must be 0 or 1");
+        &mut self.f_pts[n]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- SkDLine, the double-precision variant -------------------------
+
+    fn dline(x0: f64, y0: f64, x1: f64, y1: f64) -> SkDLine {
+        SkDLine::from_points(SkDPoint::new(x0, y0), SkDPoint::new(x1, y1))
+    }
+
+    #[test]
+    fn skdline_pt_at_t_interpolates_between_the_ends() {
+        let line = dline(0.0, 0.0, 2.0, 4.0);
+        assert_eq!(line.pt_at_t(0.0), SkDPoint::new(0.0, 0.0));
+        assert_eq!(line.pt_at_t(1.0), SkDPoint::new(2.0, 4.0));
+        let mid = line.pt_at_t(0.5);
+        assert!((mid.f_x - 1.0).abs() < 1e-12);
+        assert!((mid.f_y - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn skdline_exact_point_only_matches_the_endpoints() {
+        let line = dline(0.0, 0.0, 10.0, 0.0);
+        assert_eq!(line.exact_point(SkDPoint::new(0.0, 0.0)), 0.0);
+        assert_eq!(line.exact_point(SkDPoint::new(10.0, 0.0)), 1.0);
+        // A point on the segment but not at an end is not an exact match.
+        assert_eq!(line.exact_point(SkDPoint::new(5.0, 0.0)), -1.0);
+    }
+
+    #[test]
+    fn skdline_near_point_returns_t_on_the_segment() {
+        let line = dline(0.0, 0.0, 10.0, 0.0);
+        assert_eq!(line.near_point(SkDPoint::new(0.0, 0.0), None), 0.0);
+        assert_eq!(line.near_point(SkDPoint::new(10.0, 0.0), None), 1.0);
+        let t = line.near_point(SkDPoint::new(5.0, 0.0), None);
+        assert!((t - 0.5).abs() < 1e-9, "midpoint should be t = 0.5, got {t}");
+    }
+
+    #[test]
+    fn skdline_near_point_rejects_points_off_the_segment() {
+        let line = dline(0.0, 0.0, 10.0, 0.0);
+        // Far off the line.
+        assert_eq!(line.near_point(SkDPoint::new(5.0, 10.0), None), -1.0);
+        // Beyond either end.
+        assert_eq!(line.near_point(SkDPoint::new(-1.0, 0.0), None), -1.0);
+        assert_eq!(line.near_point(SkDPoint::new(11.0, 0.0), None), -1.0);
+    }
+
+    #[test]
+    fn skdline_near_point_measures_the_segment_not_the_endpoints() {
+        // The midpoint is 5 units from either end but sits exactly on the
+        // segment, so it must be accepted. Measuring to the nearer endpoint
+        // instead would report a distance of 5 and reject it.
+        let line = dline(0.0, 0.0, 10.0, 0.0);
+        let t = line.near_point(SkDPoint::new(5.0, 0.0), None);
+        assert!(t >= 0.0, "a point on the segment must not be rejected");
+    }
+
+    #[test]
+    fn skdline_near_point_sets_unequal_for_a_nonzero_distance() {
+        let line = dline(0.0, 0.0, 10.0, 0.0);
+        let mut unequal = true;
+        let t = line.near_point(SkDPoint::new(5.0, 0.0), Some(&mut unequal));
+        assert!(t >= 0.0);
+        assert!(!unequal, "an exact hit should leave unequal clear");
+    }
+
+    #[test]
+    fn skdline_near_ray_ignores_the_segment_bounds() {
+        let line = dline(0.0, 0.0, 10.0, 0.0);
+        assert!(line.near_ray(SkDPoint::new(5.0, 0.0)));
+        assert!(line.near_ray(SkDPoint::new(0.0, 0.0)));
+        // On the infinite line but past the end: near_ray accepts it where
+        // near_point does not.
+        assert!(line.near_ray(SkDPoint::new(20.0, 0.0)));
+        assert_eq!(line.near_point(SkDPoint::new(20.0, 0.0), None), -1.0);
+        // Genuinely off the line.
+        assert!(!line.near_ray(SkDPoint::new(5.0, 10.0)));
+    }
+
+    #[test]
+    fn skdline_indexes_its_endpoints() {
+        let mut line = dline(1.0, 2.0, 3.0, 4.0);
+        assert_eq!(line[0], SkDPoint::new(1.0, 2.0));
+        assert_eq!(line[1], SkDPoint::new(3.0, 4.0));
+        line[0] = SkDPoint::new(9.0, 9.0);
+        assert_eq!(line.f_pts[0], SkDPoint::new(9.0, 9.0));
+    }
 
     #[test]
     fn test_pt_at_t() {

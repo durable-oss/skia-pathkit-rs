@@ -459,6 +459,23 @@ mod tests {
     }
 
     #[test]
+    fn sub_divide_stays_finite_at_the_ends_of_the_range() {
+        // A subdivision that scales by 1 / (1 - t1) blows up at t1 == 1.
+        // Every degenerate range has to produce finite control points.
+        let q = quad([(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)]);
+        for (t1, t2) in [(1.0, 1.0), (0.0, 0.0), (1.0, 0.0), (0.999_999, 1.0)] {
+            let s = q.sub_divide(t1, t2);
+            for i in 0..3 {
+                assert!(
+                    s.f_pts[i].f_x.is_finite() && s.f_pts[i].f_y.is_finite(),
+                    "sub_divide({t1}, {t2}) point {i} is not finite: {:?}",
+                    s.f_pts[i]
+                );
+            }
+        }
+    }
+
+    #[test]
     fn sub_divide_identity() {
         let q = quad([(0.0, 0.0), (5.0, 10.0), (10.0, 0.0)]);
         let s = q.sub_divide(0.0, 1.0);
@@ -570,3 +587,4 @@ mod tests {
         assert_eq!(q[2], SkDPoint::new(10.0, 0.0));
     }
 }
+
