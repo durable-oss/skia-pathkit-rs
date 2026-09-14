@@ -562,7 +562,17 @@ where
         }
         if !arena.segment_done(next_segment) {
             if !active {
-                arena.mark_and_chase_done(next_start, next_end);
+                // Retiring an angle the walk did not take also says where the
+                // walk could come back to. C++ reads that back out of
+                // `lastMarked`, which `markAngle` sets during `computeSum`;
+                // when no winding transfer happened there is nothing to read,
+                // so the span `markAndChaseDone` itself stopped at is used.
+                if let Some(Some(last)) = arena.mark_and_chase_done(next_start, next_end) {
+                    if !arena.span(last).chased() && chase.len() < CHASE_LIMIT {
+                        arena.span_mut(last).set_chased(true);
+                        chase.push(last);
+                    }
+                }
             }
             if let Some(last) = last_marked(arena, next_angle) {
                 if chase.len() < CHASE_LIMIT {

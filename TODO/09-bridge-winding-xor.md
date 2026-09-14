@@ -255,10 +255,40 @@ SEG 6 (28,20)->(8,20) [(0.0, 1, 0), (0.4, 0, 0), (1.0, 1, 0)]
 Segment 4's t = 0 span and segment 6's t = 0.4 span are the coincident runs,
 correctly zeroed. Everything else carries winding.
 
-So: the walk closes A's contour and stops, rather than starting a second one
-from segment 5. `find_sortable_top` should hand back one of those undone
-spans on the next outer-loop pass. Look there first — at whether
-`bridge`'s outer loop is reached at all after the first contour finishes, and
-at whether `find_sortable_top` skips segments whose spans are undone but
-whose *segment* was marked done by `segment_mark_all_done` somewhere in the
-chase.
+### Traced one step further
+
+The outer loop *is* reached; `find_sortable_top` returns `None` on the second
+pass. Before the walk starts, no segment is done:
+
+```
+PRE SegmentId(5) count=2 done_count=0 done=false
+PRE SegmentId(6) count=3 done_count=1 done=false
+```
+
+so the walk itself retires segments 5 and 6 without ever emitting them. That
+is `pick_next`: it calls `mark_and_chase_done` on every angle it does not
+take, and `mark_done(starter)` on the edge it leaves. C++ does the same —
+and then drains the chase list, which is where those retired spans are
+supposed to come back.
+
+**The chase list is empty when the first contour finishes**, and the middle
+loop therefore runs exactly once. That is the whole failure: `pick_next`
+retires segments 5 and 6 but nothing records where to come back to, so
+neither `find_chase` nor the next `find_sortable_top` can reach them.
+
+Two things were checked and are *not* it:
+
+- `pick_next`'s inactive branch does push now — it takes the span
+  `mark_and_chase_done` stopped at, since `lastMarked` is only set when
+  `computeSum` actually transferred a winding and here it never does. That
+  change is in the tree and correct on its own terms, but the list is still
+  empty, so `pick_next` is not seeing an inactive angle on this input.
+- `bridge`'s own inactive branch never fires either: the gate passes on the
+  first edge, `walk_contour` runs, and the loop exits on the empty chase.
+
+So the question is narrower again: **on this graph, which angle should
+`pick_next` be finding inactive, and why is it not?** The ring at each corner
+of the overlap has three members; the walk takes one and should retire the
+others. Dump `pick_next`'s ring walk for the first contour and see how many
+members it visits — if it visits one, the ring it was handed is not the ring
+at that point.
