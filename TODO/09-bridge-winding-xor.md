@@ -113,3 +113,44 @@ in `sk_op_sortable_top.rs` sets up exactly this geometry.
 - Curve/curve coincidence. `record_if_coincident` handles line/line only,
   which is the case that breaks a union of boxes; two identical curves need
   the t-section machinery.
+
+### What was tried and did not work
+
+Recorded so it is not re-tried blind, in the style of `TODO/16`:
+
+**Pre-resolving every span's winding before the walk starts.** The reasoning
+was that `find_sortable_top` only resolves the spans it happens to visit on
+its way to a starting point, so a gate reached later reads an unset value.
+Running `sortable_top` over every non-terminal span up front, each with the
+full `MAX_WINDING_TRIES` budget, does make every sum available — and makes
+things *worse*: it broke the two disc-union tests that previously passed,
+taking the failure count from 2 to 5.
+
+The order matters. A ray cast from a span whose neighbours have not been
+resolved yet accumulates a different total than the same ray cast later, and
+`mark_and_chase_winding` then spreads that wrong value along the chase. The
+walk resolves spans in an order that makes each cast meaningful; resolving
+them in segment order does not.
+
+So the fix is not "resolve more, earlier". It is to find why one particular
+span's cast reads 0.
+
+### Where the data actually stands
+
+Dumping every span after `build` on the two-collinear-rectangles case shows
+the windings are **all correct and all resolvable**:
+
+```
+seg 0 (0,0)->(20,0)   opnd=false t=0    wv=1 ov=0  ws=-1 os=0
+seg 0 (0,0)->(20,0)   opnd=false t=0.4  wv=2 ov=0  ws=-2 os=0   <- interior
+seg 1 (20,0)->(20,20) opnd=false t=0    wv=1 ov=0  ws=-2 os=0
+...
+seg 4 (8,0)->(28,0)   opnd=true  t=0    wv=0 ov=0  (zeroed by coincidence)
+seg 4 (8,0)->(28,0)   opnd=true  t=0.6  wv=0 ov=1  ws=0  os=-1
+```
+
+`ws=-2` on segment 0's t = 0.4 span is right: covered on both sides,
+therefore interior, therefore not on a union's boundary. The gate still lets
+it through, and `active_op` was observed getting `sum_mi = 0` for it. So the
+defect is between `update_winding` and `active_op_with`, on a span whose
+stored sum is already correct — not in the ray cast that produced it.
