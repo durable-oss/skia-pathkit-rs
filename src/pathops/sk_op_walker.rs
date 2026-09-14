@@ -257,8 +257,13 @@ fn transfer(
     mut sum_su: i32,
 ) -> bool {
     let last = if binary {
+        // C++ calls nextSegment->setUpWindings, so the operand is the
+        // segment being marked, not the one the winding came from.
+        let operand = arena
+            .span_segment(start)
+            .is_some_and(|seg| arena.segment_operand(seg));
         let (max_winding, opp_max_winding) =
-            arena.set_up_windings(start, end, &mut sum_mi, &mut sum_su);
+            arena.set_up_windings(start, end, operand, &mut sum_mi, &mut sum_su);
         match mark_angle_opp(
             arena,
             max_winding,

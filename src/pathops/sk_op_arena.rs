@@ -2047,15 +2047,27 @@ impl OpArena {
         &self,
         start: SpanId,
         end: SpanId,
-        sum_winding: &mut i32,
-        opp_sum_winding: &mut i32,
+        operand: bool,
+        sum_mi_winding: &mut i32,
+        sum_su_winding: &mut i32,
     ) -> (i32, i32) {
-        let max_winding = self.set_up_winding(start, end, sum_winding);
+        let delta = self.span_sign(start, end);
         let opp_delta = self.opp_sign(start, end);
-        let opp_max_winding = *opp_sum_winding;
-        if *opp_sum_winding != PK_MIN_S32 {
-            *opp_sum_winding -= opp_delta;
-        }
+        // Which of the two running sums this segment's own delta comes off
+        // depends on which operand it belongs to. A segment of the second
+        // operand contributes to `su` and reads `mi` as its opposite; the
+        // first operand is the other way round. Without the swap, every
+        // second-operand edge is measured against the wrong sum, and an
+        // interior edge reads as a boundary.
+        let (own, opp) = if operand {
+            (sum_su_winding, sum_mi_winding)
+        } else {
+            (sum_mi_winding, sum_su_winding)
+        };
+        let max_winding = *own;
+        let opp_max_winding = *opp;
+        *own -= delta;
+        *opp -= opp_delta;
         (max_winding, opp_max_winding)
     }
 
@@ -2142,13 +2154,13 @@ impl OpArena {
         sum_su_winding: &mut i32,
     ) -> bool {
         let (max_winding, opp_max_winding) =
-            self.set_up_windings(start, end, sum_mi_winding, sum_su_winding);
+            self.set_up_windings(start, end, operand, sum_mi_winding, sum_su_winding);
         let (mi_from, mi_to, su_from, su_to) = if operand {
             (
                 (opp_max_winding & xor_mi_mask) != 0,
-                (*sum_su_winding & xor_mi_mask) != 0,
+                (*sum_mi_winding & xor_mi_mask) != 0,
                 (max_winding & xor_su_mask) != 0,
-                (*sum_mi_winding & xor_su_mask) != 0,
+                (*sum_su_winding & xor_su_mask) != 0,
             )
         } else {
             (
@@ -3562,6 +3574,54 @@ mod tests {
         assert_eq!(arena.walk_angle(head, mid), Some(leaving));
         // Walking backwards from the mid takes the one arriving at the mid.
         assert_eq!(arena.walk_angle(mid, head), Some(mid_arriving));
+    }
+
+    #[test]
+    fn set_up_windings_takes_the_delta_off_the_segments_own_operand() {
+        let mut arena = OpArena::new();
+        let first = arena.alloc_segment_with_curve(
+            &[Point::new(0.0, 0.0), Point::new(10.0, 0.0)],
+            Verb::Line,
+            1.0,
+        );
+        let second = arena.alloc_segment_with_curve(
+            &[Point::new(0.0, 5.0), Point::new(10.0, 5.0)],
+            Verb::Line,
+            1.0,
+        );
+        arena.set_segment_operand(second, true);
+        for seg in [first, second] {
+            for span in arena.segment_spans(seg) {
+                arena.span_mut(span).set_wind_value(1);
+                arena.span_mut(span).set_opp_value(2);
+            }
+        }
+
+        // The first operand's segment takes its own delta off `mi` and the
+        // opposite delta off `su`.
+        let (head, tail) = (
+            arena.segment(first).f_head.expect("head"),
+            arena.segment(first).f_tail.expect("tail"),
+        );
+        let (mut mi, mut su) = (10, 20);
+        let (max, opp_max) = arena.set_up_windings(head, tail, false, &mut mi, &mut su);
+        assert_eq!(max, 10, "max comes off mi for the first operand");
+        assert_eq!(opp_max, 20);
+        assert_eq!(mi, 10 - arena.span_sign(head, tail));
+        assert_eq!(su, 20 - arena.opp_sign(head, tail));
+
+        // The second operand's segment is the other way round: its own delta
+        // comes off `su`, and `mi` is what it reads as opposite.
+        let (head2, tail2) = (
+            arena.segment(second).f_head.expect("head"),
+            arena.segment(second).f_tail.expect("tail"),
+        );
+        let (mut mi, mut su) = (10, 20);
+        let (max, opp_max) = arena.set_up_windings(head2, tail2, true, &mut mi, &mut su);
+        assert_eq!(max, 20, "max comes off su for the second operand");
+        assert_eq!(opp_max, 10);
+        assert_eq!(su, 20 - arena.span_sign(head2, tail2));
+        assert_eq!(mi, 10 - arena.opp_sign(head2, tail2));
     }
 
     #[test]
