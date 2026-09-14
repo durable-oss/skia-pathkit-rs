@@ -511,6 +511,14 @@ fn bridge(
         if outer_guard == 0 {
             return false;
         }
+        // Two rays disagreed about some span's winding. The setters keep the
+        // first answer and raise this rather than overwrite, so carrying on
+        // means walking a graph that contradicts itself. Reporting failure
+        // sends the caller to the flattening engine, which gets a worse
+        // shape but the right one.
+        if graph.arena.winding_failed() {
+            return false;
+        }
         let Some(span) = find_sortable_top(&mut graph.arena, &segments) else {
             break;
         };
@@ -1540,5 +1548,19 @@ mod tests {
         assert!(!got.contains(5.0, 10.0), "left of the overlap is out");
         assert!(got.contains(15.0, 10.0), "the overlap is in");
         assert!(!got.contains(25.0, 10.0), "right of it is out");
+    }
+
+    #[test]
+    fn a_winding_disagreement_fails_the_op_rather_than_guessing() {
+        let a = rect_path(0.0, 0.0, 10.0, 10.0);
+        let b = rect_path(5.0, 5.0, 15.0, 15.0);
+        let mut graph = build(&a, Some(&b), false, false).expect("builds");
+        // Two rays disagreed about some span. Carrying on would walk a graph
+        // that contradicts itself, so the op reports failure and the caller
+        // falls back to flattening.
+        graph.arena.set_winding_failed();
+        let mut path = Path::new();
+        let mut writer = SkPathWriter::new(&mut path);
+        assert!(!bridge(&mut graph, Some(PathOp::Union), -1, -1, &mut writer));
     }
 }
