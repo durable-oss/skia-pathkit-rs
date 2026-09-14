@@ -791,8 +791,17 @@ impl SkOpCoincidence {
             expanded = true;
             for &test in &records[i + 1..] {
                 let t = arena.coin(test).clone();
-                if t.f_coin_ptt_start == arena.coin(coin).f_coin_ptt_start
-                    && t.f_opp_ptt_start == arena.coin(coin).f_opp_ptt_start
+                let c = arena.coin(coin).clone();
+                // Both runs, both ends. Matching starts alone is not enough:
+                // `reach_out` widens the coincident side without touching the
+                // opposite one, so two records can briefly agree on where
+                // they begin while describing different runs. Dropping one
+                // then loses a real coincidence, and the segment it covered
+                // keeps a winding it should have given up.
+                if t.f_coin_ptt_start == c.f_coin_ptt_start
+                    && t.f_coin_ptt_end == c.f_coin_ptt_end
+                    && t.f_opp_ptt_start == c.f_opp_ptt_start
+                    && t.f_opp_ptt_end == c.f_opp_ptt_end
                 {
                     duplicates.push(test);
                 }
@@ -1396,5 +1405,80 @@ mod tests {
         coin.release_deleted(&mut arena);
         assert_eq!(coin.count(&arena), 1);
         assert_eq!(coin.records(&arena), vec![kept]);
+    }
+
+    #[test]
+    fn expand_keeps_two_records_that_only_share_a_start() {
+        let mut arena = OpArena::new();
+        let mut coin = SkOpCoincidence::new();
+        // Two runs beginning at the same place on the same segment but
+        // ending elsewhere. They are not the same coincidence, and dropping
+        // one loses a real run - the segment it covered then keeps a winding
+        // it should have given up.
+        let seg_a = arena.alloc_segment_with_curve(
+            &[Point::new(0.0, 0.0), Point::new(10.0, 0.0)],
+            Verb::Line,
+            1.0,
+        );
+        let seg_b = arena.alloc_segment_with_curve(
+            &[Point::new(0.0, 1.0), Point::new(10.0, 1.0)],
+            Verb::Line,
+            1.0,
+        );
+        let seg_c = arena.alloc_segment_with_curve(
+            &[Point::new(0.0, 2.0), Point::new(10.0, 2.0)],
+            Verb::Line,
+            1.0,
+        );
+        let a0 = arena.segment_add_t(seg_a, 0.0, Point::new(0.0, 0.0)).expect("a0");
+        let a3 = arena.segment_add_t(seg_a, 0.3, Point::new(3.0, 0.0)).expect("a3");
+        let a7 = arena.segment_add_t(seg_a, 0.7, Point::new(7.0, 0.0)).expect("a7");
+        let b0 = arena.segment_add_t(seg_b, 0.0, Point::new(0.0, 1.0)).expect("b0");
+        let b3 = arena.segment_add_t(seg_b, 0.3, Point::new(3.0, 1.0)).expect("b3");
+        let c0 = arena.segment_add_t(seg_c, 0.0, Point::new(0.0, 2.0)).expect("c0");
+        let c7 = arena.segment_add_t(seg_c, 0.7, Point::new(7.0, 2.0)).expect("c7");
+
+        coin.add_run(&mut arena, a0, a3, b0, b3, false);
+        coin.add_run(&mut arena, a0, a7, c0, c7, false);
+        assert_eq!(coin.count(&arena), 2);
+        coin.expand(&mut arena);
+        assert_eq!(
+            coin.count(&arena),
+            2,
+            "same start, different runs: both are real"
+        );
+    }
+
+    #[test]
+    fn expand_scans_for_duplicates_only_where_something_moved() {
+        let mut arena = OpArena::new();
+        let mut coin = SkOpCoincidence::new();
+        let seg_a = arena.alloc_segment_with_curve(
+            &[Point::new(0.0, 0.0), Point::new(10.0, 0.0)],
+            Verb::Line,
+            1.0,
+        );
+        let seg_b = arena.alloc_segment_with_curve(
+            &[Point::new(0.0, 1.0), Point::new(10.0, 1.0)],
+            Verb::Line,
+            1.0,
+        );
+        let a0 = arena.segment_add_t(seg_a, 0.0, Point::new(0.0, 0.0)).expect("a0");
+        let a5 = arena.segment_add_t(seg_a, 0.5, Point::new(5.0, 0.0)).expect("a5");
+        let b0 = arena.segment_add_t(seg_b, 0.0, Point::new(0.0, 1.0)).expect("b0");
+        let b5 = arena.segment_add_t(seg_b, 0.5, Point::new(5.0, 1.0)).expect("b5");
+        // Two records describing exactly the same run, neither of which can
+        // be widened - their ends are already the extremes.
+        coin.add_run(&mut arena, a0, a5, b0, b5, false);
+        coin.add_run(&mut arena, a0, a5, b0, b5, false);
+        assert_eq!(coin.count(&arena), 2);
+        assert!(
+            !coin.expand(&mut arena),
+            "nothing moved, so expand reports no change"
+        );
+        // And the duplicate scan does not run. C++ guards it the same way
+        // (`if (coin->expand())`): duplicates are what *widening* creates,
+        // and a pair that arrived identical is the caller's business.
+        assert_eq!(coin.count(&arena), 2);
     }
 }
