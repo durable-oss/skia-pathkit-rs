@@ -189,23 +189,49 @@ closure that never resolved anything; they now use the real ray cast, with
 the segment list parked on the arena the way C++ reaches the contour list off
 the global state.
 
-### What is left
+### Two more fixed, one case left
 
-Two cases, both on geometry where two inputs share a collinear edge:
+Two further defects landed after the above:
 
-- **Intersect** returns a path covering a point that lies only in the
-  subtrahend. `an_intersect_across_a_shared_edge_keeps_only_the_overlap` in
-  `sk_op_engine.rs` is `#[ignore]`d rather than weakened, so
-  `cargo test -- --ignored` shows it. Difference on the *same* two rectangles
-  is correct, which narrows it to the `gActiveEdge` path for Intersect or to
-  how the two sums are seeded for it.
+4. **`expand` called two records duplicates on matching starts alone.**
+   `reach_out` widens the coincident side without touching the opposite one,
+   so two records can briefly agree on where they begin while describing
+   different runs. On two rectangles sharing *both* horizontal edges, both
+   records were created and one was discarded before `handle_coincidence`
+   ran; the second rectangle's whole top edge kept a winding it should have
+   given up, and `calc_angles` found nothing to sort at the corner the walk
+   needed to turn at. All four ends are compared now.
 
-- **Three or more rectangles unioned in a chain** fragments. Unioning three
-  rects at x = 0, 8, 16 (each 20 wide, all spanning y 0..20) gives six
-  unclosed contours. Its `contains` answers happen to be right, but feeding
-  that into the next union fails. Two rectangles are fine; the third is where
-  it breaks, so the suspect is a contour the walk starts and abandons rather
-  than the winding.
+5. **`close_open_contour` emitted at most one edge, and gated it wrong.** A
+   contour can be missing several edges when the walk ran out of *active*
+   continuations partway round. It loops now, and uses the same active-edge
+   gate the walk does - with the right operator and a real resolver. It had
+   been calling `active_winding`, the one-operand form, with a closure that
+   never resolved anything.
 
-Start with Intersect: it is the smaller of the two and the Difference case
-next to it already works.
+Removing the gate entirely while testing the loop is worth recording: it
+closes every contour, and a Difference then gets back the piece it just cut.
+The gate is load-bearing, not belt-and-braces.
+
+### What is left: one case
+
+**Two rectangles sharing both horizontal edges still union to two contours.**
+Unioning `(0,0,20,20)` with `(8,0,28,20)` gives A's outline plus a fragment.
+The closing step finds the right edge - segment 1, A's right side at x = 20,
+running (20,20) to (20,0) - and the gate then refuses it, because that span's
+winding reads as interior when it is not.
+
+So the remaining defect is in the winding on a segment that is *not* part of
+any coincident run but sits between two that are. Every other segment in that
+graph resolves correctly; segment 1 does not.
+
+Intersect on the same geometry fails the same way and for what looks like the
+same reason: `an_intersect_across_a_shared_edge_keeps_only_the_overlap` is
+`#[ignore]`d rather than weakened, so `cargo test -- --ignored` shows it.
+Difference on those two rectangles is now correct, which is the useful
+contrast - the graph is the same, so the difference is in how the two sums
+are read, not in how they were built.
+
+Start by dumping segment 1's `wind_sum`/`opp_sum` after `handle_coincidence`
+and comparing them to what a ray cast from the middle of that edge should
+give.
