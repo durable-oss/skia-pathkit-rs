@@ -33,9 +33,14 @@ fn approximately_zero(a: Scalar) -> bool {
 /// Direction for ray casting (4 directions: left, top, right, bottom)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkOpRayDir {
+    /// Ray cast in -x. The discriminant's low bit selects the axis that
+    /// varies (0 for x) and bit 1 selects the sign (clear for decreasing).
     Left,
+    /// Ray cast in -y.
     Top,
+    /// Ray cast in +x.
     Right,
+    /// Ray cast in +y.
     Bottom,
 }
 

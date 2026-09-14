@@ -12,9 +12,14 @@ use crate::core::{Point, Scalar};
 /// Path segment verb types (matches Skia's SkPath::Verb)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
+    /// A straight segment between two points. The discriminant matches
+    /// Skia's, and also equals the segment's polynomial degree.
     Line = 1,
+    /// A quadratic Bezier.
     Quad = 2,
+    /// A rational quadratic, carrying a weight alongside its points.
     Conic = 3,
+    /// A cubic Bezier.
     Cubic = 4,
 }
 
@@ -33,7 +38,9 @@ impl Verb {
 /// Span base with t and point
 #[derive(Debug, Clone, Copy)]
 pub struct SkOpSpanBase {
+    /// Parametric position along the owning segment, in [0, 1].
     pub t: Scalar,
+    /// The point the segment reaches at `t`.
     pub pt: Point,
 }
 
@@ -47,12 +54,19 @@ impl SkOpSpanBase {
 /// Span with winding data
 #[derive(Debug, Clone)]
 pub struct SkOpSpan {
+    /// The span's position along its segment.
     pub base: SkOpSpanBase,
+    /// This span's own winding contribution.
     pub wind_value: i32,
+    /// This span's contribution to the opposite operand's winding.
     pub opp_value: i32,
+    /// Winding accumulated from the start of the contour up to this span.
     pub wind_sum: i32,
+    /// Accumulated opposite-operand winding.
     pub opp_sum: i32,
+    /// True once this span has been resolved and needs no further work.
     pub done: bool,
+    /// True once this span has been emitted into an output contour.
     pub already_added: bool,
     prev: Option<Box<SkOpSpanBase>>,
     next: Option<Box<SkOpSpanBase>>,

@@ -22,46 +22,65 @@ const K_QUARTER_PIXEL_SQ: f64 = 0.25 * 0.25;
 /// AA Triangulator constant: half pixel displacement for stroke
 const K_HALF_PIXEL: f64 = 0.5;
 
+/// A point in device (screen) space, where AA displacement is measured in pixels.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Point {
+    /// Horizontal device-space coordinate.
     pub x: f32,
+    /// Vertical device-space coordinate.
     pub y: f32,
 }
 
 impl Point {
+    /// Build a point from device-space coordinates.
     pub fn new(x: f32, y: f32) -> Self {
         Self { x, y }
     }
 }
 
+/// A direction or displacement in device space, kept at double precision because
+/// edge normals are used for sub-pixel distance comparisons.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Vector {
+    /// Horizontal component.
     pub x: f64,
+    /// Vertical component.
     pub y: f64,
 }
 
 impl Vector {
+    /// Build a vector from its components.
     pub fn new(x: f64, y: f64) -> Self {
         Self { x, y }
     }
 
+    /// Dot product, used to test whether two edge normals point the same way.
     pub fn dot(self, other: Vector) -> f64 {
         self.x * other.x + self.y * other.y
     }
 }
 
+/// An edge's supporting line in implicit form `a*x + b*y + c = 0`, matching
+/// Skia's `Line` helper. The coefficients are the unnormalized edge normal, so
+/// `(a, b)` doubles as the edge normal direction.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Line {
+    /// Coefficient of x; equal to `bottom.y - top.y` for a line built from an edge.
     pub a: f64,
+    /// Coefficient of y; equal to `top.x - bottom.x` for a line built from an edge.
     pub b: f64,
+    /// Constant term; the cross product of the two endpoints.
     pub c: f64,
 }
 
 impl Line {
+    /// Build a line directly from implicit-form coefficients.
     pub fn new(a: f64, b: f64, c: f64) -> Self {
         Self { a, b, c }
     }
 
+    /// Intersection of two lines by Cramer's rule, or `None` when the
+    /// determinant is near zero because the lines are parallel or coincident.
     pub fn intersect(&self, other: &Line) -> Option<Point> {
         let det = self.a * other.b - other.a * self.b;
         if det.abs() < 1e-10 {
@@ -73,34 +92,52 @@ impl Line {
         ))
     }
 
+    /// True when the two lines have effectively the same normal direction.
+    /// Compares the raw `a` and `b` coefficients rather than normalized ones,
+    /// so it is only meaningful for lines of similar magnitude.
     pub fn near_parallel(&self, other: &Line) -> bool {
         (other.a - self.a).abs() < 0.00001 && (other.b - self.b).abs() < 0.00001
     }
 }
 
+/// Role an edge plays in the antialiased mesh. Skia's AA triangulator builds a
+/// one-pixel-wide ramp around the fill, so each boundary edge is duplicated
+/// into an opaque and a transparent copy joined by connectors.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EdgeType {
+    /// Edge of the fully opaque interior mesh, displaced half a pixel inward.
     Inner,
+    /// Edge of the transparent outer mesh, displaced half a pixel outward.
     Outer,
+    /// Edge stitching an inner vertex to its outer counterpart across the ramp.
     Connector,
 }
 
+/// Axis the sweep line advances along. Skia picks the axis with the larger
+/// extent so the sweep splits the path into as few monotone pieces as possible.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum ComparatorDirection {
+    /// Sweep top to bottom, breaking ties left to right.
     Vertical,
+    /// Sweep left to right, breaking ties bottom to top.
     Horizontal,
 }
 
+/// Orders points along the sweep direction for the sweep-line passes.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub struct Comparator {
+    /// Axis the sweep advances along.
     pub direction: ComparatorDirection,
 }
 
 impl Comparator {
+    /// Build a comparator for the given sweep axis.
     pub fn new(direction: ComparatorDirection) -> Self {
         Self { direction }
     }
 
+    /// True when `a` precedes `b` in sweep order, using the secondary axis to
+    /// break ties so that coincident points still have a total order.
     pub fn sweep_lt(&self, a: Point, b: Point) -> bool {
         match self.direction {
             ComparatorDirection::Vertical => a.y < b.y || (a.y == b.y && a.x < b.x),
@@ -109,14 +146,21 @@ impl Comparator {
     }
 }
 
+/// A mesh vertex carrying the coverage value that produces the alpha ramp.
 #[derive(Clone, Debug)]
 pub struct Vertex {
+    /// Device-space position after any AA displacement has been applied.
     pub point: Point,
+    /// Coverage emitted for this vertex: 255 on the inner mesh, 0 on the outer
+    /// mesh, and interpolated values where the ramp collapses.
     pub alpha: u8,
+    /// Set when the vertex was introduced by the triangulator itself (for
+    /// example at a collapsed overlap) rather than coming from the input path.
     pub synthetic: bool,
 }
 
 impl Vertex {
+    /// Build a non-synthetic vertex at `point` with the given coverage.
     pub fn new(point: Point, alpha: u8) -> Self {
         Self {
             point,
@@ -126,16 +170,25 @@ impl Vertex {
     }
 }
 
+/// A directed mesh edge between two vertices, ordered along the sweep.
 #[derive(Clone, Debug)]
 pub struct Edge {
+    /// Endpoint that comes first in sweep order.
     pub top: Vertex,
+    /// Endpoint that comes last in sweep order.
     pub bottom: Vertex,
+    /// Signed contribution to the winding number: +1 when the edge runs in the
+    /// sweep direction, -1 when it was reversed to put `top` first.
     pub winding: i32,
+    /// Whether this edge belongs to the inner mesh, the outer mesh, or bridges them.
     pub edge_type: EdgeType,
+    /// Cached implicit line through `top` and `bottom`, used for intersection
+    /// tests and as the edge normal.
     pub line: Line,
 }
 
 impl Edge {
+    /// Build an edge and derive its supporting line from the two endpoints.
     pub fn new(top: Vertex, bottom: Vertex, winding: i32, edge_type: EdgeType) -> Self {
         let line = Line::new(
             (bottom.point.y - top.point.y) as f64,
@@ -152,34 +205,43 @@ impl Edge {
     }
 }
 
+/// An ordered run of vertices, standing in for Skia's intrusive `VertexList`.
+/// Order is the sweep order for a mesh, or the walk order for a boundary
+/// contour; the backing `Vec` replaces Skia's head/tail pointer chain.
 #[derive(Clone, Debug)]
 pub struct VertexList {
     vertices: Vec<Vertex>,
 }
 
 impl VertexList {
+    /// Create an empty list.
     pub fn new() -> Self {
         Self {
             vertices: Vec::new(),
         }
     }
 
+    /// Number of vertices in the list.
     pub fn count(&self) -> usize {
         self.vertices.len()
     }
 
+    /// Add a vertex at the tail, keeping the existing order.
     pub fn append(&mut self, vertex: Vertex) {
         self.vertices.push(vertex);
     }
 
+    /// First vertex in list order, or `None` when empty.
     pub fn head(&self) -> Option<&Vertex> {
         self.vertices.first()
     }
 
+    /// Last vertex in list order, or `None` when empty.
     pub fn tail(&self) -> Option<&Vertex> {
         self.vertices.last()
     }
 
+    /// Walk the vertices from head to tail.
     pub fn iter(&self) -> std::slice::Iter<'_, Vertex> {
         self.vertices.iter()
     }
@@ -191,32 +253,42 @@ impl Default for VertexList {
     }
 }
 
+/// An ordered run of edges, standing in for Skia's intrusive `EdgeList`. Used
+/// both for the active edge list during a sweep and for an extracted boundary
+/// contour, where order is the walk around the contour.
 #[derive(Clone, Debug)]
 pub struct EdgeList {
     edges: Vec<Edge>,
 }
 
 impl EdgeList {
+    /// Create an empty list.
     pub fn new() -> Self {
         Self { edges: Vec::new() }
     }
 
+    /// Number of edges in the list.
     pub fn count(&self) -> usize {
         self.edges.len()
     }
 
+    /// Add an edge at the tail, keeping the existing order.
     pub fn append(&mut self, edge: Edge) {
         self.edges.push(edge);
     }
 
+    /// First edge in list order, or `None` when empty.
     pub fn head(&self) -> Option<&Edge> {
         self.edges.first()
     }
 
+    /// Last edge in list order, or `None` when empty. During boundary
+    /// simplification this is the most recently kept edge.
     pub fn tail(&self) -> Option<&Edge> {
         self.edges.last()
     }
 
+    /// Walk the edges from head to tail.
     pub fn iter(&self) -> std::slice::Iter<'_, Edge> {
         self.edges.iter()
     }
@@ -228,14 +300,21 @@ impl Default for EdgeList {
     }
 }
 
+/// A monotone polygon produced by the sweep, which the final pass fans out into
+/// triangles. Corresponds to Skia's `Poly`.
 #[derive(Clone, Debug)]
 pub struct Poly {
     vertices: Vec<Vertex>,
+    /// Winding number of the region this polygon covers; the fill rule decides
+    /// whether it is emitted.
     pub winding: i32,
+    /// Vertex count tracked alongside the polygon as it is built. Maintained by
+    /// the caller, not derived from `vertices`.
     pub count: usize,
 }
 
 impl Poly {
+    /// Create an empty polygon for a region with the given winding number.
     pub fn new(winding: i32) -> Self {
         Self {
             vertices: Vec::new(),
@@ -245,14 +324,22 @@ impl Poly {
     }
 }
 
+/// An edge of the "spine" skeleton that overlap collapsing walks. Skia tracks
+/// this parallel structure so an edge can be collapsed without losing the
+/// connectivity of the mesh it came from. Neighbours are held as indices into
+/// the skeleton's edge array instead of Skia's raw pointers.
 #[derive(Clone, Debug)]
 pub struct SSEdge {
+    /// Mesh edge this skeleton edge shadows; `None` once the edge has collapsed.
     pub edge: Option<Edge>,
+    /// Index of the preceding skeleton edge along the spine.
     pub prev_index: usize,
+    /// Index of the following skeleton edge along the spine.
     pub next_index: usize,
 }
 
 impl SSEdge {
+    /// Build a skeleton edge with explicit neighbour indices.
     pub fn new(edge: Option<Edge>, prev_index: usize, next_index: usize) -> Self {
         Self {
             edge,
@@ -262,14 +349,20 @@ impl SSEdge {
     }
 }
 
+/// A skeleton vertex pairing a mesh vertex with its neighbours along the spine,
+/// so collapsed edges can be rewired without touching the mesh itself.
 #[derive(Clone, Debug)]
 pub struct SSVertex {
+    /// Index of the mesh vertex this skeleton vertex stands for.
     pub vertex_index: usize,
+    /// Index of the incoming skeleton edge, or `usize::MAX` when unlinked.
     pub prev_index: usize,
+    /// Index of the outgoing skeleton edge, or `usize::MAX` when unlinked.
     pub next_index: usize,
 }
 
 impl SSVertex {
+    /// Wrap a mesh vertex, leaving both spine links unset.
     pub fn new(vertex_index: usize) -> Self {
         Self {
             vertex_index,
@@ -279,14 +372,20 @@ impl SSVertex {
     }
 }
 
+/// A pending edge collapse during overlap resolution: the point where an edge's
+/// two sides meet, queued so the tightest collapses are applied first.
 #[derive(Clone, Debug)]
 pub struct Event {
+    /// Index of the skeleton edge that collapses when this event fires.
     pub edge_index: usize,
+    /// Device-space point the collapsed edge's endpoints merge to.
     pub point: Point,
+    /// Coverage to assign the merged vertex; also the event's priority key.
     pub alpha: u8,
 }
 
 impl Event {
+    /// Build a collapse event for one skeleton edge.
     pub fn new(edge_index: usize, point: Point, alpha: u8) -> Self {
         Self {
             edge_index,
@@ -296,29 +395,38 @@ impl Event {
     }
 }
 
+/// Which end of the alpha range an [`EventComparator`] treats as highest priority.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EventOp {
+    /// Order ascending by alpha.
     LessThan,
+    /// Order descending by alpha.
     GreaterThan,
 }
 
+/// Ordering policy for the event queue, selecting whether low or high coverage
+/// events are collapsed first.
 #[derive(Clone, Debug)]
 pub struct EventComparator {
     op: EventOp,
 }
 
 impl EventComparator {
+    /// Build a comparator using the given ordering.
     pub fn new(op: EventOp) -> Self {
         Self { op }
     }
 }
 
+/// Priority queue of pending edge collapses, keyed on event alpha.
 #[derive(Clone, Debug)]
 pub struct EventList {
     events: Vec<Event>,
 }
 
 impl EventList {
+    /// Create an empty queue. The comparator only picks the initial sort order;
+    /// [`EventList::push`] currently re-sorts ascending by alpha regardless.
     pub fn new(comparator: EventComparator) -> Self {
         let mut events = Vec::new();
         // Sort events by alpha according to comparator
@@ -329,20 +437,25 @@ impl EventList {
         Self { events }
     }
 
+    /// Queue an event, re-sorting ascending by alpha so the highest-alpha event
+    /// sits at the tail where [`EventList::pop`] takes it from.
     pub fn push(&mut self, event: Event) {
         self.events.push(event);
         // Re-sort to maintain order
         self.events.sort_by_key(|e: &Event| e.alpha);
     }
 
+    /// Remove and return the highest-alpha event, or `None` when the queue is empty.
     pub fn pop(&mut self) -> Option<Event> {
         self.events.pop()
     }
 
+    /// True when no collapses remain to process.
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
     }
 
+    /// Number of events still queued.
     pub fn size(&self) -> usize {
         self.events.len()
     }
@@ -351,6 +464,8 @@ impl EventList {
 /// GrAATriangulator - extends GrTriangulator with AA-specific stages
 #[derive(Clone, Debug)]
 pub struct GrAATriangulator {
+    /// Transparent mesh displaced half a pixel outward from the boundary; its
+    /// vertices carry alpha 0 and form the outside of the coverage ramp.
     pub outer_mesh: VertexList,
     inner_mesh: VertexList,
 }

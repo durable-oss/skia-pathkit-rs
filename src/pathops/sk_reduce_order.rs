@@ -11,15 +11,19 @@ use crate::core::{Point, Scalar};
 /// Double-precision point (2D).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct SkDPoint {
+    /// X coordinate.
     pub f_x: Scalar,
+    /// Y coordinate.
     pub f_y: Scalar,
 }
 
 impl SkDPoint {
+    /// Constructs a point at `(x, y)`.
     pub const fn new(x: Scalar, y: Scalar) -> Self {
         SkDPoint { f_x: x, f_y: y }
     }
 
+    /// Returns the origin.
     pub const fn zero() -> Self {
         SkDPoint { f_x: 0.0, f_y: 0.0 }
     }

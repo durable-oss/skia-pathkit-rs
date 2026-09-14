@@ -14,33 +14,66 @@ const K_ARENA_DEFAULT_CHUNK_SIZE: usize = 16 * 1024;
 /// Edge types used in triangulation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EdgeType {
+    /// Edge derived from the path itself, carrying winding and participating in
+    /// the sweep-line mesh.
     Inner,
+    /// Edge of the outer (antialiasing) boundary generated around an inner
+    /// contour; it bounds the coverage ramp rather than the fill.
     Outer,
+    /// Edge inserted to join an inner vertex to its outer partner, stitching the
+    /// two boundaries together so the ramp region can be triangulated.
     Connector,
 }
 
 /// Side of a monotone polygon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
+    /// The chain of edges running down the left of the polygon.
     Left,
+    /// The chain of edges running down the right of the polygon.
     Right,
 }
 
 /// Forward declarations for complex types.
 #[derive(Debug)]
 pub struct Vertex {
+    /// Position of this vertex in path space.
     pub point: Point,
+    /// Index of the previous vertex in the enclosing [`VertexList`], that is the
+    /// one immediately before this in sweep order (or in contour order, while
+    /// the contour is still being built).
     pub prev: Option<usize>,
+    /// Index of the next vertex in the enclosing [`VertexList`], the one
+    /// immediately after this in sweep order.
     pub next: Option<usize>,
+    /// First edge in the list of edges whose bottom endpoint is this vertex,
+    /// ordered left to right.
     pub first_edge_above: Option<usize>,
+    /// Last (rightmost) edge in the list of edges ending at this vertex.
     pub last_edge_above: Option<usize>,
+    /// First edge in the list of edges whose top endpoint is this vertex,
+    /// ordered left to right.
     pub first_edge_below: Option<usize>,
+    /// Last (rightmost) edge in the list of edges starting at this vertex.
     pub last_edge_below: Option<usize>,
+    /// Edge of the active edge list lying immediately to the left of this vertex
+    /// when the sweep line reaches it, if any.
     pub left_enclosing_edge: Option<usize>,
+    /// Edge of the active edge list lying immediately to the right of this
+    /// vertex when the sweep line reaches it, if any.
     pub right_enclosing_edge: Option<usize>,
+    /// The matching vertex on the opposite boundary when an antialiased outer
+    /// contour is generated: an inner vertex points at its outer counterpart and
+    /// vice versa.
     pub partner: Option<usize>,
+    /// Coverage emitted at this vertex, 255 inside the shape and 0 on the outer
+    /// edge of the antialiasing ramp.
     pub alpha: u8,
+    /// True if the triangulator created this vertex (for example at an
+    /// intersection) rather than it coming from the input path.
     pub synthetic: bool,
+    /// Ordinal assigned during sorting, used to break ties between coincident
+    /// vertices and to keep the ordering stable.
     pub id: f32,
 }
 
@@ -51,39 +84,78 @@ pub struct VertexHandle(pub usize);
 /// Linked list of vertices.
 #[derive(Debug, Default, Clone)]
 pub struct VertexList {
+    /// First vertex of the doubly linked chain, that is the contour's starting
+    /// point or, once sorted, the topmost vertex in sweep order.
     pub head: Option<usize>,
+    /// Last vertex of the chain, kept so appending is constant time.
     pub tail: Option<usize>,
 }
 
 /// Line equation in implicit form: A*x + B*y + C = 0.
 #[derive(Debug, Clone, Copy)]
 pub struct Line {
+    /// Coefficient of `x`, equal to the difference in y between the two
+    /// endpoints of the edge this line was built from.
     pub a: f64,
+    /// Coefficient of `y`, equal to the negated difference in x between the two
+    /// endpoints.
     pub b: f64,
+    /// Constant term, fixing the line to pass through its endpoints. Evaluating
+    /// `a*x + b*y + c` gives a signed distance scaled by the edge length.
     pub c: f64,
 }
 
 /// Edge connecting two vertices.
 #[derive(Debug)]
 pub struct Edge {
+    /// Signed winding contributed by this edge, positive when the original
+    /// segment ran from top to bottom and negative when it ran the other way.
+    /// Coincident edges are merged by summing their windings.
     pub winding: i32,
+    /// Vertex at the upper end of the edge in sweep order.
     pub top: usize,
+    /// Vertex at the lower end of the edge in sweep order.
     pub bottom: usize,
+    /// Whether this edge comes from the path, from a generated outer boundary,
+    /// or connects the two.
     pub edge_type: EdgeType,
+    /// Neighbour to the left in the active edge list, the set of edges crossing
+    /// the sweep line, kept sorted by x.
     pub left: Option<usize>,
+    /// Neighbour to the right in the active edge list.
     pub right: Option<usize>,
+    /// Previous edge in the left-to-right list of edges ending at
+    /// [`Self::bottom`].
     pub prev_edge_above: Option<usize>,
+    /// Next edge in the left-to-right list of edges ending at
+    /// [`Self::bottom`].
     pub next_edge_above: Option<usize>,
+    /// Previous edge in the left-to-right list of edges starting at
+    /// [`Self::top`].
     pub prev_edge_below: Option<usize>,
+    /// Next edge in the left-to-right list of edges starting at [`Self::top`].
     pub next_edge_below: Option<usize>,
+    /// Polygon lying immediately to the left of this edge, which this edge helps
+    /// bound on its right side.
     pub left_poly: Option<usize>,
+    /// Polygon lying immediately to the right of this edge.
     pub right_poly: Option<usize>,
+    /// Previous edge along the boundary chain of [`Self::left_poly`].
     pub left_poly_prev: Option<usize>,
+    /// Next edge along the boundary chain of [`Self::left_poly`].
     pub left_poly_next: Option<usize>,
+    /// Previous edge along the boundary chain of [`Self::right_poly`].
     pub right_poly_prev: Option<usize>,
+    /// Next edge along the boundary chain of [`Self::right_poly`].
     pub right_poly_next: Option<usize>,
+    /// Set once this edge has been consumed as part of the left polygon's
+    /// boundary, so it is not added twice.
     pub used_in_left_poly: bool,
+    /// Set once this edge has been consumed as part of the right polygon's
+    /// boundary.
     pub used_in_right_poly: bool,
+    /// Implicit line through the two endpoints, used in double precision for
+    /// intersection tests and side-of-line queries.
     pub line: Line,
 }
 
@@ -94,18 +166,29 @@ pub struct EdgeHandle(pub usize);
 /// Linked list of edges.
 #[derive(Debug, Default, Clone)]
 pub struct EdgeList {
+    /// Leftmost edge of the chain. For the active edge list this is the edge
+    /// with the smallest x where it crosses the sweep line.
     pub head: Option<usize>,
+    /// Rightmost edge of the chain.
     pub tail: Option<usize>,
 }
 
 /// Monotone polygon segment.
 #[derive(Debug)]
 pub struct MonotonePoly {
+    /// Which side of the parent polygon this piece was split off from, which
+    /// decides the orientation of the triangles emitted from it.
     pub side: Side,
+    /// First edge of the boundary chain, at the top of the monotone piece.
     pub first_edge: Option<usize>,
+    /// Last edge of the boundary chain, at the bottom of the monotone piece.
     pub last_edge: Option<usize>,
+    /// Previous monotone piece of the same [`Poly`], lying above this one.
     pub prev: Option<usize>,
+    /// Next monotone piece of the same [`Poly`], lying below this one.
     pub next: Option<usize>,
+    /// Winding number of the region this piece covers, inherited from the parent
+    /// polygon.
     pub winding: i32,
 }
 
@@ -116,13 +199,26 @@ pub struct MonotonePolyHandle(pub usize);
 /// Poly (polygon) structure.
 #[derive(Debug)]
 pub struct Poly {
+    /// Topmost vertex of the polygon, the one that opened it during the sweep.
     pub first_vertex: usize,
+    /// Winding number of the region this polygon covers. Whether it is filled is
+    /// decided later by applying the path's fill rule to this number.
     pub winding: i32,
+    /// First monotone piece, at the top of the polygon.
     pub head: Option<usize>,
+    /// Last monotone piece, at the bottom; new pieces are appended here as the
+    /// sweep descends.
     pub tail: Option<usize>,
+    /// Next polygon in the list of all polygons produced by the sweep.
     pub next: Option<usize>,
+    /// The polygon on the other side of a shared boundary, used when a polygon
+    /// is split so the two halves can be rejoined.
     pub partner: Option<usize>,
+    /// Number of vertices added to the polygon so far, used to skip degenerate
+    /// polygons with fewer than three.
     pub count: i32,
+    /// Sequential identifier assigned at creation, useful for debugging and for
+    /// stable ordering.
     pub id: i32,
 }
 
@@ -133,28 +229,42 @@ pub struct PolyHandle(pub usize);
 /// Comparator for vertex sorting.
 #[derive(Debug, Clone, Copy)]
 pub struct Comparator {
+    /// Axis the sweep runs along, chosen from the path bounds so the longer
+    /// dimension is swept and fewer vertices share a sweep position.
     pub direction: Direction,
 }
 
+/// Axis along which the sweep line advances.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
+    /// Sweep top to bottom, comparing y first and then x.
     Vertical,
+    /// Sweep left to right, comparing x first and then y.
     Horizontal,
 }
 
 /// Result of simplification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SimplifyResult {
+    /// Simplification could not complete, for example because the mesh ran out
+    /// of budget; the caller abandons the triangulation.
     Failed,
+    /// No self intersections were found, so the mesh was left unchanged.
     AlreadySimple,
+    /// An intersection was found and split, so the mesh changed and the sweep
+    /// has to be run again.
     FoundSelfIntersection,
 }
 
 /// Result type for operations that can fail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoolFail {
+    /// The operation completed and the answer is no.
     False,
+    /// The operation completed and the answer is yes.
     True,
+    /// The operation could not be completed, which is distinct from answering
+    /// no and aborts the triangulation.
     Fail,
 }
 
@@ -232,6 +342,8 @@ pub struct GrTriangulator<'a> {
 }
 
 impl<'a> GrTriangulator<'a> {
+    /// Creates a triangulator for `path` with every option off and an empty
+    /// breadcrumb list.
     pub fn new(path: &'a Path) -> Self {
         Self {
             path,
@@ -244,6 +356,13 @@ impl<'a> GrTriangulator<'a> {
         }
     }
 
+    /// Triangulates `path`, flattening curves to within `tolerance` and
+    /// clipping against `clip_bounds`, and writes the triangle vertices into
+    /// `vertex`.
+    ///
+    /// Sets `is_linear` to true when the path contained no curves. Returns the
+    /// number of vertices written, or 0 if the path is not finite or the sweep
+    /// fails.
     pub fn path_to_triangles(
         path: &Path,
         tolerance: Scalar,

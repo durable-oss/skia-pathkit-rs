@@ -641,7 +641,11 @@ fn calc_dot_cross(p0: Point, p1: Point, p2: Point) -> Scalar {
 /// Conic (rational quadratic) representation.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Conic {
+    /// Start point, control point, and end point, in that order.
     pub pts: [Point; 3],
+    /// Weight of the control point. 1.0 is an ordinary quadratic; below 1
+    /// the curve flattens toward the chord, above 1 it bows toward the
+    /// control point.
     pub w: Scalar,
 }
 

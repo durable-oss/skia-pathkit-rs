@@ -13,8 +13,11 @@ use super::sk_math::sk_ieee_float_divide;
 /// Side of a line: left, right, or on the line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
+    /// The point lies on the line, within tolerance.
     OnLine = 0,
+    /// The point lies to the left of the line's direction of travel.
     Left = 1,
+    /// The point lies to the right of the line's direction of travel.
     Right = 2,
 }
 
@@ -156,11 +159,20 @@ pub fn distance_to_line_segment_between_sqd(pt: &Point, a: &Point, b: &Point) ->
 
 /// Extension methods for Point operations.
 pub trait PointExt {
+    /// Writes this point scaled by `scale` into `dst`.
     fn scale_to(&self, scale: Scalar, dst: &mut Point);
+    /// Rescales this point in place to unit length. Returns false and leaves
+    /// it unchanged if its length is zero or not finite.
     fn normalize(&mut self) -> bool;
+    /// Rescales this point in place to `length`. Returns false and leaves it
+    /// unchanged if its current length is zero or not finite.
     fn set_length(&mut self, length: Scalar) -> bool;
+    /// Distance from the origin.
     fn length(&self) -> Scalar;
+    /// Returns a copy rescaled to `length`, or `None` if this point cannot be
+    /// rescaled.
     fn scaled_to_length(&self, length: Scalar) -> Option<Point>;
+    /// True if both coordinates are finite.
     fn is_finite(&self) -> bool;
 }
 

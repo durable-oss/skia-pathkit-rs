@@ -17,13 +17,18 @@ const MAX_EXTREMA: usize = 6;
 /// A cubic curve represented by 4 control points
 #[derive(Debug, Clone, Copy)]
 pub struct DCubic {
+    /// Start point, at t == 0.
     pub p0: Point,
+    /// First control point.
     pub p1: Point,
+    /// Second control point.
     pub p2: Point,
+    /// End point, at t == 1.
     pub p3: Point,
 }
 
 impl DCubic {
+    /// Constructs a cubic from its four control points, in order.
     pub fn new(p0: Point, p1: Point, p2: Point, p3: Point) -> Self {
         Self { p0, p1, p2, p3 }
     }
@@ -116,15 +121,19 @@ enum Axis {
 /// A line segment
 #[derive(Debug, Clone, Copy)]
 pub struct DLine {
+    /// Start point, at t == 0.
     pub p0: Point,
+    /// End point, at t == 1.
     pub p1: Point,
 }
 
 impl DLine {
+    /// Constructs the segment running from `p0` to `p1`.
     pub fn new(p0: Point, p1: Point) -> Self {
         Self { p0, p1 }
     }
 
+    /// Returns endpoint `index`. Any index other than 0 gives the end point.
     pub fn point(&self, index: usize) -> Point {
         match index {
             0 => self.p0,

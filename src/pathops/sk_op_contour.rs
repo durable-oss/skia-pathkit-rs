@@ -13,9 +13,14 @@ use crate::core::{Point, Scalar};
 /// Direction for ray checking (matches Skia's SkOpRayDir)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkOpRayDir {
+    /// Ray cast in -x. The discriminant's low bit selects the axis that
+    /// varies, which is what [`xy_index`](Self::xy_index) returns.
     Left,
+    /// Ray cast in -y.
     Top,
+    /// Ray cast in +x.
     Right,
+    /// Ray cast in +y.
     Bottom,
 }
 
@@ -53,16 +58,27 @@ impl SkOpRayDir {
 /// Ray hit structure (matches Skia's SkOpRayHit)
 #[derive(Debug, Clone)]
 pub struct SkOpRayHit {
+    /// Parametric position of the hit along the segment that was struck.
     pub t: Scalar,
+    /// Where the ray met the segment.
     pub pt: Point,
+    /// X component of the segment's tangent at the hit, used to order hits
+    /// that share a point.
     pub slope_x: Scalar,
+    /// Y component of the segment's tangent at the hit.
     pub slope_y: Scalar,
 }
 
-/// Forward declarations for related types
+/// Placeholder for the operation-wide state shared by every contour. The
+/// real state lives in
+/// [`sk_path_ops_types`](super::sk_path_ops_types); this type carries no
+/// fields yet.
 #[derive(Debug, Clone)]
 pub struct SkOpGlobalState;
+/// Placeholder for the coincident-run bookkeeping. Carries no fields yet.
 pub struct SkOpCoincidence;
+/// Placeholder for the output path writer. The working one is
+/// [`SkPathWriter`](super::sk_path_writer::SkPathWriter).
 pub struct SkPathWriter;
 
 pub use super::sk_op_angle::SkOpAngle;

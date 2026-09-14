@@ -10,16 +10,27 @@ use crate::core::{Point, Scalar};
 /// PtT node (declared in SkOpSpan.h per C++)
 #[derive(Debug, Clone)]
 pub struct SkOpPtT {
+    /// Parametric position along the owning segment, in [0, 1].
     pub f_t: Scalar,
+    /// The point the segment reaches at `f_t`.
     pub f_pt: Point,
+    /// Arena index of the span this node belongs to.
     pub f_span: Option<usize>, // arena index
+    /// Next node in the ring of coincident points. The ring links every
+    /// segment that passes through this same location.
     pub f_next: Option<usize>,
+    /// True once the node has been removed from its ring.
     pub f_deleted: bool,
+    /// True when another node in the ring sits at the same point.
     pub f_duplicate_pt: bool,
+    /// True when this node participates in a coincident run of spans, rather
+    /// than a single crossing.
     pub f_coincident: bool,
 }
 
 impl SkOpPtT {
+    /// Constructs a node at `t` on `span`, sitting at `pt`, not yet linked
+    /// into a ring.
     pub fn new(t: Scalar, pt: Point, span: Option<usize>) -> Self {
         Self {
             f_t: t,
@@ -32,14 +43,17 @@ impl SkOpPtT {
         }
     }
 
+    /// True if the node is still linked to a span and has not been deleted.
     pub fn active(&self) -> bool {
         !self.f_deleted && self.f_span.is_some()
     }
 
+    /// True if this node sits at `t`, within a fixed tolerance.
     pub fn contains(&self, t: Scalar) -> bool {
         (self.f_t - t).abs() < 1e-10
     }
 
+    /// Marks the node deleted or restores it.
     pub fn set_deleted(&mut self, del: bool) {
         self.f_deleted = del;
     }
@@ -54,9 +68,12 @@ pub const MAX_WINDING_TRIES: i32 = 100;
 /// Collapsed status for spans
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Collapsed {
+    /// The span has measurable extent.
     #[default]
     No,
+    /// The span's ends coincide, so it contributes no length.
     Yes,
+    /// The collapse test could not reach an answer.
     Error,
 }
 
@@ -68,15 +85,21 @@ pub fn is_zero_or_one(t: Scalar) -> bool {
 /// Base for spans (terminal t==1 shares this without winding)
 #[derive(Debug, Clone)]
 pub struct SkOpSpanBase {
+    /// Parametric position of this span's start along its segment.
     pub f_t: Scalar,
+    /// The point the segment reaches at `f_t`.
     pub f_pt: Point,
+    /// Arena index of the segment that owns this span.
     pub f_segment: Option<usize>, // arena index
     /// This span's own point-and-t node, the head of its ring.
     ///
     /// Port of `SkOpSpanBase::fPtT`.
     pub f_ptt: Option<usize>,
+    /// Next span in the circular list of coincident span ends.
     pub f_coin_end: Option<usize>, // circular coin list
+    /// Angle arriving at this span, used to order spans around a crossing.
     pub f_from_angle: Option<usize>,
+    /// Previous span in the segment, or `None` at the head.
     pub f_prev: Option<usize>,
     /// Next span in the segment.
     ///
@@ -84,9 +107,13 @@ pub struct SkOpSpanBase {
     /// span has nothing after it. The arena pools both roles together, so the
     /// edge lives here and is `None` for the tail.
     pub f_next: Option<usize>,
+    /// How many times this span has been added to an output contour.
     pub f_span_adds: i32,
+    /// True once this span's point has been snapped to its ring's location.
     pub f_aligned: bool,
+    /// True once the chaining walk has visited this span.
     pub f_chased: bool,
+    /// Whether the span's ends coincide.
     pub f_collapsed: Collapsed,
 
     // The fields below are C++'s `SkOpSpan`, the derived type. The arena
@@ -122,6 +149,8 @@ pub struct SkOpSpanBase {
 pub type SkOpSpan = SkOpSpanBase;
 
 impl SkOpSpanBase {
+    /// Constructs a span at `t` on `segment`, sitting at `pt`, with no links
+    /// and no winding computed yet.
     pub fn new(t: Scalar, pt: Point, segment: Option<usize>) -> Self {
         Self {
             f_t: t,
@@ -148,8 +177,11 @@ impl SkOpSpanBase {
         }
     }
 
+    /// Returns this span's parametric position along its segment.
     pub fn t(&self) -> Scalar { self.f_t }
+    /// Returns the point the segment reaches at this span's t.
     pub fn pt(&self) -> Point { self.f_pt }
+    /// Returns whether this span's ends coincide.
     pub fn collapsed(&self) -> Collapsed { self.f_collapsed }
 
     /// Returns this span's winding contribution.

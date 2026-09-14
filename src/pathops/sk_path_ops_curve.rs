@@ -34,24 +34,31 @@ fn almost_between_ulps(min: Scalar, val: Scalar, max: Scalar) -> bool {
 /// Double-precision vector (2D).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct SkDVector {
+    /// Horizontal component of the displacement.
     pub f_x: Scalar,
+    /// Vertical component of the displacement.
     pub f_y: Scalar,
 }
 
 impl SkDVector {
+    /// Vector with the given x and y components.
     pub const fn new(x: Scalar, y: Scalar) -> Self {
         SkDVector { f_x: x, f_y: y }
     }
 
+    /// The zero vector.
     pub const fn zero() -> Self {
         SkDVector { f_x: 0.0, f_y: 0.0 }
     }
 
+    /// Overwrite the components with those of a single-precision `Point`.
     pub fn set(&mut self, pt: Point) {
         self.f_x = pt.x;
         self.f_y = pt.y;
     }
 
+    /// Copy the components out into a `Point`, which is how the crate spells
+    /// a single-precision vector.
     pub fn as_sk_vector(&self) -> Point {
         Point::new(self.f_x, self.f_y)
     }
@@ -133,19 +140,24 @@ impl std::ops::Mul<Scalar> for SkDVector {
 /// Double-precision point (2D).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct SkDPoint {
+    /// X coordinate, in the path's coordinate space.
     pub f_x: Scalar,
+    /// Y coordinate, in the path's coordinate space.
     pub f_y: Scalar,
 }
 
 impl SkDPoint {
+    /// Point at the given coordinates.
     pub const fn new(x: Scalar, y: Scalar) -> Self {
         SkDPoint { f_x: x, f_y: y }
     }
 
+    /// The origin.
     pub const fn zero() -> Self {
         SkDPoint { f_x: 0.0, f_y: 0.0 }
     }
 
+    /// Overwrite the coordinates with those of a single-precision `Point`.
     pub fn set(&mut self, pt: Point) {
         self.f_x = pt.x;
         self.f_y = pt.y;
@@ -259,31 +271,37 @@ impl std::ops::Div<Scalar> for SkDPoint {
 /// Double-precision line segment.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SkDLine {
+    /// The start and end points, in that order.
     pub f_pts: [SkDPoint; 2],
 }
 
 impl SkDLine {
+    /// Degenerate line with both endpoints at the origin.
     pub fn new() -> Self {
         SkDLine {
             f_pts: [SkDPoint::zero(), SkDPoint::zero()],
         }
     }
 
+    /// Line running from `p0` to `p1`.
     pub fn from_points(p0: SkDPoint, p1: SkDPoint) -> Self {
         SkDLine {
             f_pts: [p0, p1],
         }
     }
 
+    /// Overwrite both endpoints from single-precision points.
     pub fn set(&mut self, pts: [Point; 2]) {
         self.f_pts[0].set(pts[0]);
         self.f_pts[1].set(pts[1]);
     }
 
+    /// Endpoint at `index`: 0 is the start, 1 the end.
     pub fn point(&self, index: usize) -> SkDPoint {
         self.f_pts[index]
     }
 
+    /// Mutable access to the endpoint at `index`.
     pub fn point_mut(&mut self, index: usize) -> &mut SkDPoint {
         &mut self.f_pts[index]
     }
@@ -298,14 +316,20 @@ impl SkDLine {
         }
     }
 
-    /// Check if point is approximately on the line.
+    /// Distance from `xy` to the nearer of the two endpoints, setting
+    /// `unequal` when that distance is above a fixed 1e-6 tolerance.
+    ///
+    /// Simplified: Skia's `SkDLine::nearPoint` measures against the segment
+    /// itself and reports the t value; this only looks at the endpoints.
     pub fn near_point(&self, xy: SkDPoint, unequal: &mut bool) -> Scalar {
         let dist = xy.distance(self.f_pts[0]).min(xy.distance(self.f_pts[1]));
         *unequal = dist > 1e-6;
         dist
     }
 
-    /// Check if a perpendicular ray intersects the line.
+    /// True when `xy` projects strictly inside the segment and lands
+    /// approximately on it. The projection parameter is computed from the
+    /// dot products, so points beyond either endpoint are rejected.
     pub fn near_ray(&self, xy: SkDPoint) -> bool {
         let v = self.f_pts[1] - self.f_pts[0];
         let w = xy - self.f_pts[0];
@@ -326,34 +350,43 @@ impl SkDLine {
 /// Double-precision quadratic Bezier curve.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SkDQuad {
+    /// The three control points: start, off-curve control, end.
     pub f_pts: [SkDPoint; 3],
 }
 
 impl SkDQuad {
+    /// Number of control points a quadratic carries.
     pub const K_POINT_COUNT: usize = 3;
+    /// Index of the last control point, that is, the end point.
     pub const K_POINT_LAST: usize = Self::K_POINT_COUNT - 1;
+    /// Upper bound on the intersections two quadratics can have.
     pub const K_MAX_INTERSECTIONS: usize = 4;
 
+    /// Degenerate quadratic with all three control points at the origin.
     pub fn new() -> Self {
         SkDQuad {
             f_pts: [SkDPoint::zero(); 3],
         }
     }
 
+    /// Quadratic through the given control points.
     pub fn from_points(pts: [SkDPoint; 3]) -> Self {
         SkDQuad { f_pts: pts }
     }
 
+    /// Overwrite the control points from single-precision points.
     pub fn set(&mut self, pts: [Point; 3]) {
         for i in 0..3 {
             self.f_pts[i].set(pts[i]);
         }
     }
 
+    /// Control point at `index`: 0 is the start, 1 the control, 2 the end.
     pub fn point(&self, index: usize) -> SkDPoint {
         self.f_pts[index]
     }
 
+    /// Mutable access to the control point at `index`.
     pub fn point_mut(&mut self, index: usize) -> &mut SkDPoint {
         &mut self.f_pts[index]
     }
@@ -404,6 +437,10 @@ impl SkDQuad {
     }
 
     /// Subdivide the curve at t1 and t2.
+    ///
+    /// A hand-rolled de Casteljau that does not follow Skia's
+    /// `SkDQuad::subDivide`, and it divides by `1 - t1`, so `t1 == 1` blows
+    /// up. It has no callers and no test, so treat the result as unverified.
     pub fn sub_divide(&self, t1: Scalar, t2: Scalar) -> SkDQuad {
         let p0 = self.f_pts[0];
         let p1 = self.f_pts[1];
@@ -439,7 +476,11 @@ impl SkDQuad {
 /// Double-precision conic (rational quadratic) curve.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SkDConic {
+    /// The three control points, held as a quadratic: start, control, end.
     pub f_pts: SkDQuad,
+    /// Weight applied to the middle control point. A weight of 1 is an
+    /// ordinary quadratic; below 1 the curve is an ellipse arc, above 1 a
+    /// hyperbola arc. A circular arc of half-angle a uses cos(a).
     pub f_weight: Scalar,
 }
 
@@ -467,10 +508,15 @@ fn conic_eval_denominator(w: Scalar, t: Scalar) -> Scalar {
 }
 
 impl SkDConic {
+    /// Number of control points a conic carries, not counting the weight.
     pub const K_POINT_COUNT: usize = 3;
+    /// Index of the last control point, that is, the end point.
     pub const K_POINT_LAST: usize = Self::K_POINT_COUNT - 1;
+    /// Upper bound on the intersections two conics can have.
     pub const K_MAX_INTERSECTIONS: usize = 4;
 
+    /// Degenerate conic with all control points at the origin and unit
+    /// weight, which is the weight that makes a conic an ordinary quadratic.
     pub fn new() -> Self {
         SkDConic {
             f_pts: SkDQuad::new(),
@@ -478,6 +524,7 @@ impl SkDConic {
         }
     }
 
+    /// Conic over the control points of `quad` with the given weight.
     pub fn from_quad(quad: SkDQuad, weight: Scalar) -> Self {
         SkDConic {
             f_pts: quad,
@@ -485,27 +532,37 @@ impl SkDConic {
         }
     }
 
+    /// Overwrite the control points from single-precision points and set the
+    /// weight.
     pub fn set(&mut self, pts: [Point; 3], weight: Scalar) {
         self.f_pts.set(pts);
         self.f_weight = weight;
     }
 
+    /// Control point at `index`: 0 is the start, 1 the control, 2 the end.
     pub fn point(&self, index: usize) -> SkDPoint {
         self.f_pts.point(index)
     }
 
+    /// Mutable access to the control point at `index`.
     pub fn point_mut(&mut self, index: usize) -> &mut SkDPoint {
         self.f_pts.point_mut(index)
     }
 
+    /// True when every control point is approximately the same point, so the
+    /// conic covers no ground.
     pub fn collapsed(&self) -> bool {
         self.f_pts.collapsed()
     }
 
+    /// True when the control point projects within the span from start to
+    /// end, so the hull does not double back.
     pub fn controls_inside(&self) -> bool {
         self.f_pts.controls_inside()
     }
 
+    /// The same conic traversed in the opposite direction. The weight is
+    /// unchanged, since reversing a conic leaves it unaffected.
     pub fn flip(&self) -> SkDConic {
         SkDConic {
             f_pts: self.f_pts.flip(),
@@ -609,36 +666,54 @@ impl SkDConic {
 }
 
 /// Double-precision cubic Bezier curve.
+///
+/// This is a second, smaller `SkDCubic` that exists only to back the
+/// [`SkDCurve::Cubic`] variant in this module. The full port, with the
+/// tested `sub_divide`, root finders and inflection handling, lives in
+/// `crate::pathops::sk_path_ops_cubic`. Nothing outside this file uses this
+/// copy, so its methods are unexercised beyond the tests at the bottom of
+/// the module.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SkDCubic {
+    /// The four control points, in order from start to end: the on-curve
+    /// start, two off-curve controls, and the on-curve end.
     pub f_pts: [SkDPoint; 4],
 }
 
 impl SkDCubic {
+    /// Number of control points a cubic carries.
     pub const K_POINT_COUNT: usize = 4;
+    /// Index of the last control point, that is, the end point.
     pub const K_POINT_LAST: usize = Self::K_POINT_COUNT - 1;
+    /// Upper bound on the intersections two cubics can have.
     pub const K_MAX_INTERSECTIONS: usize = 9;
 
+    /// Degenerate cubic with all four control points at the origin.
     pub fn new() -> Self {
         SkDCubic {
             f_pts: [SkDPoint::zero(); 4],
         }
     }
 
+    /// Cubic through the given control points.
     pub fn from_points(pts: [SkDPoint; 4]) -> Self {
         SkDCubic { f_pts: pts }
     }
 
+    /// Overwrite the control points from single-precision points.
     pub fn set(&mut self, pts: [Point; 4]) {
         for i in 0..4 {
             self.f_pts[i].set(pts[i]);
         }
     }
 
+    /// Control point at `index`: 0 is the start, 3 the end, 1 and 2 the
+    /// off-curve controls.
     pub fn point(&self, index: usize) -> SkDPoint {
         self.f_pts[index]
     }
 
+    /// Mutable access to the control point at `index`.
     pub fn point_mut(&mut self, index: usize) -> &mut SkDPoint {
         &mut self.f_pts[index]
     }
@@ -700,6 +775,12 @@ impl SkDCubic {
     }
 
     /// Subdivide the curve at t1 and t2.
+    ///
+    /// A hand-rolled de Casteljau that does not match Skia's
+    /// `SkDCubic::subDivide`, and its intermediate points do not line up with
+    /// a correct double split. It has no callers and no test; prefer
+    /// `crate::pathops::sk_path_ops_cubic::SkDCubic::sub_divide`, which is
+    /// the real port and is covered by tests.
     pub fn sub_divide(&self, t1: Scalar, t2: Scalar) -> SkDCubic {
         let p0 = self.f_pts[0];
         let p1 = self.f_pts[1];
@@ -780,6 +861,11 @@ impl SkDCubic {
     }
 
     /// Convert to quad approximation.
+    ///
+    /// Simplified: the quadratic keeps the cubic's endpoints and places its
+    /// control point at the midpoint of the two cubic controls. That is not
+    /// Skia's error-bounded conversion, and it can be far off for a cubic
+    /// that is not already close to quadratic.
     pub fn to_quad(&self) -> SkDQuad {
         // Use a best-fit quadratic approximation
         let p0 = self.f_pts[0];
@@ -796,9 +882,13 @@ impl SkDCubic {
 /// Enum to represent different curve types (unified interface).
 #[derive(Debug, Clone, Copy)]
 pub enum SkDCurve {
+    /// A straight segment between two points.
     Line(SkDLine),
+    /// A quadratic Bezier.
     Quad(SkDQuad),
+    /// A weighted quadratic, that is, a rational quadratic.
     Conic(SkDConic),
+    /// A cubic Bezier, using this module's copy of [`SkDCubic`].
     Cubic(SkDCubic),
 }
 
@@ -890,9 +980,17 @@ impl SkDCurve {
 /// Represents a curve's convex hull sweep for intersection testing.
 #[derive(Debug, Clone)]
 pub struct SkDCurveSweep {
+    /// The curve the sweep describes.
     pub f_curve: SkDCurve,
+    /// The two hull edges bounding the curve's direction of travel, each a
+    /// vector from the start point towards a later control point. Together
+    /// they span the wedge the curve stays inside.
     pub f_sweep: [SkDVector; 2],
+    /// False when the control points are collinear with the endpoints, so
+    /// the segment can be treated as a line rather than a curve.
     pub f_is_curve: bool,
+    /// False when the two sweep vectors had to be swapped to bracket the
+    /// curve, meaning they no longer run in the curve's own order.
     pub f_ordered: bool,
 }
 
@@ -908,14 +1006,20 @@ impl Default for SkDCurveSweep {
 }
 
 impl SkDCurveSweep {
+    /// Empty sweep: a degenerate line, zero sweep vectors, not a curve, and
+    /// ordered. Call [`set_curve_hull_sweep`](Self::set_curve_hull_sweep)
+    /// after assigning `f_curve`.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Whether the segment actually bends, as decided by the last
+    /// [`set_curve_hull_sweep`](Self::set_curve_hull_sweep) call.
     pub fn is_curve(&self) -> bool {
         self.f_is_curve
     }
 
+    /// Whether the sweep vectors are still in the curve's own order.
     pub fn is_ordered(&self) -> bool {
         self.f_ordered
     }
@@ -1008,11 +1112,18 @@ impl SkDCurveSweep {
 /// Verb type for path segments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
+    /// Start a new contour at a single point.
     Move,
+    /// Straight segment to the next point.
     Line,
+    /// Quadratic Bezier: one off-curve control and an end point.
     Quad,
+    /// Weighted quadratic: same points as `Quad`, plus a weight carried
+    /// alongside the verb.
     Conic,
+    /// Cubic Bezier: two off-curve controls and an end point.
     Cubic,
+    /// Close the contour back to its starting point; it adds no new points.
     Close,
 }
 

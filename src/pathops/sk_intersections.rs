@@ -38,6 +38,7 @@ pub struct SkIntersections {
 
 #[allow(clippy::needless_range_loop)] // the index doubles as an endpoint's t
 impl SkIntersections {
+    /// Constructs an empty set that accepts nearly coincident hits.
     pub fn new() -> Self {
         Self {
             f_pt: [Point::new(0.0, 0.0); MAX_INTERSECTIONS],
@@ -52,32 +53,41 @@ impl SkIntersections {
         }
     }
 
+    /// Number of intersections recorded so far.
     pub fn used(&self) -> usize {
         self.f_used as usize
     }
 
+    /// Sets the cap on how many intersections a curve pair may record.
     pub fn set_max(&mut self, max: usize) {
         self.f_max = max as u8;
     }
 
+    /// Toggles which of the two curves counts as first, so a caller that
+    /// passed the operands in the other order reads t values back correctly.
     pub fn swap(&mut self) {
         self.f_swap = !self.f_swap;
     }
 
+    /// True if the curve order has been swapped.
     pub fn swapped(&self) -> bool {
         self.f_swap
     }
 
+    /// Discards all recorded intersections and clears the coincidence bits.
+    /// The max and swap settings are left alone.
     pub fn reset(&mut self) {
         self.f_allow_near = true;
         self.f_used = 0;
         self.f_is_coincident = [0; 2];
     }
 
+    /// Parametric position of intersection `index` along `curve` (0 or 1).
     pub fn t(&self, curve: usize, index: usize) -> Scalar {
         self.f_t[curve][index]
     }
 
+    /// Location of intersection `index`.
     pub fn pt(&self, index: usize) -> Point {
         self.f_pt[index]
     }
@@ -100,24 +110,33 @@ impl SkIntersections {
             .any(|i| approximately_equal(f64::from(self.f_t[1][i]), f64::from(t)))
     }
 
+    /// True if intersection `index` is part of a run where the two curves
+    /// overlap, rather than a single crossing.
     pub fn is_coincident(&self, index: usize) -> bool {
         (self.f_is_coincident[0] & (1 << index)) != 0
     }
 
+    /// Marks intersection `index` coincident on both curves.
     pub fn set_coincident(&mut self, index: usize) {
         let bit: u16 = 1 << index;
         self.f_is_coincident[0] |= bit;
         self.f_is_coincident[1] |= bit;
     }
 
+    /// Mutable access to intersection `index`'s location, for callers that
+    /// snap points after the fact.
     pub fn pt_mut(&mut self, index: usize) -> &mut Point {
         &mut self.f_pt[index]
     }
 
+    /// Mutable access to intersection `index`'s t on `curve`.
     pub fn t_mut(&mut self, curve: usize, index: usize) -> &mut Scalar {
         &mut self.f_t[curve][index]
     }
 
+    /// Records an intersection at `one` on the first curve and `two` on the
+    /// second, sitting at `pt`. Returns its index, or -1 if it duplicates an
+    /// existing entry or would mix a crossing into a coincident run.
     pub fn insert(&mut self, one: Scalar, two: Scalar, pt: Point) -> i32 {
         if self.f_is_coincident[0] == 3
             && between(self.f_t[0][0], one, self.f_t[0][1])
@@ -575,6 +594,10 @@ impl SkIntersections {
         self.vertical(&DLine::new(pts[0], pts[1]), top, bottom, x, flipped)
     }
 
+    /// Of the intersections whose first-curve t falls within
+    /// `[range_start, range_end]`, returns the index of the one nearest
+    /// `test_pt`, or -1 if none are in range. `closest_dist` receives the
+    /// squared distance, not the distance.
     pub fn closest_to(&self, range_start: Scalar, range_end: Scalar, test_pt: Point, closest_dist: &mut Scalar) -> i32 {
         let mut closest = -1;
         *closest_dist = Scalar::MAX;
@@ -593,12 +616,17 @@ impl SkIntersections {
         closest
     }
 
+    /// Reverses the second curve's parameterisation, mapping each of its t
+    /// values to 1 - t.
     pub fn flip(&mut self) {
         for index in 0..self.f_used as usize {
             self.f_t[1][index] = 1.0 - self.f_t[1][index];
         }
     }
 
+    /// Records an intersection where the two curves come close without
+    /// meeting exactly, keeping each curve's own point. Returns the index, or
+    /// -1 if the insert was rejected.
     pub fn insert_near(&mut self, one: Scalar, two: Scalar, pt1: Point, pt2: Point) -> i32 {
         self.f_nearly_same[if one == 1.0 { 1 } else { 0 }] = true;
         let index = self.insert(one, two, pt1);
@@ -609,6 +637,8 @@ impl SkIntersections {
         index
     }
 
+    /// Records an intersection and marks it as part of a coincident run.
+    /// Returns the index, or -1 if the insert was rejected.
     pub fn insert_coincident(&mut self, one: Scalar, two: Scalar, pt: Point) -> i32 {
         let index = self.insert(one, two, pt);
         if index >= 0 {
@@ -617,6 +647,9 @@ impl SkIntersections {
         index
     }
 
+    /// Replaces this set with the single intersection pairing entry
+    /// `a_index` of `a` with entry `b_index` of `b`, keeping each side's own
+    /// point.
     pub fn merge(&mut self, a: &SkIntersections, a_index: usize, b: &SkIntersections, b_index: usize) {
         self.reset();
         self.f_t[0][0] = a.f_t[0][a_index];
@@ -626,6 +659,9 @@ impl SkIntersections {
         self.f_used = 1;
     }
 
+    /// Of the intersections whose first-curve t falls within
+    /// `[range_start, range_end]`, returns the index of the one furthest
+    /// counter-clockwise as seen from `origin`, or -1 if none are in range.
     pub fn most_outside(&self, range_start: Scalar, range_end: Scalar, origin: Point) -> i32 {
         let mut result = -1;
         for index in 0..self.f_used as usize {

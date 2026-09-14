@@ -16,12 +16,16 @@ const MAX_QUAD_ROOTS: usize = 2;
 /// A quadratic curve represented by 3 control points
 #[derive(Debug, Clone, Copy)]
 pub struct DQuad {
+    /// Start point, at t == 0.
     pub p0: Point,
+    /// Control point.
     pub p1: Point,
+    /// End point, at t == 1.
     pub p2: Point,
 }
 
 impl DQuad {
+    /// Constructs a quadratic from its three control points, in order.
     pub fn new(p0: Point, p1: Point, p2: Point) -> Self {
         Self { p0, p1, p2 }
     }
@@ -52,7 +56,7 @@ impl DQuad {
         }
     }
 
-    /// Find roots of the quadratic equation At^2 + Bt + C = 0 with valid t in [0,1]
+    /// Find roots of the quadratic equation At^2 + Bt + C = 0 with valid t in `[0, 1]`
     pub fn roots_valid_t(a: Scalar, b: Scalar, c: Scalar, roots: &mut [Scalar; MAX_QUAD_ROOTS]) -> usize {
         let abs_a = a.abs();
         let abs_c = c.abs();
@@ -132,15 +136,19 @@ impl DQuad {
 /// A line segment
 #[derive(Debug, Clone, Copy)]
 pub struct DLine {
+    /// Start point, at t == 0.
     pub p0: Point,
+    /// End point, at t == 1.
     pub p1: Point,
 }
 
 impl DLine {
+    /// Constructs the segment running from `p0` to `p1`.
     pub fn new(p0: Point, p1: Point) -> Self {
         Self { p0, p1 }
     }
 
+    /// Returns endpoint `index`. Any index other than 0 gives the end point.
     pub fn point(&self, index: usize) -> Point {
         match index {
             0 => self.p0,

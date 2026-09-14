@@ -6,11 +6,15 @@ use crate::core::Point;
 
 /// Debug flags for controlling verbose output
 pub struct DebugFlags {
+    /// Keep running the op after an internal consistency failure instead of
+    /// bailing out, so the resulting damage can be inspected.
     pub g_run_fail: bool,
+    /// Emit the per-span and per-angle trace output, not just the summary.
     pub g_very_verbose: bool,
 }
 
 impl DebugFlags {
+    /// Create a flag set with all debug output disabled.
     pub fn new() -> Self {
         Self {
             g_run_fail: false,
@@ -33,43 +37,101 @@ thread_local! {
 /// Glitch types for debugging coincidence operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GlitchType {
+    /// No glitch recorded yet; the default state of a freshly added dictionary
+    /// entry, which a later add may still fill in.
     Uninitialized,
+    /// A coincident run was added whose endpoints do not agree with the spans
+    /// they claim to join.
     AddCorruptCoin,
+    /// An existing coincident run had to be widened to take in a neighbouring
+    /// span.
     AddExpandedCoin,
+    /// Widening a coincident run failed, usually because the extended range no
+    /// longer matches on the opposite segment.
     AddExpandedFail,
+    /// A coincident run was added over a range that has collapsed to a single
+    /// point.
     AddIfCollapsed,
+    /// A coincident run was inferred and added because the intersection pass
+    /// had not produced one.
     AddIfMissingCoin,
+    /// A coincidence that should already have been recorded was added after the
+    /// fact.
     AddMissingCoin,
+    /// A missing coincidence was repaired by extending an adjacent run rather
+    /// than creating a new one.
     AddMissingExtend,
+    /// A new coincident run either had to be added or merged into an existing
+    /// overlapping one.
     AddOrOverlap,
+    /// A coincident run whose t range shrank to nothing.
     CollapsedCoin,
+    /// A span was marked done as a result of collapsing to zero length.
     CollapsedDone,
+    /// The opposite-path winding value of a collapsed span had to be corrected.
     CollapsedOppValue,
+    /// A span collapsed so that its start and end t values coincide.
     CollapsedSpan,
+    /// The winding value of a collapsed span had to be corrected.
     CollapsedWindValue,
+    /// The end of a span was moved to agree with the point its neighbour
+    /// reports.
     CorrectEnd,
+    /// A coincident run was removed, typically after collapsing or after being
+    /// absorbed by another run.
     DeletedCoin,
+    /// A coincident run was grown to cover spans adjacent to its current range.
     ExpandCoin,
+    /// A generic unrecoverable inconsistency; the op gives up at this point.
     Fail,
+    /// The end span of a coincident run was marked as coincident.
     MarkCoinEnd,
+    /// A span had to be inserted at a t value so a coincident run could be
+    /// marked there.
     MarkCoinInsert,
+    /// A span that should have been marked coincident was not.
     MarkCoinMissing,
+    /// The start span of a coincident run was marked as coincident.
     MarkCoinStart,
+    /// Two span lists that describe the same point were merged.
     MergeMatches,
+    /// A coincidence between two segments was detected that the coincidence
+    /// list does not contain.
     MissingCoin,
+    /// A span that should have been marked done was still left open.
     MissingDone,
+    /// Two segments touch at a point for which no intersection was recorded.
     MissingIntersection,
+    /// A span carrying several coincident references had to be moved as a
+    /// group.
     MoveMultiple,
+    /// The span's coincidence bits were cleared while moving it onto a nearby
+    /// point.
     MoveNearbyClearAll,
+    /// Second clear-all pass of the move-nearby walk, covering the spans found
+    /// after the first pass.
     MoveNearbyClearAll2,
+    /// Two spans closer together than the point tolerance were merged into one.
     MoveNearbyMerge,
+    /// The last merge of the move-nearby pass, closing the loop back onto the
+    /// head span.
     MoveNearbyMergeFinal,
+    /// A span was released during move-nearby because another span already owns
+    /// its point.
     MoveNearbyRelease,
+    /// The final release of the move-nearby pass, on the span at the end of the
+    /// list.
     MoveNearbyReleaseFinal,
+    /// A span was released (removed from its segment) while checking health.
     ReleasedSpan,
+    /// A routine reported failure to its caller; recorded so the return can be
+    /// traced back to its origin.
     ReturnFalse,
+    /// A span's stored point does not match the point its t value evaluates to.
     Unaligned,
+    /// The head (start) span of a run is the unaligned one.
     UnalignedHead,
+    /// The tail (end) span of a run is the unaligned one.
     UnalignedTail,
 }
 
@@ -122,13 +184,20 @@ impl GlitchType {
 /// Entry in the coincidence dictionary
 #[derive(Debug, Clone)]
 pub struct CoinDictEntry {
+    /// Which pass of the coincidence fix-up loop produced this entry; entries
+    /// are keyed on this together with `line_number`.
     pub iteration: i32,
+    /// Source line the entry was recorded from, standing in for the call site.
     pub line_number: i32,
+    /// What went wrong at that call site, or `Uninitialized` if the site was
+    /// merely visited.
     pub glitch_type: GlitchType,
+    /// Name of the function the entry was recorded from.
     pub function_name: String,
 }
 
 impl CoinDictEntry {
+    /// Record a visit to a call site with no glitch attached yet.
     pub fn new(line_no: i32, func_name: &str) -> Self {
         Self {
             iteration: 0,
@@ -146,12 +215,17 @@ pub struct CoinDict {
 }
 
 impl CoinDict {
+    /// Create an empty dictionary.
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
         }
     }
 
+    /// Record an entry, keyed on its iteration and line number. If that call
+    /// site was already recorded this pass, the stored glitch type is only
+    /// filled in when it is still uninitialized, so the first glitch seen at a
+    /// site wins.
     pub fn add(&mut self, entry: CoinDictEntry) {
         // Check if entry with same iteration and line already exists
         if let Some(existing) = self
@@ -168,16 +242,20 @@ impl CoinDict {
         }
     }
 
+    /// Fold every entry of `other` into this dictionary under the same
+    /// deduplication rule as [`CoinDict::add`].
     pub fn add_dict(&mut self, other: &CoinDict) {
         for entry in &other.entries {
             self.add(entry.clone());
         }
     }
 
+    /// The recorded entries, in the order their call sites were first hit.
     pub fn entries(&self) -> &[CoinDictEntry] {
         &self.entries
     }
 
+    /// Drop all entries, for instance between runs.
     pub fn clear(&mut self) {
         self.entries.clear();
     }
@@ -186,30 +264,50 @@ impl CoinDict {
 /// Global coin dictionaries
 #[derive(Debug, Default)]
 pub struct GlobalCoinDicts {
+    /// Call sites that actually altered the coincidence data this run.
     pub changed: CoinDict,
+    /// Every call site reached this run, whether or not it changed anything;
+    /// comparing it against `changed` shows which paths are untested.
     pub visited: CoinDict,
 }
 
 /// Glitch record for logging debug issues
 #[derive(Debug, Clone)]
 pub struct SpanGlitch {
+    /// Span the check started from, the one assumed to be correct.
     pub base_id: Option<i32>,
+    /// Span that disagreed with the base and triggered the report.
     pub suspect_id: Option<i32>,
+    /// Segment the spans belong to.
     pub segment_id: Option<i32>,
+    /// Segment on the other side of the coincidence or intersection.
     pub opp_segment_id: Option<i32>,
+    /// Span starting the coincident run under inspection.
     pub coin_span_id: Option<i32>,
+    /// Span ending that run.
     pub end_span_id: Option<i32>,
+    /// Span on the opposite segment matching `coin_span_id`.
     pub opp_span_id: Option<i32>,
+    /// Span on the opposite segment matching `end_span_id`.
     pub opp_end_span_id: Option<i32>,
+    /// Curve parameter where the run or span begins.
     pub start_t: Option<f64>,
+    /// Curve parameter where it ends.
     pub end_t: Option<f64>,
+    /// Corresponding start parameter on the opposite segment; it may run
+    /// backwards relative to `start_t` when the two are reversed.
     pub opp_start_t: Option<f64>,
+    /// Corresponding end parameter on the opposite segment.
     pub opp_end_t: Option<f64>,
+    /// Point in question, for glitches about a position rather than a range.
     pub pt: Option<Point>,
+    /// What kind of inconsistency this record describes.
     pub glitch_type: GlitchType,
 }
 
 impl SpanGlitch {
+    /// Create a record of the given kind with no context fields filled in; the
+    /// recording helpers on [`GlitchLog`] set the fields that apply.
     pub fn new(glitch_type: GlitchType) -> Self {
         Self {
             base_id: None,
@@ -237,23 +335,29 @@ pub struct GlitchLog {
 }
 
 impl GlitchLog {
+    /// Create an empty log.
     pub fn new() -> Self {
         Self {
             glitches: Vec::new(),
         }
     }
 
+    /// Append a bare glitch and hand back a mutable reference so the caller can
+    /// fill in whichever context fields it has.
     pub fn record(&mut self, glitch_type: GlitchType) -> &mut SpanGlitch {
         self.glitches.push(SpanGlitch::new(glitch_type));
         self.glitches.last_mut().unwrap()
     }
 
+    /// Record a glitch against the span the check started from.
     pub fn record_with_base(&mut self, glitch_type: GlitchType, base_id: i32) -> &mut SpanGlitch {
         let glitch = self.record(glitch_type);
         glitch.base_id = Some(base_id);
         glitch
     }
 
+    /// Record a glitch for a pair of spans that should have agreed: the base
+    /// span and the suspect one that did not match it.
     pub fn record_with_span(
         &mut self,
         glitch_type: GlitchType,
@@ -266,6 +370,8 @@ impl GlitchLog {
         glitch
     }
 
+    /// Record a glitch that concerns a whole segment rather than a particular
+    /// span.
     pub fn record_with_segment(
         &mut self,
         glitch_type: GlitchType,
@@ -276,6 +382,8 @@ impl GlitchLog {
         glitch
     }
 
+    /// Record a glitch at a single location, given as the curve parameter and
+    /// the point it was expected to land on.
     pub fn record_with_t_and_point(
         &mut self,
         glitch_type: GlitchType,
@@ -288,6 +396,8 @@ impl GlitchLog {
         glitch
     }
 
+    /// Record a glitch spanning a coincident run, identified by the spans at
+    /// its two ends.
     pub fn record_with_coin_span(
         &mut self,
         glitch_type: GlitchType,
@@ -300,6 +410,9 @@ impl GlitchLog {
         glitch
     }
 
+    /// Record a glitch about a span and its counterpart on the other segment.
+    /// The first span is stored in `end_span_id`, matching the field layout the
+    /// coincidence printer expects.
     pub fn record_with_opposing(
         &mut self,
         glitch_type: GlitchType,
@@ -312,6 +425,9 @@ impl GlitchLog {
         glitch
     }
 
+    /// Record a glitch describing both sides of a coincidence: the two segments
+    /// and the t ranges on each. Every field is optional so callers can supply
+    /// only what they know. The span id fields are left unset.
     pub fn record_full(
         &mut self,
         glitch_type: GlitchType,
@@ -336,18 +452,22 @@ impl GlitchLog {
         glitch
     }
 
+    /// How many glitches have been recorded; zero means the run was clean.
     pub fn count(&self) -> usize {
         self.glitches.len()
     }
 
+    /// Fetch one glitch by its position in the log, or `None` if out of range.
     pub fn get(&self, index: usize) -> Option<&SpanGlitch> {
         self.glitches.get(index)
     }
 
+    /// Walk the glitches in the order they were recorded.
     pub fn iter(&self) -> impl Iterator<Item = &SpanGlitch> {
         self.glitches.iter()
     }
 
+    /// Discard everything recorded so far, for instance before a new pass.
     pub fn clear(&mut self) {
         self.glitches.clear();
     }

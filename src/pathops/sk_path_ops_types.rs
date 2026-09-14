@@ -366,9 +366,14 @@ impl OpGlobalState {
 /// Phase of path operation processing
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpPhase {
+    /// Finding the points where the operands' segments cross. The initial
+    /// phase, and the only one the current port drives.
     Intersecting,
+    /// Assigning winding numbers to the spans between intersections.
     Winding,
+    /// Linking the kept spans into output contours.
     Chained,
+    /// Retrying after a degenerate result, with the operands perturbed.
     Skewed,
 }
 

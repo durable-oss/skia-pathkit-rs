@@ -13,19 +13,31 @@ use crate::error::PathKitError;
 pub enum PathEffect {
     /// Alternating "on"/"off" lengths applied along the path.
     Dash {
+        /// Alternating on and off lengths, starting with an "on" run. Must
+        /// have an even, non-zero count and no negative entry.
         intervals: Vec<Scalar>,
+        /// Distance into the pattern at which the first contour starts, so a
+        /// dash can begin mid-interval.
         phase: Scalar,
     },
     /// Rounds sharp corners with the given radius.
-    Corner { radius: Scalar },
+    Corner {
+        /// Radius of the arc replacing each corner.
+        radius: Scalar,
+    },
     /// Composes two effects: outer(inner(path)).
     Compose {
+        /// Applied second, to whatever `inner` produced.
         outer: Box<PathEffect>,
+        /// Applied first, to the original path.
         inner: Box<PathEffect>,
     },
     /// Sums two effects: first(path) + second(path).
     Sum {
+        /// One effect applied to the original path.
         first: Box<PathEffect>,
+        /// The other effect, also applied to the original path rather than to
+        /// `first`'s output. The two results are concatenated.
         second: Box<PathEffect>,
     },
 }

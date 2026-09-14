@@ -217,6 +217,8 @@ impl<'a> SkPathWriter<'a> {
         defer_dx * line_dy != defer_dy * line_dx
     }
 
+    /// Returns true if partial contour `idx` holds exactly one verb, so it
+    /// can be emitted without further splitting.
     pub fn is_simple(&self, idx: usize) -> bool {
         idx < self.partials.len() && self.partials[idx].count_verbs() == 1
     }

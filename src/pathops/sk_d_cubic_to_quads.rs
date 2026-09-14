@@ -10,7 +10,9 @@
 /// Matches Skia's `SkDPoint`.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct DPoint {
+    /// X coordinate.
     pub x: f64,
+    /// Y coordinate.
     pub y: f64,
 }
 
