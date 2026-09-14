@@ -585,7 +585,353 @@ impl SkOpCoincidence {
         }
         self.relink(arena, &survivors);
     }
+
+    /// Fills `overlaps` with the pairs implied by records that share a
+    /// segment.
+    ///
+    /// Port of `SkOpCoincidence::findOverlaps`. When A is coincident with B
+    /// and B with C over ranges that overlap, A and C are coincident over the
+    /// shared part, and that pair is not in the list until this puts it
+    /// there. `HandleCoincidence` drains the result and re-runs `apply`.
+    ///
+    /// Two records whose *first* segments are the same add nothing: they
+    /// already agree on which side wins.
+    pub fn find_overlaps(&self, arena: &mut OpArena, overlaps: &mut SkOpCoincidence) -> bool {
+        overlaps.f_head = None;
+        overlaps.f_top = None;
+        let records = self.records(arena);
+        for (i, &outer) in records.iter().enumerate() {
+            let o = arena.coin(outer).clone();
+            let (Some(outer_coin), Some(outer_opp)) = (
+                Self::ptt_seg(arena, o.f_coin_ptt_start),
+                Self::ptt_seg(arena, o.f_opp_ptt_start),
+            ) else {
+                continue;
+            };
+            for &inner in &records[i + 1..] {
+                let n = arena.coin(inner).clone();
+                let (Some(inner_coin), Some(inner_opp)) = (
+                    Self::ptt_seg(arena, n.f_coin_ptt_start),
+                    Self::ptt_seg(arena, n.f_opp_ptt_start),
+                ) else {
+                    continue;
+                };
+                if outer_coin == inner_coin {
+                    // Same receiver, so there is no further overlap to find.
+                    continue;
+                }
+                // The three ways the two records can meet on one segment.
+                let shared = if outer_opp == inner_coin {
+                    Self::shared_range(
+                        arena,
+                        (o.f_opp_ptt_start, o.f_opp_ptt_end),
+                        (n.f_coin_ptt_start, n.f_coin_ptt_end),
+                    )
+                } else if outer_coin == inner_opp {
+                    Self::shared_range(
+                        arena,
+                        (o.f_coin_ptt_start, o.f_coin_ptt_end),
+                        (n.f_opp_ptt_start, n.f_opp_ptt_end),
+                    )
+                } else if outer_opp == inner_opp {
+                    Self::shared_range(
+                        arena,
+                        (o.f_opp_ptt_start, o.f_opp_ptt_end),
+                        (n.f_opp_ptt_start, n.f_opp_ptt_end),
+                    )
+                } else {
+                    None
+                };
+                let Some((over_s, over_e)) = shared else {
+                    continue;
+                };
+                if !overlaps.add_overlap(
+                    arena,
+                    (outer_coin, outer_opp),
+                    (inner_coin, inner_opp),
+                    over_s,
+                    over_e,
+                ) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Records the pair implied by two records overlapping over `over_s`
+    /// to `over_e`.
+    ///
+    /// Port of `SkOpCoincidence::addOverlap`. The overlap range is given as
+    /// PtT nodes on some segment; each side of the new pair is found by
+    /// looking those nodes up on its own segment through the PtT ring. A side
+    /// whose spans carry no winding is not a real edge, so the first segment
+    /// is tried and then its partner, and if neither contributes the overlap
+    /// is dropped.
+    fn add_overlap(
+        &mut self,
+        arena: &mut OpArena,
+        first: (SegmentId, SegmentId),
+        second: (SegmentId, SegmentId),
+        over_s: PtTId,
+        over_e: PtTId,
+    ) -> bool {
+        let Some((mut s1, mut e1)) = Self::find_contributing(arena, over_s, over_e, first) else {
+            return true;
+        };
+        let Some((mut s2, mut e2)) = Self::find_contributing(arena, over_s, over_e, second) else {
+            return true;
+        };
+        if arena.ptt_segment(s1) == arena.ptt_segment(s2) {
+            // Both sides landed on one segment, which is not a pair.
+            return true;
+        }
+        if arena.ptt(s1).f_t > arena.ptt(e1).f_t {
+            std::mem::swap(&mut s1, &mut e1);
+            std::mem::swap(&mut s2, &mut e2);
+        }
+        self.add_or_extend(arena, s1, e1, s2, e2).is_some()
+    }
+
+    /// Finds the overlap's endpoints on whichever of the two segments has
+    /// winding to contribute.
+    fn find_contributing(
+        arena: &OpArena,
+        over_s: PtTId,
+        over_e: PtTId,
+        pair: (SegmentId, SegmentId),
+    ) -> Option<(PtTId, PtTId)> {
+        for seg in [pair.0, pair.1] {
+            let (Some(s), Some(e)) = (
+                arena.ptt_find(over_s, seg),
+                arena.ptt_find(over_e, seg),
+            ) else {
+                continue;
+            };
+            let has_winding = arena
+                .ptt_span(s)
+                .and_then(|ss| arena.ptt_span(e).map(|ee| (ss, ee)))
+                .and_then(|(ss, ee)| arena.span_starter(ss, ee))
+                .is_some_and(|starter| arena.span(starter).wind_value() != 0);
+            if has_winding {
+                return Some((s, e));
+            }
+        }
+        None
+    }
+
+    /// Returns the PtT pair bounding the range two runs share, if any.
+    ///
+    /// Port of `SkOpPtT::Overlaps`, reduced to the endpoints the caller
+    /// needs: the later of the two starts and the earlier of the two ends.
+    fn shared_range(
+        arena: &OpArena,
+        a: (Option<PtTId>, Option<PtTId>),
+        b: (Option<PtTId>, Option<PtTId>),
+    ) -> Option<(PtTId, PtTId)> {
+        let (a_s, a_e, b_s, b_e) = (a.0?, a.1?, b.0?, b.1?);
+        let (a_s, a_e) = if arena.ptt(a_s).f_t <= arena.ptt(a_e).f_t {
+            (a_s, a_e)
+        } else {
+            (a_e, a_s)
+        };
+        let (b_s, b_e) = if arena.ptt(b_s).f_t <= arena.ptt(b_e).f_t {
+            (b_s, b_e)
+        } else {
+            (b_e, b_s)
+        };
+        let start = if arena.ptt(a_s).f_t >= arena.ptt(b_s).f_t {
+            a_s
+        } else {
+            b_s
+        };
+        let end = if arena.ptt(a_e).f_t <= arena.ptt(b_e).f_t {
+            a_e
+        } else {
+            b_e
+        };
+        if arena.ptt(start).f_t < arena.ptt(end).f_t {
+            Some((start, end))
+        } else {
+            None
+        }
+    }
+
+    /// Widens every record to the largest run its endpoints support, and
+    /// drops any that became duplicates.
+    ///
+    /// Port of `SkOpCoincidence::expand`. Two records that grow into the same
+    /// run are one record; leaving both would apply the same winding fold
+    /// twice. Returns true when anything moved, which is how
+    /// `HandleCoincidence` knows to re-run the passes that feed on it.
+    pub fn expand(&mut self, arena: &mut OpArena) -> bool {
+        let records = self.records(arena);
+        let mut expanded = false;
+        let mut duplicates = Vec::new();
+        for (i, &coin) in records.iter().enumerate() {
+            if duplicates.contains(&coin) {
+                continue;
+            }
+            let c = arena.coin(coin).clone();
+            let (Some(cs), Some(ce), Some(os), Some(oe)) = (
+                c.f_coin_ptt_start,
+                c.f_coin_ptt_end,
+                c.f_opp_ptt_start,
+                c.f_opp_ptt_end,
+            ) else {
+                continue;
+            };
+            // Reach out along each end's PtT ring for a node further along
+            // the same segment than the record currently claims.
+            let _ = (os, oe);
+            let widened = Self::reach_out(arena, coin, cs, ce);
+            if !widened {
+                continue;
+            }
+            expanded = true;
+            for &test in &records[i + 1..] {
+                let t = arena.coin(test).clone();
+                if t.f_coin_ptt_start == arena.coin(coin).f_coin_ptt_start
+                    && t.f_opp_ptt_start == arena.coin(coin).f_opp_ptt_start
+                {
+                    duplicates.push(test);
+                }
+            }
+        }
+        if !duplicates.is_empty() {
+            let kept: Vec<CoinId> = self
+                .records(arena)
+                .into_iter()
+                .filter(|c| !duplicates.contains(c))
+                .collect();
+            self.relink(arena, &kept);
+        }
+        expanded
+    }
+
+    /// Tries to push one record's ends outward onto aliased PtT nodes.
+    ///
+    /// Returns true when either end moved.
+    fn reach_out(arena: &mut OpArena, coin: CoinId, cs: PtTId, ce: PtTId) -> bool {
+        let Some(coin_seg) = arena.ptt_segment(cs) else {
+            return false;
+        };
+        let mut moved = false;
+        // The start may move earlier, the end later, but only onto a node
+        // already in the same ring: this loosens the record, it does not
+        // invent coincidence that was not found.
+        let mut best_start = cs;
+        for node in arena.ptt_ring(cs) {
+            if arena.ptt_segment(node) == Some(coin_seg)
+                && arena.ptt(node).f_t < arena.ptt(best_start).f_t
+            {
+                best_start = node;
+            }
+        }
+        let mut best_end = ce;
+        for node in arena.ptt_ring(ce) {
+            if arena.ptt_segment(node) == Some(coin_seg)
+                && arena.ptt(node).f_t > arena.ptt(best_end).f_t
+            {
+                best_end = node;
+            }
+        }
+        if best_start != cs {
+            arena.coin_mut(coin).f_coin_ptt_start = Some(best_start);
+            moved = true;
+        }
+        if best_end != ce {
+            arena.coin_mut(coin).f_coin_ptt_end = Some(best_end);
+            moved = true;
+        }
+        moved
+    }
+
+    /// Adds a span to whichever side of each run is missing one.
+    ///
+    /// Port of `SkOpCoincidence::addExpanded`. The two runs of a coincident
+    /// pair are split at whatever t values intersection happened to find, and
+    /// those need not line up. Where one side has a span the other does not,
+    /// this inserts the matching one, interpolating its t from how far along
+    /// the run the existing span sits.
+    ///
+    /// Without it, `mark` and `apply` walk two runs of different lengths and
+    /// pair spans that are not at the same place.
+    pub fn add_expanded(&mut self, arena: &mut OpArena) -> bool {
+        for coin in self.records(arena) {
+            if !Self::add_expanded_one(arena, coin) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Expands one record. Split out to keep the loop readable.
+    fn add_expanded_one(arena: &mut OpArena, coin: CoinId) -> bool {
+        let rec = arena.coin(coin).clone();
+        let (Some(start_ptt), Some(end_ptt), Some(o_start_ptt), Some(o_end_ptt)) = (
+            rec.f_coin_ptt_start,
+            rec.f_coin_ptt_end,
+            rec.f_opp_ptt_start,
+            rec.f_opp_ptt_end,
+        ) else {
+            return true;
+        };
+        let (Some(seg), Some(o_seg)) = (
+            arena.ptt_segment(start_ptt),
+            arena.ptt_segment(o_start_ptt),
+        ) else {
+            return true;
+        };
+        let (t0, t1) = (arena.ptt(start_ptt).f_t, arena.ptt(end_ptt).f_t);
+        let (o_t0, o_t1) = (arena.ptt(o_start_ptt).f_t, arena.ptt(o_end_ptt).f_t);
+        let (range, o_range) = (t1 - t0, o_t1 - o_t0);
+        if range == 0.0 || o_range == 0.0 {
+            return true;
+        }
+
+        // Every interior t on each side, mapped to the other side's range.
+        let coin_ts: Vec<f32> = interior_ts(arena, seg, t0, t1);
+        let opp_ts: Vec<f32> = interior_ts(arena, o_seg, o_t0, o_t1);
+
+        for t in &coin_ts {
+            // Where along the run this span sits, as a fraction.
+            let part = (t - t0) / range;
+            let want = o_t0 + o_range * part;
+            if !opp_ts.iter().any(|o| (o - want).abs() < T_MATCH) {
+                let pt = arena.segment_pt_at_t(o_seg, want);
+                arena.segment_add_t(o_seg, want, pt);
+            }
+        }
+        for o_t in &opp_ts {
+            let part = (o_t - o_t0) / o_range;
+            let want = t0 + range * part;
+            if !coin_ts.iter().any(|t| (t - want).abs() < T_MATCH) {
+                let pt = arena.segment_pt_at_t(seg, want);
+                arena.segment_add_t(seg, want, pt);
+            }
+        }
+        true
+    }
 }
+
+/// Returns the t values of `segment`'s spans strictly inside `t0`..`t1`.
+fn interior_ts(arena: &OpArena, segment: SegmentId, t0: f32, t1: f32) -> Vec<f32> {
+    let (lo, hi) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
+    arena
+        .segment_spans(segment)
+        .into_iter()
+        .map(|s| arena.span(s).f_t)
+        .filter(|t| *t > lo && *t < hi)
+        .collect()
+}
+
+/// How close two t values must be to count as the same split.
+///
+/// Larger than the arithmetic tolerance elsewhere on purpose: the whole point
+/// of `addExpanded` is to avoid inserting a span a hair away from one that
+/// already exists, which would leave the two runs mismatched anyway.
+const T_MATCH: f32 = 1e-4;
 
 /// Bounds a walk over a span run, so a malformed record reports failure
 /// rather than spinning. The C++ carries the same kind of guard.

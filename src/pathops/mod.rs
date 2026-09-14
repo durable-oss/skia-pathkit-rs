@@ -23,6 +23,7 @@ pub mod sk_op_angle_order;
 pub mod sk_op_arena;
 pub mod sk_op_builder;
 pub mod sk_op_coincidence;
+pub mod sk_op_common;
 pub mod sk_op_contour;
 pub mod sk_op_edge_builder;
 pub mod sk_op_segment;
