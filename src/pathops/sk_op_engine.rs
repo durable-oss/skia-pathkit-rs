@@ -1418,4 +1418,42 @@ mod tests {
             "the two must produce the same path"
         );
     }
+
+    #[test]
+    fn near_coincident_discs_union_to_one_contour_with_their_curves() {
+        // The case from TODO/16: two discs of radius 40 whose centres are
+        // 0.5 apart. The flattening engine fragments this into four
+        // contours, because two arcs flattened independently deviate by more
+        // than the gap between them and their chords interleave. Nothing is
+        // flattened here, so the question does not arise.
+        let mut a = Path::new();
+        a.add_circle(200.0, 200.0, 40.0);
+        let mut b = Path::new();
+        b.add_circle(200.5, 200.0, 40.0);
+        let got = op_with_engine(&a, &b, PathOp::Union).expect("the engine resolves this");
+        let contours = got.verbs().iter().filter(|v| **v == Verb::Move).count();
+        assert_eq!(contours, 1, "one overlapping blob, one contour");
+        let curves = got
+            .verbs()
+            .iter()
+            .filter(|v| matches!(v, Verb::Cubic | Verb::Quad | Verb::Conic))
+            .count();
+        assert!(curves > 0, "and it is still made of curves: {:?}", got.verbs());
+    }
+
+    #[test]
+    fn discs_union_to_one_contour_across_the_offset_sweep() {
+        // TODO/16 measured the flattening engine failing only in a narrow
+        // band around 0.5 and holding elsewhere. Check the whole sweep.
+        for offset in [0.5f32, 1.0, 2.0, 5.0, 20.0, 40.0, 60.0] {
+            let mut a = Path::new();
+            a.add_circle(200.0, 200.0, 40.0);
+            let mut b = Path::new();
+            b.add_circle(200.0 + offset, 200.0, 40.0);
+            let got = op_with_engine(&a, &b, PathOp::Union)
+                .unwrap_or_else(|| panic!("offset {offset} should resolve"));
+            let contours = got.verbs().iter().filter(|v| **v == Verb::Move).count();
+            assert_eq!(contours, 1, "offset {offset} gave {contours} contours");
+        }
+    }
 }

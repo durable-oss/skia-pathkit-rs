@@ -67,3 +67,38 @@ stops a pathological input from hanging.
 - `FindChase` returns the same next-segment choice as C++ on a hand-built
   three-way crossing.
 - The five delegators forward to real implementations, not to stubs.
+
+---
+
+## Closed (2026-09-14)
+
+Landed in `src/pathops/sk_op_common.rs`, on the arena rather than on the old
+contour list — whose five delegators forwarded to `SkOpContour` stubs that
+all returned `true`, so the whole file no-opped.
+
+| C++ | now |
+|---|---|
+| `FindUndone` | `find_undone` |
+| `AngleWinding` | `angle_winding` |
+| `FindChase` | `find_chase` |
+| `HandleCoincidence` | `handle_coincidence` |
+
+`AngleWinding`'s second pass is the part worth reading. When the angle loop
+contains an unorderable angle the loop's *order* is useless, so instead of
+reading a winding off a neighbour it asks each angle for its own. Inheriting
+a winding across an unorderable turn is inheriting it across an unknown
+direction, which yields a plausible wrong answer rather than a detectable
+failure.
+
+`SortContourList` is **not** ported (item's part 4). The arena holds segments
+in a flat list with `f_next`/`f_prev` links, and nothing reads a sorted
+contour head yet; the relinking the item describes has no consumer. It comes
+back if contour-level ordering is needed.
+
+### On the acceptance criteria
+
+- `HandleCoincidence` on two segments over the same line marks the shared
+  edge coincident and folds one side away: `handle_coincidence_marks_a_shared_edge`.
+- The `SAFETY_COUNT` loop returns `false` rather than hanging; the bound is
+  kept even where it looks unreachable.
+- The five delegators are gone; callers use the arena functions directly.

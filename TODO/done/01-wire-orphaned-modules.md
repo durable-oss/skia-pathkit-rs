@@ -128,3 +128,27 @@ Two more, found by clippy once the files compiled:
    plus `conic_eval_numerator` / `conic_eval_denominator`. Tests check that the
    sub-conic lies on the original arc and that subdividing over `0..1` returns
    the original.
+
+---
+
+## Closed (2026-09-14)
+
+The acceptance check is empty:
+
+```
+$ for f in src/pathops/*.rs; do n=$(basename $f .rs); [ "$n" = mod ] || \
+    grep -q "mod $n;" src/pathops/mod.rs || echo "ORPHAN $n"; done
+(no output)
+```
+
+Both remaining orphans turned out to be superseded rather than needed:
+
+- **`SkPathOpsOp.rs`** — its `Op`/`bridgeOp` is now `sk_op_engine.rs`, built
+  on the arena. The one thing worth keeping was `gOpInverse`/`gOutInverse`,
+  the inverse-fill tables; those are ported into `sk_op_engine::
+  resolve_inverse`. File deleted.
+- **`sk_add_intersections.rs`** — the intersection pass on the old contour
+  model, replaced by `sk_op_engine::add_intersect_ts` on the arena. It was
+  blocked on `SkIntersections::{quad,conic,cubic}_horizontal`, which never
+  needed to exist: the arena pass finds crossings by bracketing sign changes
+  and refining, and detects collinear coincidence separately. File deleted.

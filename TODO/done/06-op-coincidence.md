@@ -75,3 +75,43 @@ earlier steps only feed them.
 - `isEmpty` and the `findOverlaps` loop terminate — `HandleCoincidence` runs
   them under a `SAFETY_COUNT` of 3 and returns failure if it does not settle.
 - No method returns a bare `true`.
+
+---
+
+## Closed (2026-09-14)
+
+Every method returned a bare `true`; the ones that matter are now real.
+
+| part | landed as |
+|---|---|
+| 1 `SkCoincidentSpans` | already had all four PtT ends and `fNext`; `extend_record`, `record_contains` added |
+| 2 list management | `add_run`, `records`, `relink`, `release_deleted`, `fix_up` |
+| 3 range predicates | `overlaps`, `ordered_segments`, `shared_range` |
+| 4 `expand`, `addExpanded` | `expand`, `add_expanded` |
+| 5 `addOverlap` family | `add_or_extend`, `add_overlap`, `find_contributing` |
+| 7 `mark` | `mark` |
+| 8 `apply` | `apply` |
+| 9 `findOverlaps` | `find_overlaps` |
+
+`correctEnds` / `addEndMovedSpans` (part 6) are not ported. They repair
+records whose endpoints moved during `move_nearby`; the arena's `move_nearby`
+merges PtT rings rather than moving points, so there is nothing to correct.
+If point-moving is added later, they come back with it.
+
+### On the acceptance criteria
+
+- Two segments sharing a collinear run are detected as one pair with correct
+  start/end PtTs on both sides: `add_or_extend`, tested.
+- `apply` makes a shared edge interior: `apply_folds_a_shared_edge_onto_one_side`
+  asserts the pair's total winding is conserved *and* that one side is zeroed
+  and marked done. This is the case `sk_path_ops_simplify::dedup_coincident`
+  hand-rolls around.
+- `isEmpty` and the `findOverlaps` loop terminate under `SAFETY_COUNT`:
+  `sk_op_common::handle_coincidence` keeps the bound and returns false.
+- No method returns a bare `true`.
+
+One test expectation was wrong on first write: a flipped pair walks the
+opposite run from its far end, so segment A's head pairs with segment B's
+*tail*. Comparing the two heads reads one zeroed span and one untouched one
+and looks like a failure to cancel. The test now checks the spans `apply`
+actually pairs.

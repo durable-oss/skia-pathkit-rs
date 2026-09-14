@@ -75,3 +75,36 @@ disappears with the engine that causes it.
 - Intersect likewise.
 - The ellipse sweep in `union_of_offset_discs_is_one_contour`'s neighbourhood
   does not regress.
+
+---
+
+## Resolved in the real engine (2026-09-14)
+
+This file's own assessment was right: "worth fixing only if items 02-09 are
+far off. If they are close, this disappears with the engine that causes it."
+
+Measured today, radius 40, offset 0.5:
+
+| | flattening engine | `sk_op_engine` |
+|---|---|---|
+| union | **4 contours** | **1 contour, 8 curves** |
+| intersect | **6 contours** | declines (falls back) |
+
+`discs_union_to_one_contour_across_the_offset_sweep` in `sk_op_engine.rs`
+checks 0.5, 1, 2, 5, 20, 40 and 60 — all one contour.
+`near_coincident_discs_union_to_one_contour_with_their_curves` pins the 0.5
+case and that the result is still made of curves.
+
+The mechanism is exactly what this file predicted. Two arcs flattened
+independently each deviate from the true curve by up to the tolerance; where
+the inputs are closer together than that deviation, their chords interleave.
+Nothing is flattened in the real engine, so there are no chords to interleave.
+
+**Still open in the sense that `pathops::op` does not use that engine yet.**
+Until `TODO/09-bridge-winding-xor.md`'s remaining winding bug is fixed, a
+caller going through `op` still gets the four-contour answer. Nothing more is
+needed *for this defect*; it closes when the switch lands.
+
+Do not re-try the two approaches recorded above (dropping zero-area contours,
+tightening `FLAT_TOL`). They were measured and reverted, and neither is
+relevant to the engine that replaces them.

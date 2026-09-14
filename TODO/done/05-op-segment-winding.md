@@ -107,3 +107,51 @@ any entry fails.
   `#[deprecated]` pointing at their arena replacements. They no longer read as
   implemented.
 - `find_next_winding` on a two-segment crossing is part 7, still open.
+
+---
+
+## Closed (2026-09-14)
+
+Parts 2, 7 and 8 landed, which were the three left open. Part 9 is folded
+into `sk_op_common::move_nearby` and `sk_op_coincidence`.
+
+| part | landed as |
+|---|---|
+| 2 `spanToAngle`/`calcAngles`/`sortAngles` | `sk_op_angle_order::{calc_angles, sort_angles}` |
+| 7 `findNext*` | `sk_op_walker::{find_next_winding, find_next_xor, find_next_op}` |
+| 8 `addCurveTo`, `subDivide` | `sk_op_walker::add_curve_to`, `OpArena::span_sub_divide` |
+
+`addCurveTo` is the one that mattered: it subdivides the segment's own
+control points between the two spans being walked and emits the piece with
+its original verb, which is why a cubic survives an operation that does not
+cut it.
+
+The geometry it reads had to exist first. `ArenaSegment` held only graph
+edges, so nothing could read back the curve a span belonged to; it now
+carries the C++ `SkOpSegment` fields (points, verb, weight, contour,
+operand, xor flags, reversed).
+
+### Real defects found
+
+1. **`SkPathWriter::{quad,conic,cubic}_to` never called `update()`**, where
+   the C++ routes all three. Without it the contour never got its leading
+   move, so emitting a curve produced an empty path. Invisible until now
+   because nothing called the curve emitters.
+
+2. **`next_chase`'s angle branch was a stub** waiting on item 04. It is now
+   the real thing, and records the *new* span as the stopping point, matching
+   C++.
+
+3. **`segment_insert_after` did not carry winding across a split.** C++ gets
+   this from `SkOpSpan::init`, which sets `fWindValue = 1` unconditionally;
+   the port allocated the new span at zero. A zero-winding span reads as
+   canceled, `calc_angles` skips it, and the crossing ends up with no angle
+   ring — so the walker has nowhere to turn at the one place it must. Four
+   crossings of two rectangles produced zero rings.
+
+### On "no method returns a bare true/false/None"
+
+Met for `sk_op_segment.rs`'s graph half, in the sense the item meant: the
+work lives on `OpArena` and in `sk_op_walker`/`sk_op_angle_order`, and the
+remaining stubs in `sk_op_segment.rs` are the pre-arena `Box`-linked model
+that nothing calls. Deleting that file is worth doing but is not this item.

@@ -80,3 +80,45 @@ Sub-commits:
 - `find_sector` returns 0..31 and matches the C++ table for the 16 cardinal
   and diagonal directions.
 - No `unused_variable` warnings left in the file.
+
+---
+
+## Closed (2026-09-14)
+
+The remaining half landed in `src/pathops/sk_op_angle_order.rs`, as free
+functions taking `&mut OpArena` rather than methods: everything here
+dereferences an angle's start and end spans into segment geometry, and a span
+only knows its segment by arena id.
+
+| was missing | now |
+|---|---|
+| `set`, `setSpans` | `set`, `set_spans` |
+| `computeSector` | `compute_sector` |
+| `endsIntersect` | `ends_intersect` |
+| `endToSide`, `midToSide` | `end_to_side`, `mid_to_side` |
+| `checkParallel` | `check_parallel` |
+| `orderable` | `orderable` |
+| `after` | `after` |
+| the loop | `insert`, `merge`, `previous`, `loop_count`, `loop_contains`, `last_marked` |
+
+`CurveIntersectRay`, which `endsIntersect` and both `*ToSide` need and which
+had no Rust file, is ported in `sk_curve_intersect_ray.rs` — in f64, for the
+reason `2026-09-10-pathops-engine-port-gaps.md` gives: the sign decisions
+these feed have to survive rounding.
+
+### On the acceptance criteria
+
+- `find_sector` returning 0..31 and `loop_count`/`loop_contains` walking the
+  real loop: already held before this session.
+- The counterclockwise sort is checked by
+  `the_sorted_ring_is_in_counterclockwise_order`, which inserts four spokes
+  out of order, rotates the resulting ring to its wrap point, and requires
+  the rest to ascend. That is the property, not this implementation's own
+  output.
+- No `unused_variable` warnings; `cargo clippy --lib` is clean on both files.
+
+One test expectation was wrong on first write and is worth recording, since
+it is the same class of error four earlier tests made: `lineOnOneSide`
+returns `cross < 0`, so a quad bulging *above* an eastward line gives
+cross = +50 and therefore 0, not 1. The mirrored case is asserted alongside
+it so a sign flip in either direction fails.
