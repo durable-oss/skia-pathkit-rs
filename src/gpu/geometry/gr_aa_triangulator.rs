@@ -395,12 +395,18 @@ impl Event {
     }
 }
 
-/// Which end of the alpha range an [`EventComparator`] treats as highest priority.
+/// Which end of the alpha range an [`EventComparator`] treats as highest
+/// priority.
+///
+/// The names come from the C++, where this selects the `<` or `>` predicate
+/// handed to a `std::priority_queue`. Such a queue yields whichever element
+/// the predicate ranks greatest, so the sense is inverted from what the name
+/// suggests: see [`EventComparator::pops_highest_alpha`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EventOp {
-    /// Order ascending by alpha.
+    /// Compare with `<`, so the queue yields the highest alpha first.
     LessThan,
-    /// Order descending by alpha.
+    /// Compare with `>`, so the queue yields the lowest alpha first.
     GreaterThan,
 }
 
@@ -416,36 +422,49 @@ impl EventComparator {
     pub fn new(op: EventOp) -> Self {
         Self { op }
     }
+
+    /// Whether a queue under this comparator yields the highest-alpha event
+    /// first. True for [`EventOp::LessThan`], matching `std::priority_queue`,
+    /// which pops whichever element its "less than" predicate ranks greatest.
+    pub fn pops_highest_alpha(&self) -> bool {
+        self.op == EventOp::LessThan
+    }
 }
 
 /// Priority queue of pending edge collapses, keyed on event alpha.
+///
+/// Stands in for the C++ `std::priority_queue<Event*, ..., EventComparator>`.
+/// Events are kept sorted so that the one the comparator ranks highest sits
+/// at the tail, where [`pop`](Self::pop) takes it from.
 #[derive(Clone, Debug)]
 pub struct EventList {
     events: Vec<Event>,
+    comparator: EventComparator,
 }
 
 impl EventList {
-    /// Create an empty queue. The comparator only picks the initial sort order;
-    /// [`EventList::push`] currently re-sorts ascending by alpha regardless.
+    /// Create an empty queue ordered by `comparator`.
     pub fn new(comparator: EventComparator) -> Self {
-        let mut events = Vec::new();
-        // Sort events by alpha according to comparator
-        match comparator.op {
-            EventOp::LessThan => events.sort_by_key(|e: &Event| e.alpha),
-            EventOp::GreaterThan => events.sort_by_key(|e: &Event| std::cmp::Reverse(e.alpha)),
+        Self {
+            events: Vec::new(),
+            comparator,
         }
-        Self { events }
     }
 
-    /// Queue an event, re-sorting ascending by alpha so the highest-alpha event
-    /// sits at the tail where [`EventList::pop`] takes it from.
+    /// Queue an event, keeping the queue ordered so the comparator's
+    /// highest-priority event sits at the tail.
     pub fn push(&mut self, event: Event) {
         self.events.push(event);
-        // Re-sort to maintain order
-        self.events.sort_by_key(|e: &Event| e.alpha);
+        if self.comparator.pops_highest_alpha() {
+            self.events.sort_by_key(|e: &Event| e.alpha);
+        } else {
+            self.events.sort_by_key(|e: &Event| std::cmp::Reverse(e.alpha));
+        }
     }
 
-    /// Remove and return the highest-alpha event, or `None` when the queue is empty.
+    /// Remove and return the event the comparator ranks highest: the largest
+    /// alpha under [`EventOp::LessThan`], the smallest under
+    /// [`EventOp::GreaterThan`]. `None` when the queue is empty.
     pub fn pop(&mut self) -> Option<Event> {
         self.events.pop()
     }
@@ -637,23 +656,53 @@ mod tests {
         assert_eq!(list.count(), 1);
     }
 
-    #[test]
-    fn test_event_list() {
-        let comparator = EventComparator::new(EventOp::LessThan);
-        let mut list = EventList::new(comparator);
-
+    fn filled_event_list(op: EventOp) -> EventList {
+        let mut list = EventList::new(EventComparator::new(op));
         list.push(Event::new(0, Point::new(0.0, 0.0), 100));
         list.push(Event::new(1, Point::new(1.0, 1.0), 50));
         list.push(Event::new(2, Point::new(2.0, 2.0), 200));
+        list
+    }
 
+    #[test]
+    fn event_list_less_than_pops_highest_alpha_first() {
+        // std::priority_queue yields whatever its "less than" predicate ranks
+        // greatest, so kLessThan drains from the top of the alpha range.
+        let mut list = filled_event_list(EventOp::LessThan);
         assert_eq!(list.size(), 3);
 
-        // Pop returns the last element in the vector
-        let event1 = list.pop().unwrap();
-        assert_eq!(event1.alpha, 200); // Last in sorted order
+        assert_eq!(list.pop().unwrap().alpha, 200);
+        assert_eq!(list.pop().unwrap().alpha, 100);
+        assert_eq!(list.pop().unwrap().alpha, 50);
+        assert!(list.pop().is_none());
+    }
 
-        let event2 = list.pop().unwrap();
-        assert_eq!(event2.alpha, 100);
+    #[test]
+    fn event_list_greater_than_pops_lowest_alpha_first() {
+        // The mirror image: kGreaterThan drains from the bottom. This is the
+        // case the comparator used to be ignored for.
+        let mut list = filled_event_list(EventOp::GreaterThan);
+        assert_eq!(list.size(), 3);
+
+        assert_eq!(list.pop().unwrap().alpha, 50);
+        assert_eq!(list.pop().unwrap().alpha, 100);
+        assert_eq!(list.pop().unwrap().alpha, 200);
+        assert!(list.pop().is_none());
+    }
+
+    #[test]
+    fn event_list_ordering_holds_when_pushes_interleave_with_pops() {
+        // Sorting on push has to keep the invariant across a mixed sequence,
+        // not just for a batch queued up front.
+        let mut list = EventList::new(EventComparator::new(EventOp::GreaterThan));
+        list.push(Event::new(0, Point::new(0.0, 0.0), 100));
+        list.push(Event::new(1, Point::new(1.0, 1.0), 200));
+        assert_eq!(list.pop().unwrap().alpha, 100);
+
+        list.push(Event::new(2, Point::new(2.0, 2.0), 30));
+        assert_eq!(list.pop().unwrap().alpha, 30);
+        assert_eq!(list.pop().unwrap().alpha, 200);
+        assert!(list.is_empty());
     }
 
     #[test]
