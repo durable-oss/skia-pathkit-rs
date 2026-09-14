@@ -666,7 +666,10 @@ mod tests {
 
         let comparator = Comparator::new(ComparatorDirection::Vertical);
         let result = GrAATriangulator::new().simplify_boundary(&mut boundary, &comparator);
-        assert!(result.count() >= 0);
+        // A lone edge has no predecessor to be pointy against, so it is kept
+        // and the input list is drained.
+        assert_eq!(result.count(), 1);
+        assert_eq!(boundary.count(), 0);
     }
 
     #[test]
