@@ -12,8 +12,8 @@ use super::path::Path;
 use super::point::{Point, Vector};
 use super::scalar::Scalar;
 use super::sk_geometry::{
-    chop_cubic_at, chop_quad_at, eval_cubic_at, eval_quad_at, find_cubic_cusp,
-    find_cubic_inflections, find_cubic_max_curvature, find_quad_max_curvature, Conic,
+    eval_cubic_at, eval_quad_at, find_cubic_cusp, find_cubic_inflections,
+    find_quad_max_curvature, Conic,
 };
 
 // Recursive limits for curve subdivision
@@ -88,7 +88,7 @@ impl SkQuadConstruct {
         self.start_t < self.mid_t && self.mid_t < self.end_t
     }
 
-    fn initWithStart(&mut self, parent: &SkQuadConstruct) -> bool {
+    fn init_with_start(&mut self, parent: &SkQuadConstruct) -> bool {
         if !self.init(parent.start_t, parent.mid_t) {
             return false;
         }
@@ -98,7 +98,7 @@ impl SkQuadConstruct {
         true
     }
 
-    fn initWithEnd(&mut self, parent: &SkQuadConstruct) -> bool {
+    fn init_with_end(&mut self, parent: &SkQuadConstruct) -> bool {
         if !self.init(parent.mid_t, parent.end_t) {
             return false;
         }
@@ -150,20 +150,18 @@ impl SkPathStroker {
     pub fn new(
         radius: Scalar,
         miter_limit: Scalar,
-        cap: crate::core::Cap,
+        _cap: crate::core::Cap,
         join: crate::core::Join,
         res_scale: Scalar,
         can_ignore_center: bool,
     ) -> Self {
+        // The cap/join dispatch (capper and joiner function pointers in the
+        // C++) is not wired up yet, so the stroker has nowhere to store the
+        // degenerate-miter demotion to bevel; only inv_miter_limit is kept.
         let mut inv_miter_limit = 0.0;
-        let mut adjusted_join = join;
 
-        if join == crate::core::Join::Miter {
-            if miter_limit <= 1.0 {
-                adjusted_join = crate::core::Join::Bevel;
-            } else {
-                inv_miter_limit = 1.0 / miter_limit;
-            }
+        if join == crate::core::Join::Miter && miter_limit > 1.0 {
+            inv_miter_limit = 1.0 / miter_limit;
         }
 
         let inv_res_scale = 1.0 / (res_scale * 4.0);
@@ -337,8 +335,8 @@ impl SkPathStroker {
 
         let mut normal_ab = Vector::default();
         let mut unit_ab = Vector::default();
-        let mut normal_cd = Vector::default();
-        let mut unit_cd = Vector::default();
+        let normal_cd = Vector::default();
+        let unit_cd = Vector::default();
 
         let tangent_pt = tangent_pt.unwrap();
         if !self.pre_join_to(*tangent_pt, &mut normal_ab, &mut unit_ab, false) {
@@ -363,8 +361,8 @@ impl SkPathStroker {
         // Handle cusps
         let cusp = find_cubic_cusp(&cubic);
         if cusp > 0.0 && cusp < 1.0 {
-            let cusp_loc = eval_cubic_at(&cubic, cusp);
-            // Add circle at cusp location
+            let _cusp_loc = eval_cubic_at(&cubic, cusp);
+            // TODO: add the cusp circle to self.cusper once the capper is ported.
         }
 
         self.post_join_to(pt3, normal_cd, unit_cd);
@@ -568,7 +566,7 @@ impl SkPathStroker {
 
     fn check_cubic_linear<'a>(
         cubic: &'a [Point; 4],
-        reduction: &'a mut [Point; 3],
+        _reduction: &'a mut [Point; 3],
     ) -> Option<&'a Point> {
         let degenerate_ab = (cubic[1] - cubic[0]).length_squared() < 1e-10;
         let degenerate_bc = (cubic[2] - cubic[1]).length_squared() < 1e-10;
@@ -589,7 +587,7 @@ impl SkPathStroker {
         Some(&cubic[1])
     }
 
-    fn cubic_in_line(cubic: &[Point; 4]) -> bool {
+    fn cubic_in_line(_cubic: &[Point; 4]) -> bool {
         // Simplified collinearity check
         true
     }
@@ -622,7 +620,7 @@ impl SkPathStroker {
         }
 
         let mut half = SkQuadConstruct::new();
-        if !half.initWithStart(quad_pts) {
+        if !half.init_with_start(quad_pts) {
             self.add_degenerate_line(quad_pts);
             self.recursion_depth -= 1;
             return true;
@@ -632,7 +630,7 @@ impl SkPathStroker {
             return false;
         }
 
-        if !half.initWithEnd(quad_pts) {
+        if !half.init_with_end(quad_pts) {
             self.add_degenerate_line(quad_pts);
             self.recursion_depth -= 1;
             return true;
@@ -674,12 +672,12 @@ impl SkPathStroker {
         }
 
         let mut half = SkQuadConstruct::new();
-        half.initWithStart(quad_pts);
+        half.init_with_start(quad_pts);
         if !self.conic_stroke(conic, &mut half) {
             return false;
         }
 
-        half.initWithEnd(quad_pts);
+        half.init_with_end(quad_pts);
         if !self.conic_stroke(conic, &mut half) {
             return false;
         }
@@ -690,7 +688,7 @@ impl SkPathStroker {
 
     fn cubic_stroke(&mut self, cubic: &[Point; 4], quad_pts: &mut SkQuadConstruct) -> bool {
         if !self.found_tangents {
-            let result_type = self.tangentsMeet(cubic, quad_pts);
+            let result_type = self.tangents_meet(cubic, quad_pts);
 
             if result_type != ResultType::Quad {
                 if result_type == ResultType::Degenerate {
@@ -731,7 +729,7 @@ impl SkPathStroker {
         }
 
         let mut half = SkQuadConstruct::new();
-        if !half.initWithStart(quad_pts) {
+        if !half.init_with_start(quad_pts) {
             self.add_degenerate_line(quad_pts);
             self.recursion_depth -= 1;
             return true;
@@ -741,7 +739,7 @@ impl SkPathStroker {
             return false;
         }
 
-        if !half.initWithEnd(quad_pts) {
+        if !half.init_with_end(quad_pts) {
             self.add_degenerate_line(quad_pts);
             self.recursion_depth -= 1;
             return true;
@@ -808,7 +806,7 @@ impl SkPathStroker {
         self.stroke_close_enough(&quad_pts.quad, &ray)
     }
 
-    fn tangentsMeet(&mut self, cubic: &[Point; 4], quad_pts: &mut SkQuadConstruct) -> ResultType {
+    fn tangents_meet(&mut self, cubic: &[Point; 4], quad_pts: &mut SkQuadConstruct) -> ResultType {
         self.conic_quad_ends(cubic, quad_pts);
         self.intersect_ray(quad_pts)
     }

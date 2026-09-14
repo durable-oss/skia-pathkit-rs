@@ -33,7 +33,7 @@ fn equal_ulps(a: f32, b: f32, epsilon: i32, depsilon: i32) -> bool {
 }
 
 /// Compare floats by ULPs without checking for denormalized values
-fn equal_ulps_no_normal_check(a: f32, b: f32, epsilon: i32, depsilon: i32) -> bool {
+fn equal_ulps_no_normal_check(a: f32, b: f32, epsilon: i32, _depsilon: i32) -> bool {
     let a_bits = float_as_2s_complement(a);
     let b_bits = float_as_2s_complement(b);
     a_bits < b_bits + epsilon && b_bits < a_bits + epsilon

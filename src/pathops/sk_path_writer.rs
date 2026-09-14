@@ -225,10 +225,8 @@ impl<'a> SkPathWriter<'a> {
         if idx >= self.partials.len() {
             return;
         }
-        // Extend partial through simple segment (SkOpPtT linkage in full port)
-        if let Some(partial) = self.partials.get_mut(idx) {
-            // partial.set_done(true); // Path has no set_done; mark via other means in full port
-        }
+        // Extending a partial through its simple segment needs the SkOpPtT
+        // linkage, which is not ported yet; Path has no set_done equivalent.
     }
 
     /// Returns true if p1 contains p2 (roughly equal)

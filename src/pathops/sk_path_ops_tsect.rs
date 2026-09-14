@@ -432,7 +432,7 @@ impl TSpan {
         between(self.start_t, t, self.end_t)
     }
 
-    fn add_bounded(&mut self, span: Rc<RefCell<TSpan>>, heap: &ArenaAlloc) {
+    fn add_bounded(&mut self, span: Rc<RefCell<TSpan>>, _heap: &ArenaAlloc) {
         // Add span to bounded list
         let bounded = TSpanBounded::new(span);
         let bounded_rc = Rc::new(RefCell::new(bounded));
@@ -485,7 +485,7 @@ impl TSpan {
         while let Some(curr) = current {
             let next = curr.borrow().next.clone();
             if curr.borrow().bounded.borrow().start_t == to_remove.start_t {
-                if let Some(mut p) = prev {
+                if let Some(p) = prev {
                     p.borrow_mut().next = next;
                     result = false;
                 } else {
@@ -501,7 +501,7 @@ impl TSpan {
         result
     }
 
-    fn hull_check(&self, opp: &TSpan) -> i32 {
+    fn hull_check(&self, _opp: &TSpan) -> i32 {
         // Check hull intersection - returns 0=no, 1=yes, 2=share endpoint, -1=needs more check
         if self.is_linear {
             return -1;
@@ -801,7 +801,6 @@ impl TSect {
             return false;
         }
 
-        let next = span.borrow().next.clone();
         span.borrow_mut().next = self.deleted.clone();
         self.deleted = Some(span);
         true
@@ -858,7 +857,6 @@ fn binary_search_coincident(
 
         if flip {
             t_step_half = -t_step_half;
-            flip = false;
         }
         let _ = t_step_half;
 

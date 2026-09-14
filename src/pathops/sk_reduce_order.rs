@@ -11,17 +11,17 @@ use crate::core::{Point, Scalar};
 /// Double-precision point (2D).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct SkDPoint {
-    pub fX: Scalar,
-    pub fY: Scalar,
+    pub f_x: Scalar,
+    pub f_y: Scalar,
 }
 
 impl SkDPoint {
     pub const fn new(x: Scalar, y: Scalar) -> Self {
-        SkDPoint { fX: x, fY: y }
+        SkDPoint { f_x: x, f_y: y }
     }
 
     pub const fn zero() -> Self {
-        SkDPoint { fX: 0.0, fY: 0.0 }
+        SkDPoint { f_x: 0.0, f_y: 0.0 }
     }
 }
 
@@ -30,8 +30,8 @@ impl std::ops::Sub for SkDPoint {
 
     fn sub(self, rhs: Self) -> Self {
         SkDPoint {
-            fX: self.fX - rhs.fX,
-            fY: self.fY - rhs.fY,
+            f_x: self.f_x - rhs.f_x,
+            f_y: self.f_y - rhs.f_y,
         }
     }
 }
@@ -76,14 +76,14 @@ pub fn reduce_line(line: &[SkDPoint; 2]) -> (usize, [SkDPoint; 2]) {
     let mut result = [SkDPoint::zero(); 2];
     result[0] = line[0];
     let different =
-        !almost_equal_ulps(line[0].fX, line[1].fX) || !almost_equal_ulps(line[0].fY, line[1].fY);
+        !almost_equal_ulps(line[0].f_x, line[1].f_x) || !almost_equal_ulps(line[0].f_y, line[1].f_y);
     result[1] = if different { line[1] } else { line[0] };
     (1 + different as usize, result)
 }
 
 /// Check how many unique points are in a reduction.
 fn reduction_line_count(pts: &[SkDPoint; 2]) -> usize {
-    if almost_equal_ulps(pts[0].fX, pts[1].fX) && almost_equal_ulps(pts[0].fY, pts[1].fY) {
+    if almost_equal_ulps(pts[0].f_x, pts[1].f_x) && almost_equal_ulps(pts[0].f_y, pts[1].f_y) {
         1
     } else {
         2
@@ -119,7 +119,7 @@ fn check_linear(
     let v12 = quad[2] - quad[1];
 
     // Cross product should be near zero for colinearity
-    let cross = v01.fX * v12.fY - v01.fY * v12.fX;
+    let cross = v01.f_x * v12.f_y - v01.f_y * v12.f_x;
 
     if approximately_zero(cross) {
         let mut reduction = [SkDPoint::zero(); 2];
@@ -141,16 +141,16 @@ pub fn reduce_quad(quad: &[SkDPoint; 3]) -> (usize, [SkDPoint; 3]) {
     let mut max_y = 0;
 
     for i in 1..3 {
-        if quad[i].fX < quad[min_x].fX {
+        if quad[i].f_x < quad[min_x].f_x {
             min_x = i;
         }
-        if quad[i].fX > quad[max_x].fX {
+        if quad[i].f_x > quad[max_x].f_x {
             max_x = i;
         }
-        if quad[i].fY < quad[min_y].fY {
+        if quad[i].f_y < quad[min_y].f_y {
             min_y = i;
         }
-        if quad[i].fY > quad[max_y].fY {
+        if quad[i].f_y > quad[max_y].f_y {
             max_y = i;
         }
     }
@@ -160,10 +160,10 @@ pub fn reduce_quad(quad: &[SkDPoint; 3]) -> (usize, [SkDPoint; 3]) {
     let mut min_y_set = 0;
 
     for i in 0..3 {
-        if almost_equal_ulps(quad[i].fX, quad[min_x].fX) {
+        if almost_equal_ulps(quad[i].f_x, quad[min_x].f_x) {
             min_x_set |= 1 << i;
         }
-        if almost_equal_ulps(quad[i].fY, quad[min_y].fY) {
+        if almost_equal_ulps(quad[i].f_y, quad[min_y].f_y) {
             min_y_set |= 1 << i;
         }
     }
@@ -222,10 +222,10 @@ fn check_quadratic(cubic: &[SkDPoint; 4]) -> Option<(usize, [SkDPoint; 3])> {
     // For a cubic to be reducible to quadratic:
     // P1 - P0 and P3 - P2 should be parallel and in 2:3 ratio
 
-    let dx10 = cubic[1].fX - cubic[0].fX;
-    let dx23 = cubic[2].fX - cubic[3].fX;
-    let mid_x = cubic[0].fX + dx10 * 1.5;
-    let side_ax = mid_x - cubic[3].fX;
+    let dx10 = cubic[1].f_x - cubic[0].f_x;
+    let dx23 = cubic[2].f_x - cubic[3].f_x;
+    let mid_x = cubic[0].f_x + dx10 * 1.5;
+    let side_ax = mid_x - cubic[3].f_x;
     let side_bx = dx23 * 1.5;
 
     if approximately_zero(side_ax) {
@@ -236,10 +236,10 @@ fn check_quadratic(cubic: &[SkDPoint; 4]) -> Option<(usize, [SkDPoint; 3])> {
         return None;
     }
 
-    let dy10 = cubic[1].fY - cubic[0].fY;
-    let dy23 = cubic[2].fY - cubic[3].fY;
-    let mid_y = cubic[0].fY + dy10 * 1.5;
-    let side_ay = mid_y - cubic[3].fY;
+    let dy10 = cubic[1].f_y - cubic[0].f_y;
+    let dy23 = cubic[2].f_y - cubic[3].f_y;
+    let mid_y = cubic[0].f_y + dy10 * 1.5;
+    let side_ay = mid_y - cubic[3].f_y;
     let side_by = dy23 * 1.5;
 
     if approximately_zero(side_ay) {
@@ -267,16 +267,16 @@ pub fn reduce_cubic(cubic: &[SkDPoint; 4], allow_quadratics: bool) -> (usize, [S
     let mut max_y = 0;
 
     for i in 1..4 {
-        if cubic[i].fX < cubic[min_x].fX {
+        if cubic[i].f_x < cubic[min_x].f_x {
             min_x = i;
         }
-        if cubic[i].fX > cubic[max_x].fX {
+        if cubic[i].f_x > cubic[max_x].f_x {
             max_x = i;
         }
-        if cubic[i].fY < cubic[min_y].fY {
+        if cubic[i].f_y < cubic[min_y].f_y {
             min_y = i;
         }
-        if cubic[i].fY > cubic[max_y].fY {
+        if cubic[i].f_y > cubic[max_y].f_y {
             max_y = i;
         }
     }
@@ -286,13 +286,13 @@ pub fn reduce_cubic(cubic: &[SkDPoint; 4], allow_quadratics: bool) -> (usize, [S
     let mut min_y_set = 0;
 
     for i in 0..4 {
-        let cx = cubic[i].fX;
-        let cy = cubic[i].fY;
+        let cx = cubic[i].f_x;
+        let cy = cubic[i].f_y;
         let denom = cx
             .abs()
             .max(cy.abs())
-            .max(cubic[min_x].fX.abs())
-            .max(cubic[min_y].fY.abs());
+            .max(cubic[min_x].f_x.abs())
+            .max(cubic[min_y].f_y.abs());
 
         if denom == 0.0 {
             min_x_set |= 1 << i;
@@ -301,10 +301,10 @@ pub fn reduce_cubic(cubic: &[SkDPoint; 4], allow_quadratics: bool) -> (usize, [S
         }
 
         let inv = 1.0 / denom;
-        if approximately_equal_half(cx * inv, cubic[min_x].fX * inv) {
+        if approximately_equal_half(cx * inv, cubic[min_x].f_x * inv) {
             min_x_set |= 1 << i;
         }
-        if approximately_equal_half(cy * inv, cubic[min_y].fY * inv) {
+        if approximately_equal_half(cy * inv, cubic[min_y].f_y * inv) {
             min_y_set |= 1 << i;
         }
     }
@@ -351,8 +351,8 @@ pub fn reduce_cubic(cubic: &[SkDPoint; 4], allow_quadratics: bool) -> (usize, [S
         let v23 = cubic[3] - cubic[2];
 
         // Check all segments have the same direction
-        let c1 = v01.fX * v12.fY - v01.fY * v12.fX;
-        let c2 = v12.fX * v23.fY - v12.fY * v23.fX;
+        let c1 = v01.f_x * v12.f_y - v01.f_y * v12.f_x;
+        let c2 = v12.f_x * v23.f_y - v12.f_y * v23.f_x;
 
         if approximately_zero(c1) && approximately_zero(c2) {
             is_linear = true;

@@ -6,7 +6,7 @@
 //!
 //! Source: `old/pathkit/include/pathops/SkPathOps.h`.
 
-use crate::core::{FillType, Path, Rect};
+use crate::core::{Path, Rect};
 use crate::error::PathKitError;
 
 mod boolean;
@@ -118,6 +118,7 @@ pub use sk_op_builder::OpBuilder;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::FillType;
 
     #[test]
     fn union_identical_paths() {

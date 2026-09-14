@@ -3,7 +3,7 @@
 //! This module provides the GrTriangulator class which converts paths to triangles
 //! using a sweep-line algorithm. Ported from Skia's GrTriangulator.cpp.
 
-use crate::core::{ArenaAlloc, FillType, Path, Point, Rect, Scalar, Verb};
+use crate::core::{FillType, Path, Point, Rect, Scalar, Verb};
 
 const K_ARENA_DEFAULT_CHUNK_SIZE: usize = 16 * 1024;
 

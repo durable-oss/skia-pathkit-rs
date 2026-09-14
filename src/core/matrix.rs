@@ -887,7 +887,7 @@ pub fn decompose_upper_2x2(matrix: &Matrix) -> Option<(Point, Point, Point)> {
         sin1 = -sin1; // Rotation 1 is U^T
     }
 
-    let scale = Point::new(PkDoubleToScalar(w1 as f64), PkDoubleToScalar(w2 as f64));
+    let scale = Point::new(pk_double_to_scalar(w1 as f64), pk_double_to_scalar(w2 as f64));
     let rotation1 = Point::new(cos1, sin1);
     let rotation2 = Point::new(cos2, sin2);
 
@@ -895,7 +895,7 @@ pub fn decompose_upper_2x2(matrix: &Matrix) -> Option<(Point, Point, Point)> {
 }
 
 /// Helper to convert f64 to Scalar
-fn PkDoubleToScalar(v: f64) -> Scalar {
+fn pk_double_to_scalar(v: f64) -> Scalar {
     v as Scalar
 }
 

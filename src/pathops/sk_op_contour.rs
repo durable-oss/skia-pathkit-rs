@@ -3,7 +3,7 @@
 //! Port of Skia's SkOpContour.{h,cpp}
 
 use super::sk_intersection_helper::SkPathOpsBounds;
-use super::sk_op_segment::{SkOpSegment, SkOpSpan, Verb};
+use super::sk_op_segment::{SkOpSegment, SkOpSpan};
 use crate::core::{Point, Scalar};
 
 /// Direction for ray checking (matches Skia's SkOpRayDir)
@@ -362,16 +362,12 @@ impl SkOpContour {
         None
     }
 
-    /// Marks all segments as done
-    pub fn mark_all_done(&mut self) {
-        let mut segment = self.f_head.next();
-        while let Some(seg) = segment {
-            // Note: This is a limitation of the current implementation
-            // In the full implementation, segments would be stored differently
-            // to allow mutable access
-            break;
-        }
-    }
+    /// Marks all segments as done.
+    ///
+    /// Currently a no-op: segments are reached through shared references, so
+    /// the walk cannot mark them. Porting this needs the segment list stored
+    /// in a form that allows mutable traversal.
+    pub fn mark_all_done(&mut self) {}
 
     /// Joins segment ends
     pub fn join_segments(&mut self) {
@@ -397,7 +393,6 @@ impl SkOpContour {
     #[cfg(debug_assertions)]
     pub fn debug_validate(&self) {
         let mut segment = Some(&self.f_head);
-        let mut prior: Option<&SkOpSegment> = None;
         while let Some(seg) = segment {
             seg.debug_validate();
             segment = seg.next();

@@ -11,7 +11,7 @@ const SCALAR_MAX: Scalar = f32::MAX;
 
 /// Direction classification for a contour
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Direction {
+pub(crate) enum Direction {
     CCW = -1, // Counter-clockwise
     None = 0,
     CW = 1, // Clockwise
@@ -190,7 +190,7 @@ pub mod curve_helpers {
     }
 
     /// Find leftmost point on a segment and its direction
-    pub fn left_edge(pts: &[Point; 4], verb: Verb, w: Scalar) -> (Point, Direction) {
+    pub(crate) fn left_edge(pts: &[Point; 4], verb: Verb, w: Scalar) -> (Point, Direction) {
         match verb {
             Verb::Line => {
                 let result = if pts[0].x < pts[1].x { pts[0] } else { pts[1] };
@@ -323,7 +323,7 @@ impl OpAsWinding {
     }
 
     /// Find next edge and compute winding
-    fn next_edge(&self, contour: &mut Contour, test: &Contour, include_children: bool) -> i32 {
+    fn next_edge(&self, contour: &mut Contour, _test: &Contour, include_children: bool) -> i32 {
         let mut winding: i32 = 0;
         let mut conic_idx = 0;
 
@@ -389,8 +389,10 @@ impl OpAsWinding {
                     continue;
                 }
 
-                let w = curve_helpers::conic_weight(*verb, &self.conic_weights, &mut conic_idx);
-                let pts: [Point; 4] = std::array::from_fn(|j| {
+                // Called for its side effect: it advances conic_idx past a
+                // conic's weight. The winding count below walks the raw points.
+                let _w = curve_helpers::conic_weight(*verb, &self.conic_weights, &mut conic_idx);
+                let _pts: [Point; 4] = std::array::from_fn(|j| {
                     self.path
                         .points()
                         .get(i + j)

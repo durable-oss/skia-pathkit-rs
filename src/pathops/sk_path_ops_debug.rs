@@ -25,7 +25,7 @@ impl Default for DebugFlags {
     }
 }
 
-/// Global debug state (thread-local)
+// Global debug state (thread-local).
 thread_local! {
     static DEBUG_FLAGS: DebugFlags = DebugFlags::new();
 }

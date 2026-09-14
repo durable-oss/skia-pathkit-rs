@@ -365,7 +365,7 @@ impl GrAATriangulator {
     /// This implements stage 5c of the AA triangulation algorithm. It
     /// detects vertices whose adjacent edge normals point in opposite directions
     /// and whose adjacent vertices are less than a quarter pixel from an edge.
-    pub fn simplify_boundary(&self, boundary: &mut EdgeList, comparator: &Comparator) -> EdgeList {
+    pub fn simplify_boundary(&self, boundary: &mut EdgeList, _comparator: &Comparator) -> EdgeList {
         let mut result = EdgeList::new();
 
         while let Some(edge) = boundary.edges.pop() {
@@ -404,7 +404,7 @@ impl GrAATriangulator {
     pub fn stroke_boundary(
         &self,
         boundary: &EdgeList,
-        comparator: &Comparator,
+        _comparator: &Comparator,
     ) -> (VertexList, VertexList) {
         let mut inner_vertices = VertexList::new();
         let mut outer_vertices = VertexList::new();
@@ -437,7 +437,7 @@ impl GrAATriangulator {
     ///
     /// This handles complex meshes where filled regions overlap. It
     /// uses a sweep-line algorithm to find and collapse intersection points.
-    pub fn collapse_overlap_regions(&self, mesh: &VertexList, comparator: &Comparator) -> bool {
+    pub fn collapse_overlap_regions(&self, mesh: &VertexList, _comparator: &Comparator) -> bool {
         // Simplified version - actual implementation requires full mesh manipulation
         //
         // In the full algorithm:

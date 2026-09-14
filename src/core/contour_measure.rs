@@ -1,4 +1,3 @@
-use super::matrix::Matrix;
 use super::path::Path;
 use super::point::Point;
 use super::scalar::{self, Scalar};
