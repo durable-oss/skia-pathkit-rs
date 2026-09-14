@@ -455,12 +455,15 @@ fn try_simple_step(arena: &mut OpArena, state: &mut WalkState) -> Option<Option<
         min: None,
         last: None,
     };
-    let other = arena.next_chase(&mut chase)?;
-    // next_chase advanced the start; the end follows it in the same direction.
-    state.start = chase.start;
+    // The span to retire is the one this walk is leaving, so it is read from
+    // the pair as it stands now - before next_chase moves the start onto the
+    // other segment. Reading it after would ask starter() to compare two
+    // spans of different segments, which it has no answer for.
     let Some(start_span) = arena.span_starter(state.start, state.end) else {
         return Some(None);
     };
+    let other = arena.next_chase(&mut chase)?;
+    state.start = chase.start;
     if arena.span(start_span).done() {
         return Some(None);
     }

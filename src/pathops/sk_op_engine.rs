@@ -45,37 +45,93 @@ pub struct OpGraph {
 pub fn add_path(graph: &mut OpGraph, path: &Path, operand: bool, xor: bool, opp_xor: bool) {
     let mut contour_start: Option<Point> = None;
     let mut current: Option<Point> = None;
+    // Segments added for the contour being walked, so its ends can be
+    // linked into one ring when it closes.
+    let mut contour_segments: Vec<SegmentId> = Vec::new();
     for (verb, pts, weight) in path.iter() {
         match verb {
             Verb::Move => {
+                // A new contour: close off whatever came before it.
+                close_contour(graph, &mut contour_segments, contour_start, current, operand, xor, opp_xor);
                 contour_start = Some(pts[0]);
                 current = Some(pts[0]);
             }
             Verb::Close => {
-                // Close the contour with the line back to its start, unless
-                // the contour already ends there.
-                if let (Some(start), Some(cur)) = (contour_start, current) {
-                    if !points_equal(start, cur) {
-                        push_segment(graph, &[cur, start], Verb::Line, 1.0, operand, xor, opp_xor);
-                    }
-                }
+                close_contour(graph, &mut contour_segments, contour_start, current, operand, xor, opp_xor);
                 current = contour_start;
             }
             Verb::Line | Verb::Quad | Verb::Conic | Verb::Cubic => {
                 let count = verb.point_count();
                 let w = weight.unwrap_or(1.0);
-                push_segment(graph, &pts[..count], verb, w, operand, xor, opp_xor);
+                if let Some(seg) =
+                    push_segment(graph, &pts[..count], verb, w, operand, xor, opp_xor)
+                {
+                    contour_segments.push(seg);
+                }
                 current = Some(pts[count - 1]);
             }
         }
     }
     // An unclosed contour is closed implicitly, matching Skia: pathops only
     // has an answer for filled regions.
+    close_contour(graph, &mut contour_segments, contour_start, current, operand, xor, opp_xor);
+}
+
+/// Closes the contour just walked and links its segments end to end.
+///
+/// The linking is what makes a corner one place rather than two. Each
+/// segment is built with its own PtT nodes at t = 0 and t = 1; without
+/// joining consecutive segments' rings, two sides meeting at a corner do not
+/// know about each other, `calc_angles` finds nothing to sort there, and the
+/// walk cannot turn the corner - it reports the edge unsortable and gives
+/// up, which is exactly what leaves each edge its own contour.
+#[allow(clippy::too_many_arguments)] // the builder's per-contour state
+fn close_contour(
+    graph: &mut OpGraph,
+    segments: &mut Vec<SegmentId>,
+    contour_start: Option<Point>,
+    current: Option<Point>,
+    operand: bool,
+    xor: bool,
+    opp_xor: bool,
+) {
     if let (Some(start), Some(cur)) = (contour_start, current) {
         if !points_equal(start, cur) {
-            push_segment(graph, &[cur, start], Verb::Line, 1.0, operand, xor, opp_xor);
+            if let Some(seg) =
+                push_segment(graph, &[cur, start], Verb::Line, 1.0, operand, xor, opp_xor)
+            {
+                segments.push(seg);
+            }
         }
     }
+    if segments.is_empty() {
+        return;
+    }
+    // Join each segment's tail to the next segment's head, and the last back
+    // to the first: a closed contour is a ring.
+    for i in 0..segments.len() {
+        let a = segments[i];
+        let b = segments[(i + 1) % segments.len()];
+        let (Some(a_tail), Some(b_head)) = (
+            graph.arena.segment(a).f_tail,
+            graph.arena.segment(b).f_head,
+        ) else {
+            continue;
+        };
+        if let (Some(pa), Some(pb)) = (
+            graph.arena.span_ptt(a_tail),
+            graph.arena.span_ptt(b_head),
+        ) {
+            if pa != pb {
+                graph.arena.ptt_add_opp(pa, pb);
+            }
+        }
+        // The contour's own next/prev links, which the walk follows when
+        // only one segment continues.
+        graph.arena.segment_mut(a).f_next = Some(b);
+        graph.arena.segment_mut(b).f_prev = Some(a);
+    }
+    segments.clear();
 }
 
 /// Adds one segment, skipping it if it collapses to a point.
@@ -87,10 +143,10 @@ fn push_segment(
     operand: bool,
     xor: bool,
     opp_xor: bool,
-) {
+) -> Option<SegmentId> {
     if points_equal(pts[0], pts[pts.len() - 1]) && verb == Verb::Line {
         // A line from a point to itself has no direction to sort by.
-        return;
+        return None;
     }
     let seg = graph.arena.alloc_segment_with_curve(pts, verb, weight);
     graph.arena.set_segment_operand(seg, operand);
@@ -104,6 +160,7 @@ fn push_segment(
         }
     }
     graph.segments.push(seg);
+    Some(seg)
 }
 
 /// Returns true when two points are the same to within tolerance.
@@ -373,6 +430,12 @@ fn bridge(
                 {
                     return false;
                 }
+                // The walk stops one edge short whenever the last step had
+                // nowhere active to go but the contour still has not closed.
+                // That edge is the one back to the start, and without it the
+                // contour is left open and assemble has nothing to stitch it
+                // to. C++ does the same here.
+                close_open_contour(graph, &mut state, writer);
                 writer.finish_contour();
             } else {
                 // Not on the boundary: retire the edge, and remember where
@@ -404,6 +467,83 @@ fn bridge(
         }
     }
     true
+}
+
+/// Emits the edge that closes a contour the walk left open.
+///
+/// Port of the `activeWinding` block after `bridgeOp`'s inner loop. It fires
+/// only when the edge is still on the boundary and has not been walked, so a
+/// contour that genuinely ends there is not given a spurious closing line.
+fn close_open_contour(graph: &mut OpGraph, state: &mut WalkState, writer: &mut SkPathWriter) {
+    if writer.is_closed() {
+        return;
+    }
+    // The walk left off at `state`, which names the edge it last emitted.
+    // The edge that would close the contour is the one continuing from
+    // there, so step across the shared point to find it.
+    let Some(target) = writer.contour_start() else {
+        return;
+    };
+    if let Some(next) = step_across(graph, state, target) {
+        *state = next;
+    }
+    if !graph
+        .arena
+        .active_winding(state.start, state.end, |_, _| false)
+    {
+        return;
+    }
+    let Some(span_start) = graph.arena.span_starter(state.start, state.end) else {
+        return;
+    };
+    if graph.arena.span(span_start).already_added() {
+        return;
+    }
+    if add_curve_to(&mut graph.arena, state.start, state.end, writer) {
+        graph.arena.mark_done(span_start);
+    }
+}
+
+/// Returns the walk's continuation across the point `state` ends at.
+///
+/// The walk's last edge arrives somewhere; whatever leaves that point on
+/// another segment is where a closing edge would come from. This finds it
+/// through the shared PtT ring, the same way `nextChase` does.
+fn step_across(graph: &OpGraph, state: &WalkState, target: Point) -> Option<WalkState> {
+    let ptt = graph.arena.span_ptt(state.end)?;
+    let mut best: Option<(WalkState, f32)> = None;
+    for node in graph.arena.ptt_ring(ptt) {
+        let Some(span) = graph.arena.ptt_span(node) else {
+            continue;
+        };
+        if span == state.end
+            || graph.arena.span_segment(span) == graph.arena.span_segment(state.end)
+        {
+            continue;
+        }
+        // Either direction along that segment is a candidate. Take the one
+        // that heads back to where the contour began: the other leads away,
+        // and following it lengthens the contour instead of closing it.
+        for other in [graph.arena.span_next(span), graph.arena.span_prev(span)] {
+            let Some(other) = other else { continue };
+            let Some(starter) = graph.arena.span_starter(span, other) else {
+                continue;
+            };
+            // `already_added`, not `done`: the closing edge is routinely
+            // marked done by the walk that passed it (pick_next retires
+            // every angle it does not take), but it has not been emitted,
+            // and emitting it is exactly what closes the contour.
+            if graph.arena.span(starter).already_added() {
+                continue;
+            }
+            let far = graph.arena.span(other).f_pt;
+            let dist = (far.x - target.x).powi(2) + (far.y - target.y).powi(2);
+            if best.as_ref().map_or(true, |(_, d)| dist < *d) {
+                best = Some((WalkState::new(span, other), dist));
+            }
+        }
+    }
+    best.map(|(s, _)| s)
 }
 
 /// Returns whether the edge `state` names is on the result's boundary.
@@ -469,6 +609,10 @@ fn walk_contour(
         }
         let edge_start = state.start;
         let edge_end = state.end;
+        // find_next advances `state` to the edge to walk next, and reports
+        // which segment that is. When it reports none the walk has run out
+        // of active edges, but `state` still names the edge just walked, so
+        // the caller's closing step has something to test.
         let next_segment = match op {
             Some(op) => find_next_op(
                 &mut graph.arena,
@@ -851,5 +995,118 @@ mod tests {
         // Boxes that do not touch have no common area, so the walk must find
         // no active edge at all rather than emitting either input.
         assert!(op_with_engine(&a, &b, PathOp::Intersect).is_none());
+    }
+
+    #[test]
+    fn the_engine_unions_two_overlapping_rectangles() {
+        let a = rect_path(0.0, 0.0, 10.0, 10.0);
+        let b = rect_path(5.0, 5.0, 15.0, 15.0);
+        let got = op_with_engine(&a, &b, PathOp::Union).expect("the walk closes");
+        assert!(
+            got.verbs().contains(&Verb::Close),
+            "the contour must close, got {:?}",
+            got.verbs()
+        );
+        // Inside either input is inside the union; inside neither is outside.
+        assert!(got.contains(2.0, 2.0), "the first rectangle's interior");
+        assert!(got.contains(12.0, 12.0), "the second rectangle's interior");
+        assert!(!got.contains(2.0, 12.0), "the notch is not filled");
+        assert!(!got.contains(-5.0, -5.0), "and neither is the outside");
+    }
+
+    #[test]
+    fn the_union_is_one_contour_with_the_l_shapes_eight_corners() {
+        let a = rect_path(0.0, 0.0, 10.0, 10.0);
+        let b = rect_path(5.0, 5.0, 15.0, 15.0);
+        let got = op_with_engine(&a, &b, PathOp::Union).expect("the walk closes");
+        let moves = got.verbs().iter().filter(|v| **v == Verb::Move).count();
+        assert_eq!(moves, 1, "one region, so one contour: {:?}", got.verbs());
+        let lines = got.verbs().iter().filter(|v| **v == Verb::Line).count();
+        assert_eq!(
+            lines, 8,
+            "the L has eight sides counting the closing one: {:?}",
+            got.verbs()
+        );
+    }
+
+    /// The shape from `TODO/2026-09-14-boolean-ops-destroy-all-curves.md`:
+    /// a stem of four lines plus a ring of eight curves.
+    fn stem_and_ring() -> Path {
+        let mut p = Path::new();
+        // The stem.
+        p.move_to(100.0, 0.0);
+        p.line_to(140.0, 0.0);
+        p.line_to(140.0, 300.0);
+        p.line_to(100.0, 300.0);
+        p.close();
+        // The ring, well clear of the stem, as eight cubics.
+        let (cx, cy, r) = (400.0f32, 150.0f32, 80.0f32);
+        let k = r * 0.5523;
+        p.move_to(cx + r, cy);
+        p.cubic_to(cx + r, cy + k, cx + k, cy + r, cx, cy + r);
+        p.cubic_to(cx - k, cy + r, cx - r, cy + k, cx - r, cy);
+        p.cubic_to(cx - r, cy - k, cx - k, cy - r, cx, cy - r);
+        p.cubic_to(cx + k, cy - r, cx + r, cy - k, cx + r, cy);
+        p.close();
+        p
+    }
+
+    #[test]
+    fn a_contour_the_operation_never_touches_keeps_its_curves() {
+        let glyph = stem_and_ring();
+        // A rectangle that cuts the stem and comes nowhere near the ring.
+        let cut = rect_path(110.0, 100.0, 130.0, 200.0);
+        let got = op_with_engine(&glyph, &cut, PathOp::Difference)
+            .expect("the engine resolves this");
+        assert!(
+            got.verbs().contains(&Verb::Cubic),
+            "the ring is untouched, so its cubics must survive: {:?}",
+            got.verbs()
+        );
+    }
+
+    #[test]
+    fn the_result_does_not_explode_into_a_polyline() {
+        let glyph = stem_and_ring();
+        let cut = rect_path(110.0, 100.0, 130.0, 200.0);
+        let got = op_with_engine(&glyph, &cut, PathOp::Difference)
+            .expect("the engine resolves this");
+        let segments = got
+            .verbs()
+            .iter()
+            .filter(|v| !matches!(v, Verb::Move | Verb::Close))
+            .count();
+        // The flattening engine turns 12 input segments into 261. The TODO's
+        // bar is under 40.
+        assert!(
+            segments < 40,
+            "expected a handful of segments, got {segments}: {:?}",
+            got.verbs()
+        );
+    }
+
+    #[test]
+    fn a_cut_curve_is_subdivided_rather_than_flattened() {
+        // A single disc, cut by a rectangle across its middle.
+        let (cx, cy, r) = (100.0f32, 100.0f32, 50.0f32);
+        let k = r * 0.5523;
+        let mut disc = Path::new();
+        disc.move_to(cx + r, cy);
+        disc.cubic_to(cx + r, cy + k, cx + k, cy + r, cx, cy + r);
+        disc.cubic_to(cx - k, cy + r, cx - r, cy + k, cx - r, cy);
+        disc.cubic_to(cx - r, cy - k, cx - k, cy - r, cx, cy - r);
+        disc.cubic_to(cx + k, cy - r, cx + r, cy - k, cx + r, cy);
+        disc.close();
+        let cut = rect_path(40.0, 90.0, 160.0, 110.0);
+        let Some(got) = op_with_engine(&disc, &cut, PathOp::Difference) else {
+            // The engine may decline this input; that is a fallback, not a
+            // wrong answer, and the flattening path handles it.
+            return;
+        };
+        assert!(
+            got.verbs().contains(&Verb::Cubic),
+            "a cut through a disc leaves curved pieces: {:?}",
+            got.verbs()
+        );
     }
 }

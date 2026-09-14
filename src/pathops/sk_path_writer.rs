@@ -139,6 +139,16 @@ impl<'a> SkPathWriter<'a> {
         self.defer[1] = None;
     }
 
+    /// Returns the point the current contour started at, if it has one.
+    ///
+    /// The walk uses it to pick which way a closing edge should run: the
+    /// continuation that heads back to the contour's start is the one that
+    /// closes it, and the other one leads away.
+    #[must_use]
+    pub fn contour_start(&self) -> Option<Point> {
+        self.first_pt
+    }
+
     /// Returns true if the last point matches the first point
     pub fn is_closed(&self) -> bool {
         self.first_pt.map_or(false, |first| {
