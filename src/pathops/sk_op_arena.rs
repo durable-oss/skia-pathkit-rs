@@ -341,6 +341,14 @@ pub struct OpArena {
     pt_ts: Vec<SkOpPtT>,
     /// Segment graph-edge pool.
     segments: Vec<ArenaSegment>,
+    /// Every segment the current walk may cast a ray against.
+    ///
+    /// The ray-cast winding needs the whole graph, and the four places that
+    /// ask for a winding sum are several calls deep in the walker, where
+    /// threading a segment list through would mean six signatures carrying
+    /// it for one use. C++ reaches the contour list off the global state,
+    /// which is what this is.
+    walk_segments: Vec<SegmentId>,
     /// Angle pool.
     angles: Vec<SkOpAngle>,
     /// Coincident-run pool.
@@ -383,6 +391,7 @@ impl OpArena {
             spans: Vec::new(),
             pt_ts: Vec::new(),
             segments: Vec::new(),
+            walk_segments: Vec::new(),
             angles: Vec::new(),
             coins: Vec::new(),
             contour_head: None,
@@ -1981,6 +1990,19 @@ impl OpArena {
             self.mark_winding_opp(min, winding, opp_winding);
         }
         Some((success, state.last))
+    }
+
+    /// Records the segments a ray cast may hit.
+    ///
+    /// Set once before the walk; [`Self::span_compute_wind_sum`] reads it.
+    pub fn set_walk_segments(&mut self, segments: Vec<SegmentId>) {
+        self.walk_segments = segments;
+    }
+
+    /// Returns the segments a ray cast may hit.
+    #[must_use]
+    pub fn walk_segments(&self) -> Vec<SegmentId> {
+        self.walk_segments.clone()
     }
 
     /// Returns whether `segment` belongs to the second operand.

@@ -112,6 +112,21 @@ fn span_point(arena: &OpArena, span: SpanId) -> Point {
     }
 }
 
+/// Resolves a span's winding by ray-casting against the whole graph.
+///
+/// The closure `update_winding` and friends take. Passing one that never
+/// resolves leaves every caller reading a sum still at `PK_MinS32` and
+/// answering from an unset value, which is how an interior edge ends up on a
+/// result's boundary. The segment list comes off the arena, where the walk
+/// puts it, because C++ reaches the contour list off the global state.
+fn resolve_winding(arena: &mut OpArena, span: SpanId) -> bool {
+    let segments = arena.walk_segments();
+    if segments.is_empty() {
+        return false;
+    }
+    super::sk_op_sortable_top::sortable_top(arena, span, &segments)
+}
+
 /// Returns the angle for walking `end` back to `start`, if one exists.
 fn span_to_angle(arena: &OpArena, end: SpanId, start: SpanId) -> Option<AngleId> {
     arena.walk_angle(end, start)
@@ -189,7 +204,7 @@ fn compute_one_sum(
     ) else {
         return false;
     };
-    let mut sum_mi = arena.update_winding_reverse(base_start, base_end, |_, _| false);
+    let mut sum_mi = arena.update_winding_reverse(base_start, base_end, resolve_winding);
     let mut sum_su = PK_MIN_S32;
     if binary {
         sum_su = arena.update_opp_winding_reverse(base_start, base_end);
@@ -226,7 +241,7 @@ fn compute_one_sum_reverse(
     ) else {
         return false;
     };
-    let mut sum_mi = arena.update_winding(base_start, base_end, |_, _| false);
+    let mut sum_mi = arena.update_winding(base_start, base_end, resolve_winding);
     let mut sum_su = PK_MIN_S32;
     if binary {
         sum_su = arena.update_opp_winding(base_start, base_end);
@@ -599,7 +614,7 @@ pub fn find_next_winding(
         give_up(arena, state, orig_start, orig_end);
         return None;
     }
-    let mut sum_winding = arena.update_winding(orig_end, orig_start, |_, _| false);
+    let mut sum_winding = arena.update_winding(orig_end, orig_start, resolve_winding);
     pick_next(arena, state, angle, chase, |arena, s, e, _| {
         arena.active_winding_with(s, e, &mut sum_winding)
     })
@@ -667,7 +682,7 @@ pub fn find_next_op(
         give_up(arena, state, orig_start, orig_end);
         return None;
     }
-    let mut sum_mi = arena.update_winding(orig_end, orig_start, |_, _| false);
+    let mut sum_mi = arena.update_winding(orig_end, orig_start, resolve_winding);
     if sum_mi == PK_MIN_S32 {
         give_up(arena, state, orig_start, orig_end);
         return None;

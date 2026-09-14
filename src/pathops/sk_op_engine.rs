@@ -151,13 +151,19 @@ fn push_segment(
     let seg = graph.arena.alloc_segment_with_curve(pts, verb, weight);
     graph.arena.set_segment_operand(seg, operand);
     graph.arena.set_segment_xor(seg, xor, opp_xor);
-    // Each segment starts contributing one to its own operand's winding.
+    // Every segment starts with windValue = 1 and oppValue = 0, whichever
+    // operand it belongs to. C++ does this in `SkOpSpan::init`, and the
+    // operand distinction lives in `operand()` rather than in which field
+    // carries the 1: `setUpWindings` and `activeOp` both branch on
+    // `operand()` to decide which running sum a segment's own winding comes
+    // off. Putting the 1 in `oppValue` for the second operand instead makes
+    // every one of those branches read the wrong field, and coincidence's
+    // `apply` then folds the pair into a single operand's winding with
+    // nothing left in the other - so the result thinks the second input
+    // covers nothing.
     for span in graph.arena.segment_spans(seg) {
-        if operand {
-            graph.arena.span_mut(span).set_opp_value(1);
-        } else {
-            graph.arena.span_mut(span).set_wind_value(1);
-        }
+        graph.arena.span_mut(span).set_wind_value(1);
+        graph.arena.span_mut(span).set_opp_value(0);
     }
     graph.segments.push(seg);
     Some(seg)
@@ -496,6 +502,9 @@ fn bridge(
     writer: &mut SkPathWriter,
 ) -> bool {
     let segments = graph.segments.clone();
+    // The ray-cast winding needs the whole graph, and the walker asks for it
+    // several calls deep; parking the list on the arena is how it gets there.
+    graph.arena.set_walk_segments(segments.clone());
     let mut outer_guard = OUTER_GUARD;
     loop {
         outer_guard -= 1;
@@ -657,7 +666,7 @@ fn is_active(
     // answer: passing a closure that never resolves leaves every gate
     // reading an unset value, which is how an interior edge ends up on the
     // result's boundary.
-    let segments = graph.segments.clone();
+    let segments = graph.arena.walk_segments();
     let resolve = |arena: &mut OpArena, span: SpanId| sortable_top(arena, span, &segments);
     match op {
         Some(op) => {
@@ -1455,5 +1464,54 @@ mod tests {
             let contours = got.verbs().iter().filter(|v| **v == Verb::Move).count();
             assert_eq!(contours, 1, "offset {offset} gave {contours} contours");
         }
+    }
+
+    #[test]
+    fn every_segment_starts_with_its_winding_in_the_same_field() {
+        // Both operands' spans carry windValue = 1 and oppValue = 0. The
+        // operand distinction lives in segment_operand, not in which field
+        // holds the 1: setUpWindings and activeOp both branch on the operand
+        // to decide which running sum a segment's winding comes off.
+        let mut graph = OpGraph {
+            arena: OpArena::new(),
+            segments: Vec::new(),
+            coincidence: SkOpCoincidence::new(),
+        };
+        add_path(&mut graph, &rect_path(0.0, 0.0, 10.0, 10.0), false, false, false);
+        add_path(&mut graph, &rect_path(5.0, 5.0, 15.0, 15.0), true, false, false);
+        for &seg in &graph.segments {
+            for span in graph.arena.segment_spans(seg) {
+                assert_eq!(graph.arena.span(span).wind_value(), 1);
+                assert_eq!(graph.arena.span(span).opp_value(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn a_difference_across_a_shared_edge_takes_the_cut_out() {
+        // Two rectangles overlapping in x and sharing their whole y range,
+        // so their top and bottom edges are collinear. Subtracting the
+        // second must remove the right half of the first.
+        let a = rect_path(0.0, 0.0, 20.0, 20.0);
+        let b = rect_path(10.0, 0.0, 30.0, 20.0);
+        let got = op_with_engine(&a, &b, PathOp::Difference).expect("resolves");
+        assert!(got.contains(5.0, 10.0), "left of the cut stays");
+        assert!(!got.contains(15.0, 10.0), "the cut is taken out");
+        assert!(!got.contains(25.0, 10.0), "and the subtrahend is not added");
+    }
+
+    #[test]
+    #[ignore = "known gap: see TODO/09-bridge-winding-xor.md"]
+    fn an_intersect_across_a_shared_edge_keeps_only_the_overlap() {
+        // Difference on this geometry is right; Intersect is not. It returns
+        // a path that also covers (25, 10), which lies only in the
+        // subtrahend. Left failing on purpose rather than weakened, so the
+        // gap is visible: `cargo test -- --ignored` shows it.
+        let a = rect_path(0.0, 0.0, 20.0, 20.0);
+        let b = rect_path(10.0, 0.0, 30.0, 20.0);
+        let got = op_with_engine(&a, &b, PathOp::Intersect).expect("resolves");
+        assert!(!got.contains(5.0, 10.0), "left of the overlap is out");
+        assert!(got.contains(15.0, 10.0), "the overlap is in");
+        assert!(!got.contains(25.0, 10.0), "right of it is out");
     }
 }
