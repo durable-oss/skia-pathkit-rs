@@ -296,6 +296,10 @@ pub struct ArenaSegment {
     pub f_reversed: bool,
     /// True when the segment belongs to the second operand of a binary op.
     pub f_operand: bool,
+    /// True when the segment's own operand fills even-odd rather than nonzero.
+    pub f_xor: bool,
+    /// True when the opposite operand fills even-odd.
+    pub f_opp_xor: bool,
     /// Debug id.
     pub f_id: i32,
 }
@@ -316,6 +320,8 @@ impl Default for ArenaSegment {
             f_done: false,
             f_reversed: false,
             f_operand: false,
+            f_xor: false,
+            f_opp_xor: false,
             f_id: 0,
         }
     }
@@ -1949,6 +1955,29 @@ impl OpArena {
     /// Marks `segment` as belonging to the second operand.
     pub fn set_segment_operand(&mut self, segment: SegmentId, operand: bool) {
         self.segment_mut(segment).f_operand = operand;
+    }
+
+    /// Returns whether the segment's own operand fills even-odd.
+    ///
+    /// Port of `SkOpSegment::isXor`, which forwards to its contour.
+    #[must_use]
+    pub fn segment_is_xor(&self, segment: SegmentId) -> bool {
+        self.segment(segment).f_xor
+    }
+
+    /// Returns whether the opposite operand fills even-odd.
+    ///
+    /// Port of `SkOpSegment::oppXor`.
+    #[must_use]
+    pub fn segment_opp_xor(&self, segment: SegmentId) -> bool {
+        self.segment(segment).f_opp_xor
+    }
+
+    /// Sets the segment's own and opposite fill rules.
+    pub fn set_segment_xor(&mut self, segment: SegmentId, xor: bool, opp_xor: bool) {
+        let seg = self.segment_mut(segment);
+        seg.f_xor = xor;
+        seg.f_opp_xor = opp_xor;
     }
 
 
