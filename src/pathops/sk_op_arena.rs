@@ -1822,7 +1822,24 @@ impl OpArena {
                     return None;
                 }
                 let end_ptt = self.span_ptt(end_span)?;
-                let other_ptt = self.ptt_next(end_ptt);
+                // Prefer a ring member on the segment this one is linked to
+                // along its own contour. A plain corner is a two-element
+                // ring and `ptt_next` is unambiguous, but a corner that is
+                // also a crossing holds members from both inputs, and
+                // stepping onto the wrong one chases a winding across two
+                // contours that do not share it.
+                let own_seg = self.span_segment(end_span);
+                let contour_next = own_seg.and_then(|s| self.segment(s).f_next);
+                let contour_prev = own_seg.and_then(|s| self.segment(s).f_prev);
+                let other_ptt = self
+                    .ptt_ring(end_ptt)
+                    .into_iter()
+                    .filter(|&n| n != end_ptt)
+                    .find(|&n| {
+                        let seg = self.ptt_segment(n);
+                        seg == contour_next || seg == contour_prev
+                    })
+                    .unwrap_or_else(|| self.ptt_next(end_ptt));
                 let other = self.ptt_segment(other_ptt)?;
                 let found = self.ptt_span(other_ptt)?;
                 let other_end = if step > 0 {
@@ -3596,6 +3613,60 @@ mod tests {
         assert_eq!(arena.walk_angle(head, mid), Some(leaving));
         // Walking backwards from the mid takes the one arriving at the mid.
         assert_eq!(arena.walk_angle(mid, head), Some(mid_arriving));
+    }
+
+    #[test]
+    fn next_chase_prefers_the_segment_on_its_own_contour() {
+        let mut arena = OpArena::new();
+        // Three segments meeting at one point: two joined along a contour,
+        // and a third from elsewhere that merely touches there.
+        let a = arena.alloc_segment_with_curve(
+            &[Point::new(0.0, 0.0), Point::new(10.0, 0.0)],
+            Verb::Line,
+            1.0,
+        );
+        let b = arena.alloc_segment_with_curve(
+            &[Point::new(10.0, 0.0), Point::new(10.0, 10.0)],
+            Verb::Line,
+            1.0,
+        );
+        let stranger = arena.alloc_segment_with_curve(
+            &[Point::new(10.0, 0.0), Point::new(20.0, -10.0)],
+            Verb::Line,
+            1.0,
+        );
+        arena.segment_mut(a).f_next = Some(b);
+        arena.segment_mut(b).f_prev = Some(a);
+        for seg in [a, b, stranger] {
+            for span in arena.segment_spans(seg) {
+                arena.span_mut(span).set_wind_value(1);
+            }
+        }
+        // Link all three at (10, 0). The stranger goes in first, so a plain
+        // `ptt_next` would reach it before b.
+        let a_tail = arena.segment(a).f_tail.expect("tail");
+        let b_head = arena.segment(b).f_head.expect("head");
+        let s_head = arena.segment(stranger).f_head.expect("head");
+        let (pa, pb, ps) = (
+            arena.span_ptt(a_tail).expect("ptt"),
+            arena.span_ptt(b_head).expect("ptt"),
+            arena.span_ptt(s_head).expect("ptt"),
+        );
+        arena.ptt_add_opp(pa, ps);
+        arena.ptt_add_opp(pa, pb);
+
+        let mut state = ChaseState {
+            start: arena.segment(a).f_head.expect("head"),
+            step: 1,
+            min: None,
+            last: None,
+        };
+        assert_eq!(
+            arena.next_chase(&mut state),
+            Some(b),
+            "the chase follows the contour, not whatever the ring happens \
+             to list first"
+        );
     }
 
     #[test]
