@@ -1,8 +1,8 @@
 //! Boolean path operations: union, intersect, difference, xor.
 //!
 //! [`op`] handles empty/identical paths directly, then runs a flatten-split-
-//! classify boolean. The full Skia pathops engine is not yet the public
-//! implementation.
+//! classify boolean. The ported engine in [`sk_op_engine`] is built but not
+//! yet the public implementation; see `TODO/09-bridge-winding-xor.md`.
 //!
 //! Source: `old/pathkit/include/pathops/SkPathOps.h`.
 
@@ -26,6 +26,7 @@ pub mod sk_op_coincidence;
 pub mod sk_op_common;
 pub mod sk_op_contour;
 pub mod sk_op_edge_builder;
+pub mod sk_op_engine;
 pub mod sk_op_segment;
 pub mod sk_op_sortable_top;
 pub mod sk_op_span;
@@ -67,7 +68,13 @@ pub enum PathOp {
 ///
 /// Empty and identical paths are handled directly. Everything else is
 /// flattened, split at intersections, and classified with
-/// [`Path::contains`].
+/// [`Path::contains`], so the result is a polyline.
+///
+/// The curve-preserving engine in [`sk_op_engine`] is built and tested but
+/// is **not** wired in here yet: its walk still returns wrong answers on
+/// `Intersect` and can fail to terminate on some inputs. Making it the
+/// default before that is fixed would trade flattened-but-correct results
+/// for curve-shaped wrong ones. See `TODO/09-bridge-winding-xor.md`.
 ///
 /// # Errors
 ///

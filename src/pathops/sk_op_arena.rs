@@ -1406,6 +1406,19 @@ impl OpArena {
         self.ptt_init_ring(ptt);
         self.span_mut(span).f_ptt = Some(ptt.index());
 
+        // A span created by splitting inherits the winding of the span it
+        // split. C++ gets this from `SkOpSpan::init`, which sets
+        // fWindValue = 1 unconditionally because every span there is born
+        // contributing; here the value is carried across instead, so a
+        // segment whose contribution was set by the edge builder keeps it.
+        // Without this the new span is `canceled`, calc_angles skips it, and
+        // the crossing ends up with no angle loop to sort - which leaves the
+        // walker with nowhere to turn at the one place it must.
+        let wind = self.span(prev).wind_value();
+        let opp = self.span(prev).opp_value();
+        self.span_mut(span).set_wind_value(wind);
+        self.span_mut(span).set_opp_value(opp);
+
         self.span_mut(span).f_prev = Some(prev.index());
         self.span_mut(prev).f_next = Some(span.index());
         self.span_mut(span).f_next = next.map(SpanId::index);
