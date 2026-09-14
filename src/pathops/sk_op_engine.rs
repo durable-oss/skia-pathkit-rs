@@ -21,7 +21,7 @@ use super::sk_op_coincidence::SkOpCoincidence;
 use super::sk_op_common::{find_chase, handle_coincidence};
 use super::sk_op_walker::{add_curve_to, find_next_op, find_next_winding, WalkState};
 use super::sk_path_writer::SkPathWriter;
-use super::sk_op_sortable_top::find_sortable_top;
+use super::sk_op_sortable_top::{find_sortable_top, sortable_top};
 use super::PathOp;
 use crate::core::{Path, FillType, Point, Verb};
 
@@ -652,6 +652,13 @@ fn is_active(
     let Some(segment) = graph.arena.span_segment(state.start) else {
         return false;
     };
+    // Resolve the winding at this span first. The gate reads the sums, and a
+    // span whose sum is still PK_MinS32 gives an answer that is not an
+    // answer: passing a closure that never resolves leaves every gate
+    // reading an unset value, which is how an interior edge ends up on the
+    // result's boundary.
+    let segments = graph.segments.clone();
+    let resolve = |arena: &mut OpArena, span: SpanId| sortable_top(arena, span, &segments);
     match op {
         Some(op) => {
             let operand = graph.arena.segment_operand(segment);
@@ -662,12 +669,10 @@ fn is_active(
                 xor_mi_mask,
                 xor_su_mask,
                 op,
-                |_, _| false,
+                resolve,
             )
         }
-        None => graph
-            .arena
-            .active_winding(state.start, state.end, |_, _| false),
+        None => graph.arena.active_winding(state.start, state.end, resolve),
     }
 }
 
