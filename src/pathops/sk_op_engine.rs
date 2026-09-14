@@ -536,7 +536,7 @@ fn bridge(
                 // That edge is the one back to the start, and without it the
                 // contour is left open and assemble has nothing to stitch it
                 // to. C++ does the same here.
-                close_open_contour(graph, &mut state, writer);
+                close_open_contour(graph, &mut state, op, xor_mi_mask, xor_su_mask, writer);
                 writer.finish_contour();
             } else {
                 // Not on the boundary: retire the edge, and remember where
@@ -575,7 +575,14 @@ fn bridge(
 /// Port of the `activeWinding` block after `bridgeOp`'s inner loop. It fires
 /// only when the edge is still on the boundary and has not been walked, so a
 /// contour that genuinely ends there is not given a spurious closing line.
-fn close_open_contour(graph: &mut OpGraph, state: &mut WalkState, writer: &mut SkPathWriter) {
+fn close_open_contour(
+    graph: &mut OpGraph,
+    state: &mut WalkState,
+    op: Option<PathOp>,
+    xor_mi_mask: i32,
+    xor_su_mask: i32,
+    writer: &mut SkPathWriter,
+) {
     if writer.is_closed() {
         return;
     }
@@ -585,25 +592,45 @@ fn close_open_contour(graph: &mut OpGraph, state: &mut WalkState, writer: &mut S
     let Some(target) = writer.contour_start() else {
         return;
     };
-    if let Some(next) = step_across(graph, state, target) {
+    // Keep stepping across until the contour closes or there is nowhere
+    // left to go. One step is not always enough: a contour can be missing
+    // several edges when the walk ran out of *active* continuations partway
+    // round, and each of those edges is on the boundary.
+    let mut guard = CLOSE_GUARD;
+    loop {
+        guard -= 1;
+        if guard == 0 {
+            return;
+        }
+        let Some(next) = step_across(graph, state, target) else {
+            return;
+        };
         *state = next;
-    }
-    if !graph
-        .arena
-        .active_winding(state.start, state.end, |_, _| false)
-    {
-        return;
-    }
-    let Some(span_start) = graph.arena.span_starter(state.start, state.end) else {
-        return;
-    };
-    if graph.arena.span(span_start).already_added() {
-        return;
-    }
-    if add_curve_to(&mut graph.arena, state.start, state.end, writer) {
+        let Some(span_start) = graph.arena.span_starter(state.start, state.end) else {
+            return;
+        };
+        if graph.arena.span(span_start).already_added() {
+            return;
+        }
+        // The same gate the walk itself uses. Without it the closing step
+        // adds whatever edge happens to point homeward, boundary or not,
+        // and a Difference gets back the piece it just cut.
+        if !is_active(graph, state, op, xor_mi_mask, xor_su_mask) {
+            return;
+        }
+        if !add_curve_to(&mut graph.arena, state.start, state.end, writer) {
+            return;
+        }
         graph.arena.mark_done(span_start);
+        if writer.is_closed() {
+            return;
+        }
     }
 }
+
+/// Bounds the closing walk, so a contour that cannot be closed gives up
+/// rather than circling.
+const CLOSE_GUARD: i32 = 1000;
 
 /// Returns the walk's continuation across the point `state` ends at.
 ///
