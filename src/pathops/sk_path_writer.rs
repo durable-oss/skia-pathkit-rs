@@ -45,13 +45,22 @@ impl<'a> SkPathWriter<'a> {
         }
     }
 
-    /// Adds a conic segment
+    /// Adds a conic segment, flushing any deferred move or line first.
+    ///
+    /// Port of `SkPathWriter::conicTo`, which routes its endpoint through
+    /// `update` exactly as the line path does. Writing to `current` without
+    /// that leaves the contour with no leading move, so nothing is emitted.
     pub fn conic_to(&mut self, pt1: Point, pt2: Point, weight: f32) {
+        let pt2 = self.update(pt2);
         self.current.conic_to(pt1.x, pt1.y, pt2.x, pt2.y, weight);
     }
 
-    /// Adds a cubic segment
+    /// Adds a cubic segment, flushing any deferred move or line first.
+    ///
+    /// Port of `SkPathWriter::cubicTo`. See [`conic_to`](Self::conic_to) for
+    /// why the endpoint goes through `update`.
     pub fn cubic_to(&mut self, pt1: Point, pt2: Point, pt3: Point) {
+        let pt3 = self.update(pt3);
         self.current
             .cubic_to(pt1.x, pt1.y, pt2.x, pt2.y, pt3.x, pt3.y);
     }
@@ -169,7 +178,12 @@ impl<'a> SkPathWriter<'a> {
     }
 
     /// Adds a quad segment
+    /// Adds a quad segment, flushing any deferred move or line first.
+    ///
+    /// Port of `SkPathWriter::quadTo`. See [`conic_to`](Self::conic_to) for
+    /// why the endpoint goes through `update`.
     pub fn quad_to(&mut self, pt1: Point, pt2: Point) {
+        let pt2 = self.update(pt2);
         self.current.quad_to(pt1.x, pt1.y, pt2.x, pt2.y);
     }
 

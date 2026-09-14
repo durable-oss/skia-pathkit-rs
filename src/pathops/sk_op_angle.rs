@@ -146,7 +146,9 @@ impl std::ops::Sub for AngleVector {
 /// How winding is accumulated when angles are walked.
 ///
 /// Port of `SkOpAngle::IncludeType`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Ordered because the C++ tests `includeType >= kBinarySingle` to mean "this
+// is a two-operand walk"; the variant order below is the C++ enum's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IncludeType {
     /// One operand, nonzero fill.
     UnaryWinding,

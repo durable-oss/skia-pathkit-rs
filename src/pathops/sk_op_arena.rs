@@ -294,6 +294,8 @@ pub struct ArenaSegment {
     pub f_done: bool,
     /// True when the segment's t direction runs against the contour's.
     pub f_reversed: bool,
+    /// True when the segment belongs to the second operand of a binary op.
+    pub f_operand: bool,
     /// Debug id.
     pub f_id: i32,
 }
@@ -313,6 +315,7 @@ impl Default for ArenaSegment {
             f_done_count: 0,
             f_done: false,
             f_reversed: false,
+            f_operand: false,
             f_id: 0,
         }
     }
@@ -1750,6 +1753,10 @@ impl OpArena {
             self.span_to_angle_of(end_span)
         };
 
+        // The angle branch moves `end_span` onto the next angle's start, so
+        // a later bail-out records where that walk stopped, not where it
+        // came from. Matches C++, which reassigns `endSpan` in that branch.
+        let mut end_span = end_span;
         let (other, found_span, other_end) = match angle {
             None => {
                 // No angle here, so the only way onward is through a shared
@@ -1769,11 +1776,20 @@ impl OpArena {
                 };
                 (other, found, other_end)
             }
-            Some(_) => {
-                // Following the angle loop is item 04's remaining half; until
-                // `after` exists there is no sorted loop to step through.
-                state.last = Some(end_span);
-                return None;
+            Some(angle) => {
+                // More than two angles meet here, so which way to go is a
+                // choice the chase walk does not get to make; it stops and
+                // records where, for the caller to resolve.
+                if super::sk_op_angle_order::loop_count(self, angle) > 2 {
+                    state.last = Some(end_span);
+                    return None;
+                }
+                let next = AngleId::new(self.angle(angle).f_next?);
+                let other_start = SpanId::new(self.angle(next).f_start?);
+                let other_end = SpanId::new(self.angle(next).f_end?);
+                let other = self.span_segment(other_start)?;
+                end_span = other_start;
+                (other, other_start, Some(other_end))
             }
         };
 
@@ -1881,6 +1897,58 @@ impl OpArena {
             self.mark_winding(min, winding);
         }
         Some((success, state.last))
+    }
+
+    /// Marks a span pair with both operands' winding values and chases the
+    /// mark along the segments that follow.
+    ///
+    /// Port of the binary `SkOpSegment::markAndChaseWinding`. Same walk as
+    /// the unary form; it writes the opposite operand's sum as well.
+    pub fn mark_and_chase_winding_opp(
+        &mut self,
+        start: SpanId,
+        end: SpanId,
+        winding: i32,
+        opp_winding: i32,
+    ) -> Option<(bool, Option<SpanId>)> {
+        let span_start = self.span_starter(start, end)?;
+        let step = self.span_step(start, end);
+        let success = self.mark_winding_opp(span_start, winding, opp_winding);
+
+        let mut state = ChaseState {
+            start,
+            step,
+            min: Some(span_start),
+            last: None,
+        };
+        let mut safety_net = 100_000;
+        while let Some(_other) = self.next_chase(&mut state) {
+            safety_net -= 1;
+            if safety_net == 0 {
+                return None;
+            }
+            let Some(min) = state.min else { break };
+            if self.span(min).wind_sum() != PK_MIN_S32 {
+                break;
+            }
+            self.mark_winding_opp(min, winding, opp_winding);
+        }
+        Some((success, state.last))
+    }
+
+    /// Returns whether `segment` belongs to the second operand.
+    ///
+    /// Port of `SkOpSegment::operand`, which forwards to its contour. Until
+    /// contours are threaded through the arena this reads the flag the edge
+    /// builder stamps on the segment itself.
+    #[must_use]
+    pub fn segment_operand(&self, segment: SegmentId) -> bool {
+        self.segment(segment).f_operand
+    }
+
+    /// Marks `segment` as belonging to the second operand.
+    pub fn set_segment_operand(&mut self, segment: SegmentId, operand: bool) {
+        self.segment_mut(segment).f_operand = operand;
     }
 
 
