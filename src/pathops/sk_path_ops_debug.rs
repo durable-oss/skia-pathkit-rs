@@ -411,8 +411,11 @@ impl GlitchLog {
     }
 
     /// Record a glitch about a span and its counterpart on the other segment.
-    /// The first span is stored in `end_span_id`, matching the field layout the
-    /// coincidence printer expects.
+    ///
+    /// Note that `span_id` lands in `end_span_id`, not in a same-named field.
+    /// This helper has no single counterpart among the C++ `record` overloads
+    /// and currently has no callers, so which field the first span belongs in
+    /// is unsettled; it is left as-is rather than guessed at.
     pub fn record_with_opposing(
         &mut self,
         glitch_type: GlitchType,
