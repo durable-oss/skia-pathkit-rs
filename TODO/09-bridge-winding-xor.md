@@ -339,8 +339,33 @@ segment 6's t = 0.4 span zeroed by coincidence, and `span_starter` picks by
 lesser t, so a candidate spanning t = 0..0.4 starts at t = 0 and one spanning
 0.4..1 starts at 0.4.
 
-Next step: print the actual `SpanId` for that ring member alongside the
-`SpanId` the probe casts from. If they differ, the question is why the ring
-holds an angle on the zeroed span; if they match, something between the cast
-and the gate is reading a stale value, and `winding_failed` should be
-checked — nothing currently looks at it.
+### Answered, and one more fix
+
+The span ids match. The `-2` arrives *first*, chased in across a corner from
+the other input, and the setters then correctly refuse to overwrite it with
+the right value.
+
+`next_chase`'s no-angle branch was stepping to `ptt_next` — one arbitrary
+ring neighbour. In C++ a plain corner is a two-element ring so that is
+unambiguous; here a corner that is also a crossing holds members from both
+inputs. It now prefers a member on the segment this one is linked to along
+its own contour. Fixed and tested
+(`next_chase_prefers_the_segment_on_its_own_contour`).
+
+### Where it stands
+
+Routing `op` through the engine passes **1016 of 1017** with one ignored.
+The single remaining failure is
+`sk_op_builder::union_of_five_overlapping_rects_matches_sequential_ops`, and
+Intersect across a shared edge is still wrong (the `#[ignore]`d test).
+
+Both are the same geometry family: rectangles that share a full collinear
+edge. Everything else in the suite - unions and differences of overlapping
+boxes, near-coincident discs at every offset, curve preservation through a
+cut - passes through the engine.
+
+`winding_failed` is set in `span_set_wind_sum` and `span_set_opp_sum` and
+read nowhere. It is the signal that two casts disagreed about a span, which
+is exactly the symptom above; wiring it into `bridge` so a disagreement fails
+the op rather than silently keeping the first answer would at least turn a
+wrong result into a fallback.
