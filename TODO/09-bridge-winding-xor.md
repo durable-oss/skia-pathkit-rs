@@ -232,6 +232,33 @@ Difference on those two rectangles is now correct, which is the useful
 contrast - the graph is the same, so the difference is in how the two sums
 are read, not in how they were built.
 
-Start by dumping segment 1's `wind_sum`/`opp_sum` after `handle_coincidence`
-and comparing them to what a ray cast from the middle of that edge should
-give.
+### Correction: the winding is right, the walk is short
+
+Dumping segment 1 after `handle_coincidence` shows `ws = -1, os = -1`, and
+`active_op` answers **false** for both directions along it. That is *correct*:
+x = 20 is A's right edge, B spans 8..28, so B covers it, and an edge with
+fill on both sides is not on a union's boundary. The gate is right to refuse
+it.
+
+The real symptom is narrower than described above. Unioning `(0,0,20,20)`
+with `(8,0,28,20)` returns A's outline alone — `(25, 10)`, which is inside B,
+reads as outside. Segments 5 and 6 (B's right side and the part of its top
+beyond x = 20) are never walked at all, and their windings are correct and
+non-zero:
+
+```
+SEG 4 (8,0)->(28,0)   [(0.0, 0, 0), (0.6, 1, 0), (1.0, 1, 0)]
+SEG 5 (28,0)->(28,20) [(0.0, 1, 0), (1.0, 1, 0)]
+SEG 6 (28,20)->(8,20) [(0.0, 1, 0), (0.4, 0, 0), (1.0, 1, 0)]
+```
+
+Segment 4's t = 0 span and segment 6's t = 0.4 span are the coincident runs,
+correctly zeroed. Everything else carries winding.
+
+So: the walk closes A's contour and stops, rather than starting a second one
+from segment 5. `find_sortable_top` should hand back one of those undone
+spans on the next outer-loop pass. Look there first — at whether
+`bridge`'s outer loop is reached at all after the first contour finishes, and
+at whether `find_sortable_top` skips segments whose spans are undone but
+whose *segment* was marked done by `segment_mark_all_done` somewhere in the
+chase.
