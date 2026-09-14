@@ -735,6 +735,82 @@ const OUTER_GUARD: i32 = 10_000;
 /// Bounds a single contour's walk.
 const INNER_GUARD: i32 = 100_000;
 
+/// How an operation changes when one or both operands fill inverted.
+///
+/// Port of `gOpInverse` (`SkPathOpsOp.cpp`). Inverting an operand turns the
+/// operation into its complement: subtracting an inverse-filled shape is
+/// intersecting with the shape itself, and so on. Indexed
+/// `[op][one is inverse][two is inverse]`.
+const OP_INVERSE: [[[PathOp; 2]; 2]; 5] = [
+    // Difference
+    [
+        [PathOp::Difference, PathOp::Intersect],
+        [PathOp::Union, PathOp::ReverseDifference],
+    ],
+    // Intersect
+    [
+        [PathOp::Intersect, PathOp::Difference],
+        [PathOp::ReverseDifference, PathOp::Union],
+    ],
+    // Union
+    [
+        [PathOp::Union, PathOp::ReverseDifference],
+        [PathOp::Difference, PathOp::Intersect],
+    ],
+    // Xor: inverting either operand inverts the result, not the operation.
+    [
+        [PathOp::Xor, PathOp::Xor],
+        [PathOp::Xor, PathOp::Xor],
+    ],
+    // ReverseDifference
+    [
+        [PathOp::ReverseDifference, PathOp::Union],
+        [PathOp::Intersect, PathOp::Difference],
+    ],
+];
+
+/// Whether the result of an operation fills inverted.
+///
+/// Port of `gOutInverse`, indexed the same way but by the *already inverted*
+/// operation from [`OP_INVERSE`].
+const OUT_INVERSE: [[[bool; 2]; 2]; 5] = [
+    [[false, false], [true, false]],  // difference
+    [[false, false], [false, true]],  // intersect
+    [[false, true], [true, true]],    // union
+    [[false, true], [true, false]],   // xor
+    [[false, true], [false, false]],  // reverse difference
+];
+
+/// Returns the index of `op` in the two inverse tables.
+const fn op_index(op: PathOp) -> usize {
+    match op {
+        PathOp::Difference => 0,
+        PathOp::Intersect => 1,
+        PathOp::Union => 2,
+        PathOp::Xor => 3,
+        PathOp::ReverseDifference => 4,
+    }
+}
+
+/// Rewrites `op` and the output fill for inverse-filled operands.
+///
+/// Port of the `gOpInverse` / `gOutInverse` lookup at the top of `OpDebug`.
+/// Returns the operation to actually perform and the fill type the result
+/// should carry.
+#[must_use]
+pub fn resolve_inverse(one: &Path, two: &Path, op: PathOp) -> (PathOp, FillType) {
+    let a = usize::from(one.fill_type().is_inverse());
+    let b = usize::from(two.fill_type().is_inverse());
+    let resolved = OP_INVERSE[op_index(op)][a][b];
+    let inverse_fill = OUT_INVERSE[op_index(resolved)][a][b];
+    let fill = if inverse_fill {
+        FillType::InverseEvenOdd
+    } else {
+        FillType::EvenOdd
+    };
+    (resolved, fill)
+}
+
 /// Returns the xor masks for `op`'s two operands.
 ///
 /// Port of the `gOutInverse`/mask setup in `SkPathOpsOp.cpp`: an even-odd
@@ -760,9 +836,18 @@ pub fn xor_masks(one: &Path, two: &Path) -> (i32, i32) {
 /// empty result.
 #[must_use]
 pub fn op_with_engine(one: &Path, two: &Path, op: PathOp) -> Option<Path> {
+    let (op, fill) = resolve_inverse(one, two, op);
+    // ReverseDifference is Difference with the operands the other way round,
+    // so the walk never has to know about it.
+    let (one, two, op) = if op == PathOp::ReverseDifference {
+        (two, one, PathOp::Difference)
+    } else {
+        (one, two, op)
+    };
     let (xor_mi, xor_su) = xor_masks(one, two);
     let mut graph = build(one, Some(two), xor_mi == 1, xor_su == 1)?;
     let mut result = Path::new();
+    result.set_fill_type(fill);
     {
         let mut writer = SkPathWriter::new(&mut result);
         if !bridge(&mut graph, Some(op), xor_mi, xor_su, &mut writer) {
@@ -1253,6 +1338,79 @@ mod tests {
             graph.coincidence.count(&graph.arena),
             0,
             "a touch is not a run"
+        );
+    }
+
+    #[test]
+    fn inverting_the_subtrahend_turns_difference_into_intersect() {
+        let a = rect_path(0.0, 0.0, 10.0, 10.0);
+        let mut b = rect_path(5.0, 5.0, 15.0, 15.0);
+        b.set_fill_type(FillType::InverseWinding);
+        // Subtracting everything-but-B is keeping what is in both.
+        let (op, fill) = resolve_inverse(&a, &b, PathOp::Difference);
+        assert_eq!(op, PathOp::Intersect);
+        assert!(!fill.is_inverse(), "the result is a bounded region");
+    }
+
+    #[test]
+    fn inverting_both_operands_swaps_union_and_intersect() {
+        let mut a = rect_path(0.0, 0.0, 10.0, 10.0);
+        let mut b = rect_path(5.0, 5.0, 15.0, 15.0);
+        a.set_fill_type(FillType::InverseWinding);
+        b.set_fill_type(FillType::InverseWinding);
+        // By De Morgan: the union of two complements is the complement of
+        // their intersection.
+        let (op, fill) = resolve_inverse(&a, &b, PathOp::Union);
+        assert_eq!(op, PathOp::Intersect);
+        assert!(fill.is_inverse(), "and the result is the complement");
+    }
+
+    #[test]
+    fn xor_keeps_its_operation_whatever_is_inverted() {
+        let plain = rect_path(0.0, 0.0, 10.0, 10.0);
+        let mut inverted = rect_path(5.0, 5.0, 15.0, 15.0);
+        inverted.set_fill_type(FillType::InverseWinding);
+        // Inverting an operand of xor inverts the result, not the operation.
+        for (x, y) in [(&plain, &inverted), (&inverted, &plain)] {
+            let (op, fill) = resolve_inverse(x, y, PathOp::Xor);
+            assert_eq!(op, PathOp::Xor);
+            assert!(fill.is_inverse());
+        }
+        let (op, fill) = resolve_inverse(&inverted, &inverted, PathOp::Xor);
+        assert_eq!(op, PathOp::Xor);
+        assert!(
+            !fill.is_inverse(),
+            "inverting both cancels: the symmetric difference is unchanged"
+        );
+    }
+
+    #[test]
+    fn plain_operands_leave_the_operation_alone() {
+        let a = rect_path(0.0, 0.0, 10.0, 10.0);
+        let b = rect_path(5.0, 5.0, 15.0, 15.0);
+        for op in [
+            PathOp::Difference,
+            PathOp::Intersect,
+            PathOp::Union,
+            PathOp::Xor,
+            PathOp::ReverseDifference,
+        ] {
+            let (resolved, fill) = resolve_inverse(&a, &b, op);
+            assert_eq!(resolved, op, "{op:?} is unchanged without inversion");
+            assert!(!fill.is_inverse());
+        }
+    }
+
+    #[test]
+    fn reverse_difference_is_difference_with_the_operands_swapped() {
+        let a = rect_path(0.0, 0.0, 10.0, 10.0);
+        let b = rect_path(5.0, 5.0, 15.0, 15.0);
+        let rev = op_with_engine(&a, &b, PathOp::ReverseDifference);
+        let fwd = op_with_engine(&b, &a, PathOp::Difference);
+        assert_eq!(
+            rev.map(|p| p.points().to_vec()),
+            fwd.map(|p| p.points().to_vec()),
+            "the two must produce the same path"
         );
     }
 }
