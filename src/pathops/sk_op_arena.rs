@@ -1652,7 +1652,13 @@ impl OpArena {
             return winding;
         }
         let span_winding = self.span_sign(start, end);
-        if span_winding != 0
+        // The guard is on `winding`, not on `span_winding`. C++ is
+        // `if (winding && UseInnerWinding(winding - spanWinding, winding)
+        // && winding != PK_MaxS32)`. Testing the span sign instead lets a
+        // zero winding through to the subtraction and blocks a nonzero one
+        // whose span happens to contribute nothing - both wrong, and the
+        // second is what left an interior edge reading as a boundary.
+        if winding != 0
             && use_inner_winding(winding - span_winding, winding)
             && winding != PK_MAX_S32
         {
@@ -1688,6 +1694,10 @@ impl OpArena {
         };
         let mut opp_winding = self.span(lesser).opp_sum();
         let opp_span_winding = self.opp_sign(start, end);
+        // Note the asymmetry with `update_winding`, which guards on the
+        // winding rather than the span sign. It is real: `updateOppWinding`
+        // (`SkOpSegment.cpp:1719`) tests `oppSpanWinding`, `updateWinding`
+        // (`:1701`) tests `winding`. Do not "fix" one to match the other.
         if opp_span_winding != 0
             && use_inner_winding(opp_winding - opp_span_winding, opp_winding)
             && opp_winding != PK_MAX_S32
@@ -3552,6 +3562,28 @@ mod tests {
         assert_eq!(arena.walk_angle(head, mid), Some(leaving));
         // Walking backwards from the mid takes the one arriving at the mid.
         assert_eq!(arena.walk_angle(mid, head), Some(mid_arriving));
+    }
+
+    #[test]
+    fn update_winding_guards_on_the_winding_not_the_span_sign() {
+        let mut arena = OpArena::new();
+        let seg = arena.alloc_segment_with_curve(
+            &[Point::new(0.0, 0.0), Point::new(10.0, 0.0)],
+            Verb::Line,
+            1.0,
+        );
+        let head = arena.segment(seg).f_head.expect("head");
+        let tail = arena.segment(seg).f_tail.expect("tail");
+        // A resolved winding of zero must be left alone whatever the span
+        // contributes: C++ tests `if (winding && ...)`, so a zero winding
+        // never reaches the subtraction.
+        arena.span_mut(head).set_wind_value(3);
+        arena.span_set_wind_sum(head, 0);
+        assert_eq!(
+            arena.update_winding(head, tail, |_, _| false),
+            0,
+            "a zero winding is not adjusted"
+        );
     }
 
     #[test]
