@@ -154,3 +154,58 @@ therefore interior, therefore not on a union's boundary. The gate still lets
 it through, and `active_op` was observed getting `sum_mi = 0` for it. So the
 defect is between `update_winding` and `active_op_with`, on a span whose
 stored sum is already correct — not in the ray cast that produced it.
+
+---
+
+## Update (2026-09-14, later): three more defects fixed, two cases left
+
+Routing `op` through the engine now passes **1012 of 1013**, down from 1005
+of 1007 when this was first written. Three real defects came out of chasing
+that number down:
+
+1. **`set_up_windings` did not swap on the operand.** The binary form branches
+   on `operand()`: a second-operand segment takes its own delta off
+   `sumSuWinding` and reads `sumMiWinding` as its opposite
+   (`SkOpSegment.cpp:1655`). The port always took it off the first sum, so
+   every second-operand edge was measured against the wrong running total.
+   Fixing this took the five-rectangle union and both disc-union cases from
+   failing to passing.
+
+2. **`update_winding` guarded on the span sign rather than the winding.**
+   C++ is `if (winding && ...)` (`:1701`). Note `updateOppWinding` (`:1719`)
+   really does guard on `oppSpanWinding` — the asymmetry is in the original,
+   and both are now commented so neither gets "fixed" to match the other.
+
+3. **The edge builder put the second operand's 1 in `oppValue`.** C++ sets
+   `windValue = 1` on every span whichever operand it belongs to
+   (`SkOpSpan::init`); the distinction lives in `operand()`. With the 1 in
+   the wrong field, coincidence's `apply` folded a shared edge into one
+   operand's winding with nothing left in the other, so the result thought
+   the second input covered nothing. This is what made a Difference across a
+   shared edge keep the part it should have cut.
+
+The four `update_winding` call sites in the walker were also passing a
+closure that never resolved anything; they now use the real ray cast, with
+the segment list parked on the arena the way C++ reaches the contour list off
+the global state.
+
+### What is left
+
+Two cases, both on geometry where two inputs share a collinear edge:
+
+- **Intersect** returns a path covering a point that lies only in the
+  subtrahend. `an_intersect_across_a_shared_edge_keeps_only_the_overlap` in
+  `sk_op_engine.rs` is `#[ignore]`d rather than weakened, so
+  `cargo test -- --ignored` shows it. Difference on the *same* two rectangles
+  is correct, which narrows it to the `gActiveEdge` path for Intersect or to
+  how the two sums are seeded for it.
+
+- **Three or more rectangles unioned in a chain** fragments. Unioning three
+  rects at x = 0, 8, 16 (each 20 wide, all spanning y 0..20) gives six
+  unclosed contours. Its `contains` answers happen to be right, but feeding
+  that into the next union fails. Two rectangles are fine; the third is where
+  it breaks, so the suspect is a contour the walk starts and abandons rather
+  than the winding.
+
+Start with Intersect: it is the smaller of the two and the Difference case
+next to it already works.
