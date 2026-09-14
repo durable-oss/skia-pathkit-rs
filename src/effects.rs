@@ -184,14 +184,12 @@ fn calc_dash_parameters(phase: Scalar, intervals: &[Scalar]) -> (Scalar, i32, Sc
         phase = phase % total;
     }
 
-    let mut idx = 0i32;
     let mut accum = phase;
     for (i, &interval) in intervals.iter().enumerate() {
         if accum > interval || (accum == interval && interval > 0.0) {
             accum -= interval;
         } else {
-            idx = i as i32;
-            return (interval - accum, idx, total);
+            return (interval - accum, i as i32, total);
         }
     }
     (intervals[0], 0, total)
@@ -203,15 +201,16 @@ fn dash_path_segments(
     dst: &mut Path,
     _intervals: &[Scalar],
     _count: i32,
-    initial_dash_length: Scalar,
-    initial_dash_index: i32,
+    mut initial_dash_length: Scalar,
+    mut initial_dash_index: i32,
     _interval_length: Scalar,
 ) -> bool {
     // Walk the source path verb by verb, dashing each segment.
     // For each segment, compute its length, then apply the dash pattern.
     let mut vi = 0usize;
     let mut pi = 0usize;
-    let mut wi = 0usize;
+    // Conic weights are not consumed yet; the conic arm dashes its chord.
+    let mut _wi = 0usize;
     let mut contour_start = Point::new(0.0, 0.0);
     let mut current_pt = Point::new(0.0, 0.0);
     let mut first_point = true;
@@ -234,8 +233,8 @@ fn dash_path_segments(
                     start,
                     end,
                     dst,
-                    initial_dash_length,
-                    initial_dash_index,
+                    &mut initial_dash_length,
+                    &mut initial_dash_index,
                     _interval_length,
                     _intervals,
                     _count,
@@ -252,8 +251,8 @@ fn dash_path_segments(
                     start,
                     end,
                     dst,
-                    initial_dash_length,
-                    initial_dash_index,
+                    &mut initial_dash_length,
+                    &mut initial_dash_index,
                     _interval_length,
                     _intervals,
                     _count,
@@ -269,8 +268,8 @@ fn dash_path_segments(
                     start,
                     end,
                     dst,
-                    initial_dash_length,
-                    initial_dash_index,
+                    &mut initial_dash_length,
+                    &mut initial_dash_index,
                     _interval_length,
                     _intervals,
                     _count,
@@ -278,7 +277,7 @@ fn dash_path_segments(
                 );
                 current_pt = end;
                 pi += 2;
-                wi += 1;
+                _wi += 1;
             }
             Verb::Cubic => {
                 let end = src.points[pi + 2];
@@ -287,8 +286,8 @@ fn dash_path_segments(
                     start,
                     end,
                     dst,
-                    initial_dash_length,
-                    initial_dash_index,
+                    &mut initial_dash_length,
+                    &mut initial_dash_index,
                     _interval_length,
                     _intervals,
                     _count,
@@ -305,8 +304,8 @@ fn dash_path_segments(
                         start,
                         contour_start,
                         dst,
-                        initial_dash_length,
-                        initial_dash_index,
+                        &mut initial_dash_length,
+                        &mut initial_dash_index,
                         _interval_length,
                         _intervals,
                         _count,
@@ -326,9 +325,9 @@ fn dash_line_segment(
     start: Point,
     end: Point,
     dst: &mut Path,
-    mut initial_dash_length: Scalar,
-    mut initial_dash_index: i32,
-    interval_length: Scalar,
+    initial_dash_length: &mut Scalar,
+    initial_dash_index: &mut i32,
+    _interval_length: Scalar,
     intervals: &[Scalar],
     _count: i32,
     _contour_start: &mut Point,
@@ -343,8 +342,8 @@ fn dash_line_segment(
     let uy = dy / seg_len;
 
     let mut distance = 0.0;
-    let mut dlen = initial_dash_length;
-    let mut index = initial_dash_index;
+    let mut dlen = *initial_dash_length;
+    let mut index = *initial_dash_index;
     let mut first_segment = true;
 
     while distance < seg_len {
@@ -369,16 +368,23 @@ fn dash_line_segment(
         }
 
         distance += effective_dlen;
-        index += 1;
-        if index as usize >= intervals.len() {
-            index = 0;
+
+        if effective_dlen < dlen {
+            // The segment ended mid-interval: keep the remainder so the next
+            // segment resumes inside this same interval.
+            dlen -= effective_dlen;
+        } else {
+            index += 1;
+            if index as usize >= intervals.len() {
+                index = 0;
+            }
+            dlen = intervals[index as usize];
         }
-        dlen = intervals[index as usize];
     }
 
-    // Update initial dash info for next segment
-    initial_dash_length = dlen;
-    initial_dash_index = index;
+    // Carry the dash phase into the next segment of the contour.
+    *initial_dash_length = dlen;
+    *initial_dash_index = index;
 }
 
 #[cfg(test)]
@@ -413,6 +419,35 @@ mod tests {
         // With 10-on, 10-off pattern, we should get ~20 "on" segments.
         assert!(!dashed.is_empty());
         assert!(dashed.count_verbs() > 0);
+    }
+
+    #[test]
+    fn dash_line_segment_carries_its_phase_to_the_next_segment() {
+        // A 15-unit run through a 10-on/10-off pattern ends 5 units into the
+        // "off" interval, so the next segment must resume there rather than
+        // restarting the pattern from the beginning.
+        let intervals = [10.0, 10.0];
+        let mut dash_length = intervals[0];
+        let mut index = 0i32;
+        let mut contour_start = Point::new(0.0, 0.0);
+        let mut dst = Path::new();
+
+        dash_line_segment(
+            Point::new(0.0, 0.0),
+            Point::new(15.0, 0.0),
+            &mut dst,
+            &mut dash_length,
+            &mut index,
+            20.0,
+            &intervals,
+            2,
+            &mut contour_start,
+        );
+
+        // 10 units of "on" are consumed, then 5 of the 10-unit "off"
+        // interval, leaving 5 units of interval 1 still to run.
+        assert_eq!(index, 1);
+        assert_eq!(dash_length, 5.0);
     }
 
     #[test]
