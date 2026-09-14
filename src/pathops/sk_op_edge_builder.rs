@@ -2,6 +2,10 @@
 //!
 //! Port of Skia's SkOpEdgeBuilder.{h,cpp}
 
+// Parts of this module are ported ahead of their call sites; see
+// PORTING.md for what remains to be wired up.
+#![allow(dead_code)]
+
 use super::sk_op_contour::{SkOpContourBuilder, SkOpContourHead};
 use crate::core::{Path, Point, Scalar, Verb};
 

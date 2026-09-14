@@ -5,6 +5,10 @@
 //! SkPathRef provides copy-on-write semantics for paths. Multiple SkPath
 //! instances can share the same SkPathRef, which is reference-counted.
 
+// Parts of this module are ported ahead of their call sites; see
+// PORTING.md for what remains to be wired up.
+#![allow(dead_code)]
+
 use super::{
     point::Point,
     rect::Rect,

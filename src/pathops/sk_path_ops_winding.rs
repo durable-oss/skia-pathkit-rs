@@ -6,6 +6,10 @@
 //! numbers for path segments. It projects rays from span endpoints and
 //! checks for intersections with other segments to determine proper winding.
 
+// Parts of this module are ported ahead of their call sites; see
+// PORTING.md for what remains to be wired up.
+#![allow(dead_code)]
+
 use crate::core::{Point, Scalar};
 
 /// Tolerance for approximate comparisons.

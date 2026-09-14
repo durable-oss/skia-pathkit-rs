@@ -2,6 +2,10 @@
 //!
 //! Ported from `src/core/SkStrokerPriv.cpp`.
 
+// Parts of this module are ported ahead of their call sites; see
+// PORTING.md for what remains to be wired up.
+#![allow(dead_code)]
+
 use super::path::Path;
 use super::point::{Point, Vector};
 use super::scalar::{self, Scalar};

@@ -2,6 +2,10 @@
 //!
 //! Ported from `src/core/SkPoint.cpp`.
 
+// Parts of this module are ported ahead of their call sites; see
+// PORTING.md for what remains to be wired up.
+#![allow(dead_code)]
+
 use super::point::{Point, Vector};
 use super::scalar::{self, Scalar};
 use super::sk_math::sk_ieee_float_divide;

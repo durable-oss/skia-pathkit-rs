@@ -4,6 +4,10 @@
 //! with EvenOdd or InverseWinding fill types to equivalent Winding paths
 //! by reversing appropriate contours.
 
+// Parts of this module are ported ahead of their call sites; see
+// PORTING.md for what remains to be wired up.
+#![allow(dead_code)]
+
 use crate::core::{FillType, Path, PathBuilder, Point, Rect, Scalar, Verb};
 
 /// Maximum scalar value for uninitialized min/max tracking

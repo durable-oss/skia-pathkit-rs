@@ -2,6 +2,10 @@
 //!
 //! Ported from `src/core/SkGeometry.cpp`.
 
+// Parts of this module are ported ahead of their call sites; see
+// PORTING.md for what remains to be wired up.
+#![allow(dead_code)]
+
 use super::{point::Point, point::Vector, scalar, scalar::Scalar};
 use crate::core::point::Point3;
 

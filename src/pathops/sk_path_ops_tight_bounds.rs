@@ -2,6 +2,10 @@
 //!
 //! Port of Skia's SkPathOpsTightBounds.cpp
 
+// Parts of this module are ported ahead of their call sites; see
+// PORTING.md for what remains to be wired up.
+#![allow(dead_code)]
+
 use crate::core::{Path, Rect, Scalar, Verb};
 use super::sk_reduce_order::{reduce_conic_path, reduce_cubic_path, reduce_quad_path, ReduceResult};
 

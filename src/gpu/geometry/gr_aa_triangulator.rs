@@ -9,6 +9,10 @@
 //! triangulates paths with alpha ramps for antialiasing. It extends the
 //! base GrTriangulator with additional stages to handle screen-space AA.
 
+// Parts of this module are ported ahead of their call sites; see
+// PORTING.md for what remains to be wired up.
+#![allow(dead_code)]
+
 /// AA Triangulator constant: cosine of miter angle threshold (~14 degrees)
 const K_COS_MITER_ANGLE: f32 = 0.97;
 

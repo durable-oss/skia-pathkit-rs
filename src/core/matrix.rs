@@ -10,6 +10,10 @@
 //! general 3x3 math directly; behavior is identical, only the
 //! micro-optimization is dropped.
 
+// Parts of this module are ported ahead of their call sites; see
+// PORTING.md for what remains to be wired up.
+#![allow(dead_code)]
+
 use super::point::Point;
 use super::rect::Rect;
 use super::scalar::{self, Scalar};

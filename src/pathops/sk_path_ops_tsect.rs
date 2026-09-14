@@ -5,6 +5,10 @@
 //! This module provides the data structures and algorithms for finding
 //! intersections between parametric curves (quadratic, cubic, conic).
 
+// Parts of this module are ported ahead of their call sites; see
+// PORTING.md for what remains to be wired up.
+#![allow(dead_code)]
+
 use std::cell::RefCell;
 
 use std::rc::Rc;

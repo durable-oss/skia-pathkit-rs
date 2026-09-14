@@ -2,6 +2,10 @@
 //!
 //! Ported from `include/core/SkPath.h` / `src/core/SkPath.cpp`.
 
+// Parts of this module are ported ahead of their call sites; see
+// PORTING.md for what remains to be wired up.
+#![allow(dead_code)]
+
 use super::point::{Point, Vector};
 use super::rect::Rect;
 use super::scalar::{self, Scalar};

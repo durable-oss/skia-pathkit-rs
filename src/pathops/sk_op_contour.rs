@@ -2,6 +2,10 @@
 //!
 //! Port of Skia's SkOpContour.{h,cpp}
 
+// Parts of this module are ported ahead of their call sites; see
+// PORTING.md for what remains to be wired up.
+#![allow(dead_code)]
+
 use super::sk_intersection_helper::SkPathOpsBounds;
 use super::sk_op_segment::{SkOpSegment, SkOpSpan};
 use crate::core::{Point, Scalar};

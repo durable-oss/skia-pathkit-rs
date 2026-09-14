@@ -3,6 +3,10 @@
 //! This module provides floating-point comparison utilities using ULPs (Units in the Last Place)
 //! for robust geometric comparisons, as well as other mathematical utilities needed by path operations.
 
+// Parts of this module are ported ahead of their call sites; see
+// PORTING.md for what remains to be wired up.
+#![allow(dead_code)]
+
 /// Helper: check if both arguments are denormalized (near zero)
 fn arguments_denormalized(a: f32, b: f32, epsilon: i32) -> bool {
     let denormalized_check = f32::EPSILON * epsilon as f32 / 2.0;
