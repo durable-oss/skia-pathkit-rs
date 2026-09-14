@@ -725,4 +725,45 @@ mod tests {
             hits.iter().map(|h| h.pt.x).collect::<Vec<_>>()
         );
     }
+
+    #[test]
+    fn a_ray_that_runs_along_an_edge_is_retried_in_another_direction() {
+        let mut arena = OpArena::new();
+        // Two rectangles both spanning y 0..20: every horizontal edge lies
+        // along another one, so the first ray fired from one of them runs
+        // straight down another and resolves nothing.
+        let mut segs = rect(&mut arena, 0.0, 0.0, 20.0, 20.0);
+        segs.extend(rect(&mut arena, 8.0, 0.0, 28.0, 20.0));
+        let bottom = segs[0];
+        let span = arena.segment(bottom).f_head.expect("head");
+
+        // One try is not enough here.
+        let first = sortable_top(&mut arena, span, &segs);
+        assert!(!first, "the first ray runs along the collinear edges");
+
+        // The retry loop is what gets there: each try picks a different t
+        // and alternates the direction.
+        let mut resolved = false;
+        for _ in 0..MAX_WINDING_TRIES {
+            if sortable_top(&mut arena, span, &segs) {
+                resolved = true;
+                break;
+            }
+        }
+        assert!(resolved, "a later ray must find a clean crossing");
+        assert_ne!(arena.span(span).wind_sum(), PK_MIN_S32);
+    }
+
+    #[test]
+    fn a_terminal_span_is_never_resolvable() {
+        let mut arena = OpArena::new();
+        let segs = rect(&mut arena, 0.0, 0.0, 10.0, 10.0);
+        let tail = arena.segment(segs[0]).f_tail.expect("tail");
+        // sortableTop casts its ray from somewhere inside the span's own
+        // interval, and a terminal span has none: there is no next.
+        for _ in 0..MAX_WINDING_TRIES {
+            assert!(!sortable_top(&mut arena, tail, &segs));
+        }
+        assert_eq!(arena.span(tail).wind_sum(), PK_MIN_S32);
+    }
 }
