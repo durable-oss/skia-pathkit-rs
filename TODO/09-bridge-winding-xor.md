@@ -286,9 +286,47 @@ Two things were checked and are *not* it:
 - `bridge`'s own inactive branch never fires either: the gate passes on the
   first edge, `walk_contour` runs, and the loop exits on the empty chase.
 
-So the question is narrower again: **on this graph, which angle should
-`pick_next` be finding inactive, and why is it not?** The ring at each corner
-of the overlap has three members; the walk takes one and should retire the
-others. Dump `pick_next`'s ring walk for the first contour and see how many
-members it visits — if it visits one, the ring it was handed is not the ring
-at that point.
+### The end of the trace: a winding sum that is too large by one
+
+Dumping `pick_next`'s ring walk answers it. At (20, 20) the two candidates
+are:
+
+```
+(20,20)->(28,20)  active=false  ws=-2  os=-2  wv=1
+(20,20)->(20,0)   active=false  ws=-3  os=-1  wv=1
+```
+
+Both inactive, so the walk stops there and the chase list stays empty —
+which is the empty-chase symptom above, and the reason segments 5 and 6 are
+never reached.
+
+`(20,20)->(28,20)` is B's top edge beyond the overlap. It **is** on the
+union's boundary: above it is empty. Its winding should have a zero on one
+side, and reads `ws = -2, os = -2` instead — fill on both sides, therefore
+interior, therefore refused.
+
+So the whole chain ends at the ray-cast winding counting a crossing that is
+not there. The suspect is `sk_op_sortable_top::accumulate` and the spans
+coincidence zeroed: it skips a hit whose span has `wind_value == 0 &&
+opp_value == 0`, which is right, but the *segments* those spans belong to are
+still crossed by the ray and still bound a region. Check what `accumulate`
+sees for a ray fired upward from the middle of segment 6's t = 0 span, and
+whether the zeroed coincident spans on segments 0 and 4 are being skipped in
+a way that leaves the running total one too high.
+
+`accumulate` itself was compared line by line against
+`SkOpSpan::sortableTop`'s second half and matches, including the
+zero-winding `continue` and where `last` is assigned. So the suspect moves
+one step earlier, to **`ray_check`: which spans it reports a hit against.**
+
+It attributes each root to a span via `winding_span_at_t`, which walks the
+span chain and returns the interval the t falls in. After coincidence has
+split segments at the run's ends, a ray crossing near one of those splits can
+be attributed to the neighbouring interval — and the neighbouring interval is
+exactly the one coincidence zeroed. A hit attributed to the zeroed span is
+skipped; a hit attributed to the live one next to it is counted. Either way
+the total is off by one, in a way that only shows up on geometry where a
+coincident run ends mid-segment.
+
+Everything upstream of that - the graph, the angle rings, the coincidence
+records, the active-edge gate, `accumulate` - is known good on this input.
