@@ -40,11 +40,13 @@
 //! decisions and t-section iteration counts under debug builds and have no
 //! effect on results.
 
-use super::sk_op_angle::SkOpAngle;
+use super::sk_op_angle::{sub_divide_curve, verb_to_points, CurveSweep, SkOpAngle};
+use super::sk_line_parameters::LinePoint;
+
 use super::sk_op_span::{is_zero_or_one, SkOpPtT, SkOpSpanBase, PK_MIN_S32};
 use super::sk_path_ops_types::{approximately_equal, OpPhase};
 use super::PathOp;
-use crate::core::Point;
+use crate::core::{Point, Verb};
 
 /// Maximum number of times winding computation is retried before giving up.
 ///
@@ -98,6 +100,59 @@ impl_handle!(CoinId);
 
 /// Largest i32, standing in for C++'s `PK_MaxS32`.
 pub const PK_MAX_S32: i32 = i32::MAX;
+
+/// Returns the point `pts`/`verb` reaches at `t`.
+///
+/// Port of `SkDCurve::ptAtT` dispatched on the verb. The arithmetic is f64
+/// even though the points are f32: the engine compares evaluated points
+/// against stored ones for equality, and evaluating in f32 loses enough at
+/// the endpoints to make t = 1 miss its own endpoint.
+///
+/// The endpoints are returned exactly rather than evaluated, matching the
+/// C++ special-casing in `SkOpSegment::ptAtT`.
+#[must_use]
+pub fn eval_curve(pts: &[Point], verb: Verb, weight: f32, t: f32) -> Point {
+    let last = verb_to_points(verb);
+    if t <= 0.0 {
+        return pts[0];
+    }
+    if t >= 1.0 {
+        return pts[last];
+    }
+    let t = f64::from(t);
+    let u = 1.0 - t;
+    let x = |i: usize| f64::from(pts[i].x);
+    let y = |i: usize| f64::from(pts[i].y);
+    let (px, py) = match verb {
+        Verb::Line => (u * x(0) + t * x(1), u * y(0) + t * y(1)),
+        Verb::Quad => {
+            let (a, b, c) = (u * u, 2.0 * u * t, t * t);
+            (
+                a * x(0) + b * x(1) + c * x(2),
+                a * y(0) + b * y(1) + c * y(2),
+            )
+        }
+        Verb::Conic => {
+            let w = f64::from(weight);
+            let (a, b, c) = (u * u, 2.0 * u * t * w, t * t);
+            let denom = a + b + c;
+            (
+                (a * x(0) + b * x(1) + c * x(2)) / denom,
+                (a * y(0) + b * y(1) + c * y(2)) / denom,
+            )
+        }
+        Verb::Cubic => {
+            let (a, b, c, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+            (
+                a * x(0) + b * x(1) + c * x(2) + d * x(3),
+                a * y(0) + b * y(1) + c * y(2) + d * y(3),
+            )
+        }
+        // Move and Close carry no curve; a segment never holds one.
+        Verb::Move | Verb::Close => (x(0), y(0)),
+    };
+    Point::new(px as f32, py as f32)
+}
 
 /// Returns true when the inner winding is the one to keep.
 ///
@@ -208,12 +263,19 @@ pub struct SkCoincidentSpans {
 
 /// A segment as the arena stores it.
 ///
-/// Only the graph edges live here; the geometry stays on
-/// [`super::sk_op_segment::SkOpSegment`], which item 05 threads through this
-/// arena. Splitting it this way keeps item 02 from having to rewrite the
-/// geometry code before the graph exists to hold it.
-#[derive(Debug, Clone, Default)]
+/// Port of `SkOpSegment`'s fields: the graph edges plus the geometry the
+/// walker reads back when it emits a curve. The geometry lives here rather
+/// than on [`super::sk_op_segment::SkOpSegment`] because `addCurveTo`,
+/// `subDivide` and `SkOpAngle::setSpans` all reach it through a span, and a
+/// span only knows its segment by id.
+#[derive(Debug, Clone)]
 pub struct ArenaSegment {
+    /// Control points, `0..=verb_to_points(f_verb)` of them in use.
+    pub f_pts: [Point; 4],
+    /// Which of `f_pts` are in use, and how to evaluate them.
+    pub f_verb: Verb,
+    /// Conic weight; 1.0 and unread for every other verb.
+    pub f_weight: f32,
     /// First span of the segment.
     pub f_head: Option<SpanId>,
     /// Terminal span, at t == 1.
@@ -222,14 +284,38 @@ pub struct ArenaSegment {
     pub f_next: Option<SegmentId>,
     /// Previous segment in the contour.
     pub f_prev: Option<SegmentId>,
+    /// Contour this segment belongs to, as an index into the contour list.
+    pub f_contour: Option<usize>,
     /// Number of spans in the segment.
     pub f_count: i32,
     /// Number of spans already resolved.
     pub f_done_count: i32,
     /// True once every span has been walked.
     pub f_done: bool,
+    /// True when the segment's t direction runs against the contour's.
+    pub f_reversed: bool,
     /// Debug id.
     pub f_id: i32,
+}
+
+impl Default for ArenaSegment {
+    fn default() -> Self {
+        Self {
+            f_pts: [Point::new(0.0, 0.0); 4],
+            f_verb: Verb::Line,
+            f_weight: 1.0,
+            f_head: None,
+            f_tail: None,
+            f_next: None,
+            f_prev: None,
+            f_contour: None,
+            f_count: 0,
+            f_done_count: 0,
+            f_done: false,
+            f_reversed: false,
+            f_id: 0,
+        }
+    }
 }
 
 /// Owns every node in the pathops graph, and the state carried alongside it.
@@ -1324,11 +1410,104 @@ impl OpArena {
         span
     }
 
+    /// Builds a segment carrying `verb`'s geometry, with spans at t 0 and 1.
+    ///
+    /// Port of `SkOpSegment::addLine`/`addQuad`/`addConic`/`addCubic`, which
+    /// all funnel into `SkOpSegment::init`. `pts` must hold
+    /// `verb_to_points(verb) + 1` points; `weight` is read only for a conic.
+    pub fn alloc_segment_with_curve(
+        &mut self,
+        pts: &[Point],
+        verb: Verb,
+        weight: f32,
+    ) -> SegmentId {
+        let count = verb_to_points(verb) + 1;
+        debug_assert!(pts.len() >= count);
+        let segment = self.alloc_segment_with_ends(pts[0], pts[count - 1]);
+        let seg = self.segment_mut(segment);
+        seg.f_verb = verb;
+        seg.f_weight = weight;
+        for (slot, p) in seg.f_pts.iter_mut().zip(pts.iter()) {
+            *slot = *p;
+        }
+        segment
+    }
+
+    /// Returns the segment's control points, verb and conic weight.
+    ///
+    /// The slice is `verb.point_count()` long, so callers indexing by verb do
+    /// not have to re-derive the count.
+    #[must_use]
+    pub fn segment_curve(&self, id: SegmentId) -> (&[Point], Verb, f32) {
+        let seg = self.segment(id);
+        (
+            &seg.f_pts[..=verb_to_points(seg.f_verb)],
+            seg.f_verb,
+            seg.f_weight,
+        )
+    }
+
+    /// Returns the point the segment reaches at `t`.
+    ///
+    /// Port of `SkOpSegment::ptAtT`. Exact at the endpoints, so a walk that
+    /// arrives at t = 1 gets the stored endpoint back rather than a rounded
+    /// evaluation of it.
+    #[must_use]
+    pub fn segment_pt_at_t(&self, id: SegmentId, t: f32) -> Point {
+        let (pts, verb, weight) = self.segment_curve(id);
+        eval_curve(pts, verb, weight, t)
+    }
+
+    /// Fills `out` with the piece of a span's segment between `start` and `end`.
+    ///
+    /// Port of `SkOpSegment::subDivide(start, end, SkDCurve*)`. Returns true
+    /// when a real subdivision happened, false when the piece is the whole
+    /// curve or a line and the control points were copied straight across.
+    ///
+    /// The endpoints come from the spans' PtT nodes rather than being
+    /// evaluated, matching C++: the cached point is what the rest of the
+    /// engine compares against, and re-evaluating can differ by rounding.
+    pub fn span_sub_divide(
+        &self,
+        start: SpanId,
+        end: SpanId,
+        out: &mut CurveSweep,
+    ) -> bool {
+        debug_assert_ne!(start, end);
+        let Some(segment) = self.span_segment(start) else {
+            return false;
+        };
+        let (pts, verb, weight) = self.segment_curve(segment);
+        let dpts: Vec<LinePoint> = pts
+            .iter()
+            .map(|p| [f64::from(p.x), f64::from(p.y)])
+            .collect();
+        let start_ptt = self.span(start).f_ptt.map(PtTId::new);
+        let end_ptt = self.span(end).f_ptt.map(PtTId::new);
+        let (start_pt, start_t) = match start_ptt {
+            Some(id) => (self.ptt(id).f_pt, self.ptt(id).f_t),
+            None => (self.span(start).f_pt, self.span(start).f_t),
+        };
+        let (end_pt, end_t) = match end_ptt {
+            Some(id) => (self.ptt(id).f_pt, self.ptt(id).f_t),
+            None => (self.span(end).f_pt, self.span(end).f_t),
+        };
+        sub_divide_curve(
+            &dpts,
+            verb,
+            f64::from(weight),
+            [f64::from(start_pt.x), f64::from(start_pt.y)],
+            f64::from(start_t),
+            [f64::from(end_pt.x), f64::from(end_pt.y)],
+            f64::from(end_t),
+            out,
+        )
+    }
+
     /// Builds a segment with spans at t = 0 and t = 1, ready for `add_t`.
     ///
-    /// Stands in for `SkOpSegment::init`, which also stores the geometry;
-    /// that half stays on [`super::sk_op_segment::SkOpSegment`] until the two
-    /// are joined.
+    /// Port of `SkOpSegment::init`'s span half. The geometry is left at its
+    /// default line; [`OpArena::alloc_segment_with_curve`] sets both.
     pub fn alloc_segment_with_ends(&mut self, start: Point, end: Point) -> SegmentId {
         let segment = self.alloc_segment(ArenaSegment::default());
         let head = self.alloc_span(SkOpSpanBase::new(0.0, start, Some(segment.index())));
@@ -3783,5 +3962,121 @@ mod tests {
         let mut done = true;
         let angle = arena.active_angle(a_tail, &mut start_ptr, &mut end_ptr, &mut done);
         assert_eq!(angle, Some(leaving), "found across the junction");
+    }
+
+    #[test]
+    fn segment_carries_its_curve_geometry() {
+        let mut arena = OpArena::new();
+        let pts = [
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 50.0),
+            Point::new(50.0, 100.0),
+            Point::new(100.0, 100.0),
+        ];
+        let seg = arena.alloc_segment_with_curve(&pts, Verb::Cubic, 1.0);
+        let (got, verb, _) = arena.segment_curve(seg);
+        assert_eq!(verb, Verb::Cubic);
+        assert_eq!(got.len(), 4, "a cubic keeps all four control points");
+        assert_eq!(got[1], pts[1]);
+        assert_eq!(got[2], pts[2]);
+    }
+
+    #[test]
+    fn pt_at_t_returns_the_stored_endpoints_exactly() {
+        let mut arena = OpArena::new();
+        let pts = [
+            Point::new(1.0, 2.0),
+            Point::new(3.0, 9.0),
+            Point::new(7.0, 4.0),
+        ];
+        let seg = arena.alloc_segment_with_curve(&pts, Verb::Quad, 1.0);
+        // Evaluating rather than returning the stored point would round here.
+        assert_eq!(arena.segment_pt_at_t(seg, 0.0), pts[0]);
+        assert_eq!(arena.segment_pt_at_t(seg, 1.0), pts[2]);
+        // B(1/2) = (p0 + 2*p1 + p2) / 4.
+        let mid = arena.segment_pt_at_t(seg, 0.5);
+        assert!((mid.x - 3.5).abs() < 1e-5, "x was {}", mid.x);
+        assert!((mid.y - 6.0).abs() < 1e-5, "y was {}", mid.y);
+    }
+
+    #[test]
+    fn conic_evaluation_honours_the_weight() {
+        let mut arena = OpArena::new();
+        let pts = [
+            Point::new(0.0, 0.0),
+            Point::new(1.0, 1.0),
+            Point::new(2.0, 0.0),
+        ];
+        let light = arena.alloc_segment_with_curve(&pts, Verb::Conic, 0.25);
+        let heavy = arena.alloc_segment_with_curve(&pts, Verb::Conic, 4.0);
+        let light_mid = arena.segment_pt_at_t(light, 0.5);
+        let heavy_mid = arena.segment_pt_at_t(heavy, 0.5);
+        assert!(
+            heavy_mid.y > light_mid.y,
+            "a heavier weight pulls the curve towards the control point: {} vs {}",
+            heavy_mid.y,
+            light_mid.y
+        );
+    }
+
+    #[test]
+    fn sub_divide_of_the_whole_span_returns_the_original_curve() {
+        let mut arena = OpArena::new();
+        let pts = [
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 50.0),
+            Point::new(50.0, 100.0),
+            Point::new(100.0, 100.0),
+        ];
+        let seg = arena.alloc_segment_with_curve(&pts, Verb::Cubic, 1.0);
+        let head = arena.segment(seg).f_head.expect("head");
+        let tail = arena.segment(seg).f_tail.expect("tail");
+        let mut part = CurveSweep::new();
+        // 0..1 is the whole curve, so this copies rather than subdividing.
+        assert!(!arena.span_sub_divide(head, tail, &mut part));
+        assert_eq!(part.f_curve[1], [0.0, 50.0]);
+        assert_eq!(part.f_curve[2], [50.0, 100.0]);
+    }
+
+    #[test]
+    fn sub_divide_of_an_interior_range_lands_on_the_curve() {
+        let mut arena = OpArena::new();
+        let pts = [
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 50.0),
+            Point::new(50.0, 100.0),
+            Point::new(100.0, 100.0),
+        ];
+        let seg = arena.alloc_segment_with_curve(&pts, Verb::Cubic, 1.0);
+        let mid = arena.segment_pt_at_t(seg, 0.5);
+        arena.segment_add_t(seg, 0.5, mid).expect("split at t = 0.5");
+        let head = arena.segment(seg).f_head.expect("head");
+        let split = arena.span_next(head).expect("split span");
+        let mut part = CurveSweep::new();
+        assert!(arena.span_sub_divide(head, split, &mut part));
+        assert_eq!(part.f_curve[0], [0.0, 0.0]);
+        assert_eq!(
+            part.f_curve[3],
+            [f64::from(mid.x), f64::from(mid.y)],
+            "the piece ends at the stored split point"
+        );
+        // The sub-curve's own midpoint must sit on the original at t = 0.25.
+        let want = arena.segment_pt_at_t(seg, 0.25);
+        let u: f64 = 0.5;
+        let (a, b, c, d) = (
+            u * u * u,
+            3.0 * u * u * (1.0 - u),
+            3.0 * u * (1.0 - u) * (1.0 - u),
+            (1.0 - u) * (1.0 - u) * (1.0 - u),
+        );
+        let got_x = d * part.f_curve[0][0]
+            + c * part.f_curve[1][0]
+            + b * part.f_curve[2][0]
+            + a * part.f_curve[3][0];
+        assert!(
+            (got_x - f64::from(want.x)).abs() < 1e-4,
+            "sub-curve midpoint x {got_x} vs original {}",
+            want.x
+        );
     }
 }
