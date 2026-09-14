@@ -224,6 +224,21 @@ impl SkOpSpanBase {
         self.f_already_added = true;
     }
 
+    /// Returns how many rays have already been tried from this span.
+    ///
+    /// Port of `SkOpSpan::fTopTTry`. Each failed ray bumps it, so the next
+    /// attempt picks a different t and a different direction rather than
+    /// repeating one that did not work.
+    #[must_use]
+    pub fn top_t_try(&self) -> i32 {
+        self.f_top_t_try
+    }
+
+    /// Records that another ray has been tried from this span.
+    pub fn bump_top_t_try(&mut self) {
+        self.f_top_t_try += 1;
+    }
+
     /// Counts another span added through this one.
     ///
     /// Port of `SkOpSpanBase::bumpSpanAdds`.

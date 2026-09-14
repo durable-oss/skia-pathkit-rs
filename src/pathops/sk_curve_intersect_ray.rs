@@ -405,6 +405,39 @@ pub fn curve_extent(pts: &[LinePoint], verb: Verb) -> f64 {
     (max_x - min_x).max(max_y - min_y)
 }
 
+/// Returns the curve parameters where the curve crosses the horizontal line
+/// `y = axis_intercept`.
+///
+/// Port of the `_intercept_h` half of the `CurveIntercept` table. The line is
+/// unbounded, so this is [`curve_intersect_ray`] against a horizontal ray;
+/// having it named separately keeps the ray-cast winding code reading like
+/// the C++.
+#[must_use]
+pub fn curve_intercept_h(
+    pts: &[LinePoint],
+    verb: Verb,
+    weight: f64,
+    axis_intercept: f64,
+) -> RayHits {
+    let ray = [[0.0, axis_intercept], [1.0, axis_intercept]];
+    curve_intersect_ray(pts, verb, weight, &ray)
+}
+
+/// Returns the curve parameters where the curve crosses the vertical line
+/// `x = axis_intercept`.
+///
+/// Port of the `_intercept_v` half of the `CurveIntercept` table.
+#[must_use]
+pub fn curve_intercept_v(
+    pts: &[LinePoint],
+    verb: Verb,
+    weight: f64,
+    axis_intercept: f64,
+) -> RayHits {
+    let ray = [[axis_intercept, 0.0], [axis_intercept, 1.0]];
+    curve_intersect_ray(pts, verb, weight, &ray)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -556,5 +589,23 @@ mod tests {
         let cubic = [[0.0, 0.0], [0.0, 10.0], [3.0, 10.0], [3.0, 0.0]];
         // Box is 3 wide and 10 tall, so 10 wins.
         assert!(near(curve_extent(&cubic, Verb::Cubic), 10.0, 1e-12));
+    }
+
+    #[test]
+    fn the_horizontal_intercept_finds_both_sides_of_an_arch() {
+        let quad = [[0.0, 0.0], [1.0, 2.0], [2.0, 0.0]];
+        let hits = curve_intercept_h(&quad, Verb::Quad, 1.0, 0.5);
+        assert_eq!(hits.used(), 2);
+        for i in 0..hits.used() {
+            assert!(near(hits.pt(i)[1], 0.5, 1e-9));
+        }
+    }
+
+    #[test]
+    fn the_vertical_intercept_finds_the_apex_once() {
+        let quad = [[0.0, 0.0], [1.0, 2.0], [2.0, 0.0]];
+        let hits = curve_intercept_v(&quad, Verb::Quad, 1.0, 1.0);
+        assert_eq!(hits.used(), 1, "x = 1 meets the symmetric arch at its top");
+        assert!(near(hits.t(0), 0.5, 1e-9));
     }
 }

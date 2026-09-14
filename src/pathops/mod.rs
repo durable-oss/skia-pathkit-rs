@@ -26,6 +26,7 @@ pub mod sk_op_coincidence;
 pub mod sk_op_contour;
 pub mod sk_op_edge_builder;
 pub mod sk_op_segment;
+pub mod sk_op_sortable_top;
 pub mod sk_op_span;
 pub mod sk_op_walker;
 pub mod sk_path_ops_as_winding;

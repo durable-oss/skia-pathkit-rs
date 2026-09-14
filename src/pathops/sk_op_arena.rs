@@ -1456,6 +1456,24 @@ impl OpArena {
         )
     }
 
+    /// Returns the segment's bounding box, as `(left, top, right, bottom)`.
+    ///
+    /// The control-point hull bounds rather than the tight bounds: it is what
+    /// the ray-cast winding uses to skip segments a ray cannot reach, and a
+    /// hull that contains the curve is enough for that.
+    #[must_use]
+    pub fn segment_bounds(&self, id: SegmentId) -> (f32, f32, f32, f32) {
+        let (pts, _, _) = self.segment_curve(id);
+        let mut bounds = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for p in pts {
+            bounds.0 = bounds.0.min(p.x);
+            bounds.1 = bounds.1.min(p.y);
+            bounds.2 = bounds.2.max(p.x);
+            bounds.3 = bounds.3.max(p.y);
+        }
+        bounds
+    }
+
     /// Returns the point the segment reaches at `t`.
     ///
     /// Port of `SkOpSegment::ptAtT`. Exact at the endpoints, so a walk that
