@@ -16,9 +16,12 @@
 //! winding-masked input) or `bridgeXor` (for even-odd input) walks the segment
 //! graph emitting closed contours.
 //!
-//! That engine is not yet ported in this crate (see `sk_op_segment`,
-//! `sk_op_coincidence`), so the same pipeline is realized here on the flattened
-//! edge representation that [`super::boolean`] uses: curves are flattened,
+//! That engine exists in this crate as [`super::sk_op_engine`] and
+//! [`super::sk_op_coincidence`], but `simplify` does not route through it yet
+//! (see `TODO/09-bridge-winding-xor.md`: `bridgeXor` is unwired, so an
+//! even-odd hole would come out filled). Until then the same pipeline is
+//! realized here on the flattened edge representation that [`super::boolean`]
+//! uses: curves are flattened,
 //! every edge is split at all intersections, each resulting piece is kept only
 //! if it lies on the boundary of the filled region, and the survivors are
 //! walked into closed contours. The staging mirrors the original —

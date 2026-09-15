@@ -265,9 +265,9 @@ pub struct SkCoincidentSpans {
 ///
 /// Port of `SkOpSegment`'s fields: the graph edges plus the geometry the
 /// walker reads back when it emits a curve. The geometry lives here rather
-/// than on [`super::sk_op_segment::SkOpSegment`] because `addCurveTo`,
-/// `subDivide` and `SkOpAngle::setSpans` all reach it through a span, and a
-/// span only knows its segment by id.
+/// than on a separate segment type because `addCurveTo`, `subDivide` and
+/// `SkOpAngle::setSpans` all reach it through a span, and a span only knows
+/// its segment by id.
 #[derive(Debug, Clone)]
 pub struct ArenaSegment {
     /// Control points, `0..=verb_to_points(f_verb)` of them in use.

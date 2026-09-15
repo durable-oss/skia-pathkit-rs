@@ -108,3 +108,19 @@ needed *for this defect*; it closes when the switch lands.
 Do not re-try the two approaches recorded above (dropping zero-area contours,
 tightening `FLAT_TOL`). They were measured and reverted, and neither is
 relevant to the engine that replaces them.
+
+---
+
+## Closed (2026-09-15)
+
+The switch landed: `pathops::op` routes through `sk_op_engine` as of
+`c5f5e29`. Both regression tests pass through the public entry point, not
+just the engine directly:
+
+```
+$ cargo test --lib discs_union_to_one_contour_across_the_offset_sweep
+$ cargo test --lib near_coincident_discs_union_to_one_contour_with_their_curves
+test ... ok (both)
+```
+
+All three acceptance criteria hold. Moved to `TODO/done/`.

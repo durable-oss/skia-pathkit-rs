@@ -77,3 +77,42 @@ Three concrete costs, not tidiness:
   tests are moved rather than dropped.
 - `grep -rn "SkOpContour\|SkIntersectionHelper" src/` is empty.
 - Only one `SkOpSpan` and one pathops-facing `Verb` remain reachable.
+
+---
+
+## Closed (2026-09-15)
+
+Deleted `sk_op_segment.rs`, `sk_op_contour.rs`, `sk_op_edge_builder.rs`,
+`sk_intersection_helper.rs`, and `sk_path_ops_common.rs`, their `pub mod`
+lines in `mod.rs`, and the doc-comment reference in `sk_op_arena.rs:268`.
+Also fixed a stale doc comment in `sk_path_ops_simplify.rs` that pointed at
+`sk_op_segment` as the not-yet-ported engine — the engine exists
+(`sk_op_engine`) and just isn't wired into `simplify` yet, which is
+`09`'s open `bridgeXor` item, not this one.
+
+Geometry coverage check before deleting: `sk_op_segment.rs`'s `bounds` and
+`pt_at_t` are covered on the arena side by `segment_bounds`/`segment_pt_at_t`
+and the test `pt_at_t_returns_the_stored_endpoints_exactly`. Its
+`is_horizontal`/`is_vertical` had no caller outside the dead module itself
+(only `sk_intersection_helper.rs`, also deleted) — nothing to port.
+
+Verified:
+
+```
+$ cargo build --lib            # clean
+$ cargo test --lib             # 1004 passed, 0 failed (was 1034; the 30
+                                # gone are the deleted files' own unit tests)
+$ grep -rn "SkOpContour|SkIntersectionHelper" src/   # empty
+$ grep -rn "struct SkOpSpan\b" src/                  # one hit (sk_op_span.rs)
+```
+
+**One acceptance line does not fully hold:** a second `Verb` enum still
+lives in `sk_path_ops_curve.rs`, used internally by `SkDCurve` — it is not
+dead code and was never in this item's task list (which named five specific
+files, not that one). Collapsing it would be a live-code refactor with its
+own blast radius, not a deletion, so it's out of scope here. Worth its own
+TODO if it's still wanted.
+
+`cargo clippy --lib` has 5 pre-existing errors, all in files this change
+never touched (`core/builder.rs`, `core/sk_arena_alloc.rs`,
+`core/sk_stroker_priv.rs`, `sk_path_ops_tsect.rs`) — unrelated to this item.
