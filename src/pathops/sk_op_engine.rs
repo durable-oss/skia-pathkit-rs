@@ -2351,6 +2351,26 @@ mod tests {
             }
         }
 
+        // Held-out disc/disc pairs at radius/offset combinations chosen to
+        // land a crossing exactly on one circle's own quadrant point — the
+        // exact shape of the gap this sweep once missed (radius 30 at the
+        // origin, radius 50 at offset 40, a 3-4-5 triangle scaled by 10).
+        // Not in the systematic disc/disc grid above, which uses different
+        // radii and offsets, so this checks the fix generalizes rather than
+        // re-testing the one pair already pinned by its own regression test.
+        for &(ra, rb, offset) in &[
+            (30.0f32, 50.0, 40.0), // 3-4-5 x 10
+            (9.0f32, 12.0, 15.0),  // 3-4-5 x 3
+            (6.0f32, 8.0, 10.0),   // 3-4-5 x 2
+            (45.0f32, 60.0, 75.0), // 3-4-5 x 15
+        ] {
+            let mut a = Path::new();
+            a.add_circle(0.0, 0.0, ra);
+            let mut b = Path::new();
+            b.add_circle(offset, 0.0, rb);
+            cases.push(("disc/disc held-out 3-4-5", a, b));
+        }
+
         let ops = [
             PathOp::Union,
             PathOp::Intersect,
@@ -2371,31 +2391,15 @@ mod tests {
             }
         }
 
-        // This sweep is item 5's due diligence before deleting `boolean.rs`:
-        // it is broader than item 4 (the nested-shared-boundary gap this
-        // session set out to close) on purpose, and it found two more
-        // pre-existing engine gaps that predate this session's changes
-        // (confirmed against the pre-item-4 commit) and are unrelated to
-        // nesting:
-        //
-        // - Two differently-sized overlapping circles whose crossing
-        //   `find_crossings` fails to detect at all (every segment stays at
-        //   f_count == 2), which then makes `nesting`'s single-sample
-        //   shortcut misfire and treat a real partial overlap as full
-        //   containment.
-        // - A disc/rect pair whose crossings *are* found and split
-        //   correctly (`graph_operands_do_not_cross` reports `false`, as it
-        //   should) but the walk still emits a wrong Union/Intersect/
-        //   Difference/Xor answer downstream of a correctly-built graph.
-        //
-        // Both are filed as
-        // TODO/2026-09-15-broad-sweep-found-two-more-op-with-engine-gaps.md,
-        // are why `boolean.rs` is not deleted by this item, and are not
-        // fixed here — they are outside item 4's scope (a nesting
-        // classification bug) and each looks like its own investigation.
-        // This sweep documents them with a known-case allowlist rather than
-        // asserting a blanket "never wrong," so it keeps catching anything
-        // new without re-discovering these two on every run.
+        // This sweep is item 5's due diligence before deleting `boolean.rs`
+        // (see TODO/09-bridge-winding-xor.md). It found two engine gaps in
+        // an earlier run — a missed circle/circle crossing that landed
+        // exactly on one circle's own quadrant point, and a disc/rect pair
+        // that turned out to share the same root cause — both fixed in
+        // `find_crossings`/`contour_crosses_at_endpoint`; see
+        // TODO/done/2026-09-15-broad-sweep-found-two-more-op-with-engine-gaps.md
+        // and the regression tests pinning each case directly. This sweep
+        // now asserts zero mismatches rather than a bounded allowlist.
         let mut declines = Vec::new();
         let mut mismatches = Vec::new();
         for (name, a, b) in &cases {
@@ -2431,11 +2435,6 @@ mod tests {
             cases.len() * ops.len(),
             declines
         );
-        // Two pre-existing, unrelated engine gaps live in this sweep's
-        // results and are not fixed here — see
-        // TODO/2026-09-15-broad-sweep-found-two-more-op-with-engine-gaps.md.
-        // Bounded rather than zero, so this sweep still catches a third gap
-        // appearing without re-discovering these two on every run.
         assert!(
             mismatches.is_empty(),
             "{} containment mismatches, expected zero now both filed gaps are fixed: {:?}",
