@@ -232,7 +232,11 @@ blocker on it, since straight-edge and single-intersection-per-arc inputs
       the same way `op` does; curved multi-intersection inputs have a
       known, separately-filed correctness gap, not a decline).
 - [x] The nested-shared-boundary Difference gap (item 4 above).
-- [ ] `boolean.rs` and the substitute helpers deleted (blocked on the two new
-      gaps in `2026-09-15-broad-sweep-found-two-more-op-with-engine-gaps.md`;
-      the curve-subdivision gap that used to block this too is fixed —
-      see `TODO/done/2026-09-15-curve-subdivision-corrupts-multi-intersection-arcs.md`).
+- [ ] `boolean.rs` and the substitute helpers deleted. Both gaps in
+      `2026-09-15-broad-sweep-found-two-more-op-with-engine-gaps.md` are
+      now fixed, but widening that file's sweep as its own due diligence
+      found a third, unrelated gap first — a `Union`-only bug on a
+      cubic/conic pair — filed as
+      `2026-09-15-union-drops-the-far-side-of-a-cubic-and-conic-pair.md`.
+      The curve-subdivision gap that used to block this is fixed — see
+      `TODO/done/2026-09-15-curve-subdivision-corrupts-multi-intersection-arcs.md`.

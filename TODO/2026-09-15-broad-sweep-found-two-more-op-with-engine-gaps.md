@@ -112,12 +112,29 @@ it first.
 
 ## Acceptance
 
-- [ ] Gap 1 (missed circle/circle crossing) fixed, with a regression test.
-- [ ] Gap 2 (wrong walk on a correctly-built disc/rect graph) fixed, with a
-      regression test.
-- [ ] The broad sweep in `sk_op_engine.rs` tightened from "at most 30
-      mismatches" back to zero.
-- [ ] Once both close (and item 4's own acceptance is otherwise satisfied),
-      revisit deleting `boolean.rs` — re-run the broad sweep once more before
-      doing that, per `TODO/09-bridge-winding-xor.md` item 5's own warning
-      about trusting a sweep that turned out not to be broad enough before.
+- [x] Gap 1 (missed circle/circle crossing) fixed, with a regression test.
+      Root cause: `find_crossings` discarded any touch landing exactly on
+      either curve's own endpoint outright, on the assumption that this
+      only ever meant "adjacent sides of one contour meeting at their
+      shared corner." Two circles whose real crossing happens to land on
+      one circle's own quadrant point hit the same code path with a
+      genuine crossing, and were silently dropped. Fixed by
+      `contour_crosses_at_endpoint` in `sk_op_engine.rs`, which decides per
+      touch whether the contour actually passes through to the far side.
+      See `overlapping_circles_whose_crossing_lands_on_a_quadrant_point`.
+- [x] Gap 2 (wrong walk on a correctly-built disc/rect graph) fixed, with a
+      regression test. Turned out to share gap 1's root cause rather than
+      being a separate winding bug — fixing only `find_crossings` brought
+      the broad sweep's mismatch count to zero, so no separate walk fix
+      was needed. See `disc_and_rect_pair_from_the_broad_sweep_gap_two`.
+- [x] The broad sweep in `sk_op_engine.rs` tightened from "at most 30
+      mismatches" back to zero, and widened with four held-out 3-4-5
+      disc/disc pairs at different scales to check the fix generalizes.
+- [ ] `boolean.rs` still not deleted: the widened sweep found a third,
+      unrelated gap (a `Union`-only bug on a cubic/conic pair) before
+      landing — see `TODO/2026-09-15-union-drops-the-far-side-of-a-cubic-and-conic-pair.md`.
+      Revisit deleting `boolean.rs` once that one closes too, and re-run
+      the broad sweep once more before doing it, per
+      `TODO/09-bridge-winding-xor.md` item 5's own warning about trusting a
+      sweep that turned out not to be broad enough — now three times this
+      session.
