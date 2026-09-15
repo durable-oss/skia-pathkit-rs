@@ -209,8 +209,26 @@ fn intersect_pair(graph: &mut OpGraph, a: SegmentId, b: SegmentId) {
     if record_if_coincident(graph, a, b) {
         return;
     }
+    let (a_pts, _, _) = graph.arena.segment_curve(a);
+    let (b_pts, _, _) = graph.arena.segment_curve(b);
+    let (a0, a1) = (a_pts[0], a_pts[a_pts.len() - 1]);
+    let (b0, b1) = (b_pts[0], b_pts[b_pts.len() - 1]);
+    // A crossing bisected numerically can land a hair off an endpoint it is
+    // exactly on, the same near-miss `record_if_coincident` snaps away —
+    // e.g. two rectangles meeting in a T at a shared corner. PtT rings are
+    // keyed on exact coordinates, so an unsnapped crossing opens a second
+    // ring at a corner that should have had one.
+    let snap_to_endpoint = |p: Point| -> Point {
+        for c in [a0, a1, b0, b1] {
+            if (p.x - c.x).abs() <= COLLINEAR_TOL && (p.y - c.y).abs() <= COLLINEAR_TOL {
+                return c;
+            }
+        }
+        p
+    };
     let crossings = find_crossings(&graph.arena, a, b);
     for (ta, tb, pt) in crossings {
+        let pt = snap_to_endpoint(pt);
         let pa = graph.arena.segment_add_t(a, ta, pt);
         let pb = graph.arena.segment_add_t(b, tb, pt);
         // Linking the two PtT nodes is what makes the crossing one place
@@ -361,6 +379,93 @@ fn find_crossings(arena: &OpArena, a: SegmentId, b: SegmentId) -> Vec<(f32, f32,
     out
 }
 
+/// How far along a segment's own parameter to step when checking which side
+/// of another curve it lands on, right after a touch at one of its ends.
+const ENDPOINT_PROBE_T: f32 = 1e-3;
+
+/// Returns true when a touch at parameter `t` on `seg` is where its
+/// contour actually passes through to the other side of `other`, rather
+/// than arriving at `other` and turning away without crossing it.
+///
+/// Only meaningful when `t` is at one of `seg`'s own endpoints: an interior
+/// touch already has curve on both sides of it within this one segment, so
+/// the ordinary sign-flip bisection in [`refine_between`] settles it. At an
+/// endpoint, `seg` itself only extends one way from the touch, so whether
+/// it is a crossing depends on the whole contour, not just this segment:
+/// does the contour's next segment through this same vertex continue onto
+/// the opposite side of `other` from where `seg` sits, or the same side?
+///
+/// A rectangle's edge landing square on another rectangle's edge (a T
+/// junction) fails this: the corner is the end of the first rectangle's
+/// excursion away from the second, not a crossing of it, and both sides
+/// come back with the same sign. Two circles whose intersection happens to
+/// land on a quadrant point of one of them pass it — the circle's contour
+/// keeps going through to the far side there, same as if the vertex were
+/// not on the other circle at all.
+fn contour_crosses_at_endpoint(arena: &OpArena, seg: SegmentId, t: f32, other: SegmentId) -> bool {
+    let at_tail = t > 0.5;
+    let neighbor = if at_tail {
+        arena.segment(seg).f_next
+    } else {
+        arena.segment(seg).f_prev
+    };
+    let Some(neighbor) = neighbor else {
+        return false;
+    };
+    if neighbor == other {
+        // The touch is the corner these two segments already share.
+        return false;
+    }
+    let seg_probe_t = if at_tail {
+        1.0 - ENDPOINT_PROBE_T
+    } else {
+        ENDPOINT_PROBE_T
+    };
+    let seg_probe = arena.segment_pt_at_t(seg, seg_probe_t);
+    // `seg`'s tail joins `neighbor`'s head (and symmetrically for `f_prev`),
+    // so the vertex is always at `neighbor`'s opposite end from `seg`'s own.
+    let neighbor_probe_t = if at_tail {
+        ENDPOINT_PROBE_T
+    } else {
+        1.0 - ENDPOINT_PROBE_T
+    };
+    let neighbor_probe = arena.segment_pt_at_t(neighbor, neighbor_probe_t);
+    let seg_sign = closest_signed(arena, other, seg_probe).map(|(_, s)| s);
+    let neighbor_sign = closest_signed(arena, other, neighbor_probe).map(|(_, s)| s);
+    match (seg_sign, neighbor_sign) {
+        // Either probe sitting right on `other`'s own line means that side
+        // of the vertex runs along `other` rather than standing off to one
+        // side of it — the coincident-edge case, not a transversal
+        // crossing, and there is no clean side to compare against.
+        (Some(s), Some(n)) if s != 0.0 && n != 0.0 => (s > 0.0) != (n > 0.0),
+        _ => false,
+    }
+}
+
+/// Returns true when a touch at (`ta` on `a`, `tb` on `b`) should be
+/// recorded as a crossing rather than dropped as a non-crossing touch.
+///
+/// Interior touches (neither `t` at 0 or 1) are always real crossings; the
+/// sign-flip bisection that found them already proves it. A touch at
+/// either curve's own endpoint needs [`contour_crosses_at_endpoint`] to
+/// settle whether that curve's contour actually passes through the other,
+/// checked from whichever side(s) land on an endpoint.
+fn endpoint_touch_is_a_crossing(
+    arena: &OpArena,
+    a: SegmentId,
+    b: SegmentId,
+    tb: f32,
+    ta: f32,
+) -> bool {
+    let a_at_end = !is_interior(ta);
+    let b_at_end = !is_interior(tb);
+    if !a_at_end && !b_at_end {
+        return true;
+    }
+    (!a_at_end || contour_crosses_at_endpoint(arena, a, ta, b))
+        && (!b_at_end || contour_crosses_at_endpoint(arena, b, tb, a))
+}
+
 /// Refines a crossing bracketed by `t0`..`t1` on `b`.
 fn refine_between(
     arena: &OpArena,
@@ -373,7 +478,7 @@ fn refine_between(
     let mut lo_sign = closest_signed(arena, a, arena.segment_pt_at_t(b, lo))?;
     let hi_sign = closest_signed(arena, a, arena.segment_pt_at_t(b, hi))?;
     if lo_sign.1 == 0.0 {
-        if !is_interior(lo) || !is_interior(lo_sign.0) {
+        if !endpoint_touch_is_a_crossing(arena, a, b, lo, lo_sign.0) {
             return None;
         }
         let pt = arena.segment_pt_at_t(b, lo);
@@ -394,11 +499,7 @@ fn refine_between(
             if (on_a.x - pt.x).abs() > 1e-3 || (on_a.y - pt.y).abs() > 1e-3 {
                 return None;
             }
-            // A touch at either curve's own endpoint is not a crossing to
-            // split at: the two already meet there, and adding a span at
-            // t = 0 or t = 1 would duplicate the endpoint the segments
-            // share. Adjacent sides of one contour meet exactly this way.
-            if !is_interior(mid) || !is_interior(mid_sign.0) {
+            if !endpoint_touch_is_a_crossing(arena, a, b, mid, mid_sign.0) {
                 return None;
             }
             return Some((mid_sign.0, mid, pt));
@@ -2336,10 +2437,90 @@ mod tests {
         // Bounded rather than zero, so this sweep still catches a third gap
         // appearing without re-discovering these two on every run.
         assert!(
-            mismatches.len() <= 30,
-            "{} containment mismatches, far more than the two known filed gaps account for: {:?}",
+            mismatches.is_empty(),
+            "{} containment mismatches, expected zero now both filed gaps are fixed: {:?}",
             mismatches.len(),
             &mismatches[..mismatches.len().min(10)]
         );
+    }
+
+    /// Gap 1 of `TODO/2026-09-15-broad-sweep-found-two-more-op-with-engine-gaps.md`:
+    /// two differently-sized circles with a genuine partial overlap must not
+    /// be mistaken for one swallowing the other. The crossing between them
+    /// happened to land exactly on one circle's own quadrant point (a 3-4-5
+    /// coincidence at these particular radii and offset: `30^2 + 40^2 =
+    /// 50^2`), which `find_crossings` used to discard outright as an
+    /// endpoint touch rather than fold into the existing span there.
+    #[test]
+    fn overlapping_circles_whose_crossing_lands_on_a_quadrant_point() {
+        let mut one = Path::new();
+        one.add_circle(0.0, 0.0, 30.0);
+        let mut two = Path::new();
+        two.add_circle(40.0, 0.0, 50.0);
+
+        for op in [
+            PathOp::Union,
+            PathOp::Intersect,
+            PathOp::Difference,
+            PathOp::Xor,
+        ] {
+            let got = op_with_engine(&one, &two, op)
+                .unwrap_or_else(|| panic!("{op:?} should not decline"));
+            // A's leftmost point (-30, 0) sits outside B (B's own leftmost
+            // point is at x = -10), so this is a genuine partial overlap,
+            // not containment either way.
+            let want_a_minus_b_nonempty =
+                matches!(op, PathOp::Union | PathOp::Difference | PathOp::Xor);
+            let a_minus_b_point = (-20.0f32, 0.0f32);
+            assert_eq!(
+                got.contains(a_minus_b_point.0, a_minus_b_point.1),
+                want_a_minus_b_nonempty,
+                "{op:?} at a point inside A only"
+            );
+        }
+    }
+
+    /// Gap 2 of the same file: a disc/rect pair whose graph the engine
+    /// built correctly still walked to a wrong answer. It turned out to
+    /// share gap 1's root cause rather than being a separate winding bug —
+    /// the broad sweep's mismatch count dropped to zero fixing only
+    /// `find_crossings`, so this pins the exact repro rather than assuming.
+    #[test]
+    fn disc_and_rect_pair_from_the_broad_sweep_gap_two() {
+        let mut circle = Path::new();
+        circle.add_circle(0.0, 0.0, 30.0);
+        let rect = rect_path(0.0, -40.0, 20.0, 40.0);
+
+        // Inside the circle, outside the rect: the point the broad sweep
+        // flagged a mismatch on before this fix.
+        let probe = (-16.9f32, 2.7f32);
+        assert!(
+            circle.contains(probe.0, probe.1),
+            "sanity: probe is inside the circle"
+        );
+        assert!(
+            !rect.contains(probe.0, probe.1),
+            "sanity: probe is outside the rect"
+        );
+
+        for op in [
+            PathOp::Union,
+            PathOp::Intersect,
+            PathOp::Difference,
+            PathOp::Xor,
+        ] {
+            let got = op_with_engine(&circle, &rect, op)
+                .unwrap_or_else(|| panic!("{op:?} should not decline"));
+            let want = match op {
+                PathOp::Union | PathOp::Difference | PathOp::Xor => true,
+                PathOp::Intersect => false,
+                PathOp::ReverseDifference => unreachable!("not in this test's op list"),
+            };
+            assert_eq!(
+                got.contains(probe.0, probe.1),
+                want,
+                "{op:?} at the probe point"
+            );
+        }
     }
 }
