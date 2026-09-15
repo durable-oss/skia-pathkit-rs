@@ -62,9 +62,6 @@ impl SkOpPtT {
 /// Minimum i32 value for winding sums
 pub const PK_MIN_S32: i32 = i32::MIN;
 
-/// Max winding tries
-pub const MAX_WINDING_TRIES: i32 = 100;
-
 /// Collapsed status for spans
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Collapsed {
@@ -300,6 +297,5 @@ mod tests {
     #[test]
     fn test_constants() {
         assert_eq!(PK_MIN_S32, i32::MIN);
-        assert_eq!(MAX_WINDING_TRIES, 100);
     }
 }

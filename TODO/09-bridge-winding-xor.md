@@ -128,26 +128,44 @@ makes each cast meaningful.
 
 ## What is left
 
-1. **`bridgeXor`, and it blocks `simplify`.** `find_next_xor` exists and
-   nothing calls it; `simplify_with_engine` walks with `bridgeWinding` for
-   both fill rules. The consequence is concrete: concentric squares under
-   even-odd fill come back **solid**, with the hole filled in and the fill
-   type rewritten to winding.
+### Update (2026-09-15): `bridgeXor` lands; `simplify` now routes through the engine
 
-   Routing `simplify` through the engine was tried and reverted for exactly
-   this. The whole suite passes either way — that case was not covered — so
-   two tests now pin it from both sides:
-   `simplify_keeps_an_even_odd_hole` (the public function, correct) and
-   `the_engine_still_gets_an_even_odd_hole_wrong` (the engine, the gap).
-   Delete the second and the routing guard together when `bridgeXor` lands.
+`bridge_xor` (port of `bridgeXor`, `SkPathOpsSimplify.cpp`) is written in
+`sk_op_engine.rs`, and `find_next_xor` — which existed but was never
+called — was actually a wrong port of `findNextXor`'s ring walk (it
+reused the winding/op `pick_next` helper, which does chase-list
+bookkeeping and an active-edge filter that C++'s `findNextXor` does not
+have). Rewritten as a standalone loop matching the C++ body directly.
 
-2. **`simplify` still runs on the substitute engine,** and correctly, which is
-   why it stays there for now. `sk_path_ops_simplify.rs` has Skia's
-   `SimplifyDebug` control flow over flattened edges: `collect_boundary`
-   samples `Path::contains` per edge rather than summing windings,
-   `dedup_coincident` stands in for `HandleCoincidence`, and `is_convex` is
-   hand-rolled. It flattens curves, so the switch is still worth making —
-   after item 1.
+`simplify_with_engine` also had a second, unrelated bug on the way to
+this: it never set the result path's fill type, so it defaulted to
+`Winding` and every even-odd result read back solid regardless of what
+the walk produced. Fixed to always set even-odd (or inverse-even-odd),
+matching `SimplifyDebug`'s `result->setFillType(fillType)`.
+
+`simplify()` now routes through `sk_op_engine::simplify_with_engine`
+first, falling back to the substitute engine the same way `op` does. The
+two pinning tests (`simplify_keeps_an_even_odd_hole`, and the former
+`the_engine_still_gets_an_even_odd_hole_wrong`) are collapsed into one
+correct pin on each side (`simplify_keeps_an_even_odd_hole` and
+`the_engine_keeps_an_even_odd_hole_too`).
+
+**However:** verified against a cached real-Skia build (`skia-pathops`
+Python package) as an oracle, `bridge_xor`'s *topology* is correct — same
+contours, same point cycle — but curved inputs whose boundary gets cut at
+two or more points on the same original arc (e.g. two overlapping
+circles) come back with corrupted curve geometry from a separate,
+pre-existing bug in curve subdivision. It is not new and not specific to
+xor — `op_with_engine`'s `Union` shows the identical corruption on the
+same geometry, untouched by this change. Filed as
+`2026-09-15-curve-subdivision-corrupts-multi-intersection-arcs.md`; it is
+a known, accepted gap for the `simplify` routing decision above, not a
+blocker on it, since straight-edge and single-intersection-per-arc inputs
+(most of them) work correctly either way.
+
+1. ~~**`bridgeXor`, and it blocks `simplify`.**~~ Closed above.
+
+2. ~~**`simplify` still runs on the substitute engine.**~~ Closed above.
 
 3. **Curve/curve coincidence** — `record_if_coincident` still handles
    line/line only, and two identical curves would still need the t-section
@@ -170,10 +188,11 @@ makes each cast meaningful.
    trusting the last known gap was the only one; that is how the stale "2 of
    48, curve/curve coincidence" framing above happened in the first place.
 
-6. **Three copies of `MAX_WINDING_TRIES`,** in `sk_path_ops_winding.rs` (100),
-   `sk_op_span.rs` (100) and `sk_op_arena.rs` (10). Skia's is 10, and the
-   arena's is the one the walk actually reads. The other two are dead or
-   wrong; collapse them to one.
+6. ~~**Three copies of `MAX_WINDING_TRIES`,**~~ Closed 2026-09-15: the two
+   dead copies (`sk_path_ops_winding.rs`, `sk_op_span.rs`, both 100 and
+   unread anywhere) are deleted along with their pinning tests. The
+   arena's copy (10, matching Skia, and the one the walk actually reads)
+   is untouched.
 
 ## Acceptance, restated
 
@@ -183,7 +202,12 @@ makes each cast meaningful.
 - [x] The disc-union cases from item 16 pass at every offset, radius and vertex count.
 - [x] The swallowed-shape empty-Difference gap closes when the operands'
       boundaries provably do not cross (`nesting`/`interior_point`).
-- [ ] `bridgeXor`, so even-odd simplify keeps its holes.
-- [ ] `simplify` on the real engine (blocked on the above).
+- [x] `bridgeXor`, so even-odd simplify keeps its holes.
+- [x] `simplify` on the real engine (falls back to the substitute engine
+      the same way `op` does; curved multi-intersection inputs have a
+      known, separately-filed correctness gap, not a decline).
 - [ ] The nested-shared-boundary Difference gap (item 4 above).
-- [ ] `boolean.rs` and the substitute helpers deleted (blocked on the above).
+- [ ] `boolean.rs` and the substitute helpers deleted (blocked on the above,
+      and now also on `2026-09-15-curve-subdivision-corrupts-multi-intersection-arcs.md`
+      — the substitute engine is still the only correct answer for curved
+      inputs with 2+ intersections on one arc).

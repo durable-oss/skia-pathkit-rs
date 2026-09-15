@@ -107,13 +107,14 @@ pub fn op(one: &Path, two: &Path, op: PathOp) -> Result<Path, PathKitError> {
 
 /// Reduces `path` to an equivalent path built from non-overlapping
 /// contours.
+///
+/// Goes through the same ported engine as [`op`], keeping curve verbs;
+/// the substitute in [`sk_path_ops_simplify`] is the fallback for inputs the
+/// engine declines.
 pub fn simplify(path: &Path) -> Result<Path, PathKitError> {
-    // Deliberately *not* routed through [`sk_op_engine`] the way [`op`] is.
-    // `simplify_with_engine` runs `bridgeWinding` for both fill rules —
-    // `find_next_xor` exists and nothing calls it — so an even-odd path with
-    // a hole comes back solid, and with its fill type rewritten to winding.
-    // The substitute engine gets that case right. See
-    // `TODO/09-bridge-winding-xor.md`.
+    if let Some(result) = sk_op_engine::simplify_with_engine(path) {
+        return Ok(result);
+    }
     crate::pathops::sk_path_ops_simplify::simplify(path).map_err(|_| PathKitError::OperationFailed)
 }
 
@@ -267,12 +268,8 @@ mod tests {
     #[test]
     fn simplify_keeps_an_even_odd_hole() {
         // Concentric squares under even-odd fill: an annulus with a square
-        // hole. This is the case that stops `simplify` being routed through
-        // `sk_op_engine` the way `op` is — `simplify_with_engine` walks it
-        // with `bridgeWinding`, fills the hole in, and rewrites the fill type
-        // to winding on the way out. If this test ever fails because someone
-        // switched the routing, `bridgeXor` is the missing piece, not this
-        // assertion.
+        // hole. Pins `bridgeXor`, which is what keeps the hole open instead
+        // of filling it solid and rewriting the fill type to winding.
         let mut p = Path::new();
         p.add_rect_simple(Rect::from_ltrb(0.0, 0.0, 100.0, 100.0));
         p.add_rect_simple(Rect::from_ltrb(25.0, 25.0, 75.0, 75.0));
@@ -285,18 +282,16 @@ mod tests {
     }
 
     #[test]
-    fn the_engine_still_gets_an_even_odd_hole_wrong() {
-        // The other half of the test above, stated as the known gap rather
-        // than left implicit. Delete both when `bridgeXor` lands.
+    fn the_engine_keeps_an_even_odd_hole_too() {
+        // simplify() falls back to the substitute engine on a decline; this
+        // pins the real engine's own answer directly.
         let mut p = Path::new();
         p.add_rect_simple(Rect::from_ltrb(0.0, 0.0, 100.0, 100.0));
         p.add_rect_simple(Rect::from_ltrb(25.0, 25.0, 75.0, 75.0));
         p.set_fill_type(FillType::EvenOdd);
 
-        let got = sk_op_engine::simplify_with_engine(&p).expect("it answers, wrongly");
-        assert!(
-            got.contains(50.0, 50.0),
-            "known gap: bridgeWinding fills the hole in"
-        );
+        let got = sk_op_engine::simplify_with_engine(&p).expect("the engine answers");
+        assert!(!got.contains(50.0, 50.0), "the hole survives");
+        assert!(got.contains(10.0, 50.0), "and the ring around it is filled");
     }
 }

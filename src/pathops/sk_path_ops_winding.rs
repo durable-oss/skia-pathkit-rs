@@ -125,9 +125,6 @@ fn get_t_guess(t_try: i32, dir_offset: &mut usize) -> Scalar {
     t
 }
 
-/// Returns true for up to 100 tries to find a sortable top span
-pub const MAX_WINDING_TRIES: i32 = 100;
-
 /// Minimum i32 value for winding sums
 pub const PK_MIN_S32: i32 = i32::MIN;
 
@@ -218,7 +215,6 @@ mod tests {
 
     #[test]
     fn test_constants() {
-        assert_eq!(MAX_WINDING_TRIES, 100);
         assert_eq!(PK_MIN_S32, i32::MIN);
     }
 }

@@ -645,14 +645,14 @@ pub fn find_next_winding(
 
 /// Picks the next segment for an xor-fill walk.
 ///
-/// Port of `SkOpSegment::findNextXor`. An xor walk needs no winding at all:
-/// every edge that has not been walked is active, so there is nothing to
-/// transfer and nothing to fail on.
-pub fn find_next_xor(
-    arena: &mut OpArena,
-    state: &mut WalkState,
-    chase: &mut Vec<SpanId>,
-) -> Option<SegmentId> {
+/// Port of `SkOpSegment::findNextXor`. Unlike [`find_next_winding`] and
+/// [`find_next_op`], the ring walk here takes the *first* angle found,
+/// unconditionally — every edge that has not been walked belongs in an
+/// xor result, so there is no active-edge test and no winding to transfer.
+/// It only moves past that first angle when its span turns out already
+/// done, and it does not push chase points: `bridgeXor` has no chase list
+/// to feed.
+pub fn find_next_xor(arena: &mut OpArena, state: &mut WalkState) -> Option<SegmentId> {
     debug_assert_ne!(state.start, state.end);
     let orig_start = state.start;
     let orig_end = state.end;
@@ -667,11 +667,42 @@ pub fn find_next_xor(
         give_up(arena, state, orig_start, orig_end);
         return None;
     }
-    pick_next(arena, state, angle, chase, |arena, s, e, _| {
-        arena
-            .span_starter(s, e)
-            .is_some_and(|span| !arena.span(span).done())
-    })
+    // A do-while over the ring, same shape as `pick_next`: the exit test sits
+    // at the bottom (`next_angle == angle`), so the first member is always
+    // visited. Note that a ring this loop cannot finish (a dangling angle
+    // pointer) returns here directly, before the starter is marked done —
+    // matching C++'s early `return nullptr`, which skips the `markDone` below
+    // it.
+    let mut next_angle = AngleId::new(arena.angle(angle).f_next?);
+    let mut found_angle: Option<AngleId> = None;
+    let mut found_done = false;
+    let mut active_count = 0;
+    #[allow(clippy::while_let_loop)]
+    loop {
+        let next_start = SpanId::new(arena.angle(next_angle).f_start?);
+        let next_end = SpanId::new(arena.angle(next_angle).f_end?);
+        active_count += 1;
+        if found_angle.is_none() || (found_done && (active_count & 1) == 1) {
+            found_angle = Some(next_angle);
+            found_done = arena
+                .span_starter(next_start, next_end)
+                .is_some_and(|s| arena.span(s).done());
+            if !found_done {
+                break;
+            }
+        }
+        next_angle = AngleId::new(arena.angle(next_angle).f_next?);
+        if next_angle == angle {
+            break;
+        }
+    }
+    if let Some(starter) = arena.span_starter(orig_start, orig_end) {
+        arena.mark_done(starter);
+    }
+    let found = found_angle?;
+    state.start = SpanId::new(arena.angle(found).f_start?);
+    state.end = SpanId::new(arena.angle(found).f_end?);
+    arena.span_segment(state.start)
 }
 
 /// Picks the next segment for a boolean-op walk.

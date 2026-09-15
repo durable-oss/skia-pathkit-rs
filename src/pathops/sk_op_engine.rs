@@ -18,8 +18,8 @@
 use super::sk_op_angle_order::{calc_angles, sort_angles};
 use super::sk_op_arena::{OpArena, SegmentId, SpanId};
 use super::sk_op_coincidence::SkOpCoincidence;
-use super::sk_op_common::{find_chase, find_chase_op, handle_coincidence};
-use super::sk_op_walker::{add_curve_to, find_next_op, find_next_winding, WalkState};
+use super::sk_op_common::{find_chase, find_chase_op, find_undone, handle_coincidence};
+use super::sk_op_walker::{add_curve_to, find_next_op, find_next_winding, find_next_xor, WalkState};
 use super::sk_path_writer::SkPathWriter;
 use super::sk_op_sortable_top::{find_sortable_top, sortable_top};
 use super::PathOp;
@@ -490,6 +490,79 @@ pub fn build(one: &Path, two: Option<&Path>, xor: bool, opp_xor: bool) -> Option
         return None;
     }
     Some(graph)
+}
+
+/// How far a xor walk's flat loop may run before the input is pathological.
+///
+/// Port of `bridgeXor`'s `safetyNet`.
+const XOR_SAFETY_NET: i32 = 1_000_000;
+
+/// Walks the graph under even-odd fill, emitting every span exactly once.
+///
+/// Port of `bridgeXor` (`SkPathOpsSimplify.cpp`). Unlike [`bridge`], a xor
+/// walk needs no winding sum and no active-edge gate: every span that has
+/// not been walked belongs in the result, so the loop is flat, there is no
+/// chase list, and a contour that fails to close is a hard failure rather
+/// than something the outer loop retries.
+fn bridge_xor(graph: &mut OpGraph, writer: &mut SkPathWriter) -> bool {
+    let segments = graph.segments.clone();
+    let mut safety_net = XOR_SAFETY_NET;
+    #[allow(clippy::while_let_loop)]
+    loop {
+        let Some(span) = find_undone(&graph.arena, &segments) else {
+            break;
+        };
+        let Some(next) = graph.arena.span_next(span) else {
+            break;
+        };
+        let mut state = WalkState::new(next, span);
+        loop {
+            safety_net -= 1;
+            if safety_net < 0 {
+                return false;
+            }
+            if !state.unsortable {
+                if let Some(seg) = graph.arena.span_segment(state.start) {
+                    if graph.arena.segment_done(seg) {
+                        break;
+                    }
+                }
+            }
+            let edge_start = state.start;
+            let edge_end = state.end;
+            let Some(_next_segment) = find_next_xor(&mut graph.arena, &mut state) else {
+                break;
+            };
+            if !add_curve_to(&mut graph.arena, edge_start, edge_end, writer) {
+                return false;
+            }
+            // Port of the `do...while` condition: stop once the contour has
+            // closed, or once an unsortable edge has settled on a starter
+            // that is already done.
+            if writer.is_closed() {
+                break;
+            }
+            if state.unsortable {
+                let starter_done = graph
+                    .arena
+                    .span_starter(state.start, state.end)
+                    .is_some_and(|starter| graph.arena.span(starter).done());
+                if starter_done {
+                    break;
+                }
+            }
+        }
+        if !writer.is_closed() {
+            let Some(starter) = graph.arena.span_starter(state.start, state.end) else {
+                return false;
+            };
+            if !graph.arena.span(starter).done() {
+                return false;
+            }
+        }
+        writer.finish_contour();
+    }
+    true
 }
 
 /// Walks the graph, emitting the boundary of the operation's result.
@@ -1123,9 +1196,23 @@ pub fn simplify_with_engine(path: &Path) -> Option<Path> {
         || path.fill_type() == FillType::InverseEvenOdd;
     let mut graph = build(path, None, xor, xor)?;
     let mut result = Path::new();
+    // Port of `SimplifyDebug`'s `result->setFillType(fillType)`: the output
+    // is always even-odd (or its inverse), regardless of which fill rule the
+    // input carried, since `bridgeWinding`/`bridgeXor` reduce it to a single
+    // non-overlapping boundary either way.
+    result.set_fill_type(if path.fill_type().is_inverse() {
+        FillType::InverseEvenOdd
+    } else {
+        FillType::EvenOdd
+    });
     {
         let mut writer = SkPathWriter::new(&mut result);
-        if !bridge(&mut graph, None, if xor { 1 } else { -1 }, -1, &mut writer) {
+        let ok = if xor {
+            bridge_xor(&mut graph, &mut writer)
+        } else {
+            bridge(&mut graph, None, -1, -1, &mut writer)
+        };
+        if !ok {
             return None;
         }
         writer.assemble();

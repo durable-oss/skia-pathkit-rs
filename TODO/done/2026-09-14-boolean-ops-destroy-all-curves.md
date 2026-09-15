@@ -142,31 +142,34 @@ All three acceptance criteria hold, as tests in `sk_op_engine.rs`:
 - `the_result_does_not_explode_into_a_polyline`
 - `a_cut_curve_is_subdivided_rather_than_flattened`
 
-### Why `op` is not switched over yet
+### Update (2026-09-15): closed
 
-One case still fails: two rectangles whose top and bottom edges are collinear
-and overlapping. The engine detects the coincidence and folds the winding
-correctly, but the ray-cast winding under the active-edge gate reads 0 for
-the interior edge, so it is emitted. Routing `op` through the engine today
-passes 1005 of 1007 tests and fails two `sk_op_builder` cases on exactly that
-input.
+The winding bug this file was blocked on is fixed (see `09-bridge-winding-
+xor.md`, "The five defects the switch turned up"). `pathops::mod::op` and
+`pathops::mod::simplify` both route through `sk_op_engine` now, each with
+the flattening engine kept as the fallback for inputs the real one
+declines. All four acceptance criteria at the top of this file hold.
 
-Flattened-but-correct beats curve-shaped-and-wrong, so the switch waits.
-`TODO/09-bridge-winding-xor.md` has the trace and where to pick it up.
+A separate, pre-existing curve-subdivision bug was found while closing
+`09` (corrupts curves cut at 2+ intersection points on the same arc — see
+`2026-09-15-curve-subdivision-corrupts-multi-intersection-arcs.md`). It
+does not block this file: the criteria here are about curves surviving an
+operation at all, which they do; that gap is about a further class of
+input where the surviving curve's own geometry can still come out wrong.
 
 ### Task list status
 
 1. ~~Land `01-wire-orphaned-modules.md` for `SkPathOpsOp.rs`~~ — done, and
    the file turned out to be superseded rather than needed. Its inverse-fill
    tables are ported into `sk_op_engine::resolve_inverse`.
-2. Point `pathops::mod::op` at the engine — **not yet**, see above.
+2. ~~Point `pathops::mod::op` at the engine~~ — done.
 3. Keep `boolean.rs` as a fallback — that is the intended shape;
    `op_with_engine` returns `None` rather than an empty path when it cannot
-   resolve an input, so the caller degrades to flattening.
+   resolve an input, so the caller degrades to flattening. `simplify` now
+   does the same via `simplify_with_engine`.
 4. ~~Update the `pathops::op` doc comment~~ — done; it now says the result is
    a polyline and why the engine is not wired in.
 
 The prerequisites this file listed are all closed: `06-op-coincidence.md`,
 `05-op-segment-winding.md`, `09`'s dependencies, and
-`13-d-conic-line-intersection.md` (which was already done). What remains is
-one winding bug, not a missing port.
+`13-d-conic-line-intersection.md` (which was already done).
