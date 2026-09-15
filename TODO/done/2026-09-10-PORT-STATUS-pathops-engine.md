@@ -175,3 +175,48 @@ C++ algorithm directly, so it is a property of the algorithm, not of this port.
 Item 05 moved to the front: it unblocks the rest of 04, and `SkOpSegment` is
 still on the pre-arena `Box`-linked model with two competing `SkOpSpan`
 definitions, which everything downstream has to reconcile anyway.
+
+---
+
+# Closed as an index (2026-09-15)
+
+Every numbered item this file indexes is in `done/`. Three files remain open,
+and none of them is a port gap:
+
+| open | what it is |
+|---|---|
+| `09-bridge-winding-xor.md` | one winding case on rectangles sharing a collinear edge; the engine is otherwise done |
+| `16-union-of-near-coincident-discs-fragments.md` | already fixed by the real engine; closes when `op` routes to it |
+| `17-retire-the-pre-arena-segment-model.md` | deleting 2006 lines the arena replaced |
+
+## Where the coverage table ended up
+
+The table at the top measured function-name coverage against C++. Rerunning
+it would mislead, because most units moved rather than grew: the graph half
+of `SkOpSegment` is on `OpArena`, `SkOpAngle`'s ordering half is in
+`sk_op_angle_order.rs`, and `SkPathOpsCommon` is `sk_op_common.rs`. Counting
+names per file would show `sk_op_segment.rs` unchanged at 31% while the work
+it was missing sits in three other files, fully done.
+
+The units that had **no Rust file at all** are the honest measure, and all
+five are closed:
+
+| C++ unit | outcome |
+|---|---|
+| `SkOpBuilder` | `sk_op_builder.rs` (item 11) |
+| `SkDLineIntersection` | item 12 |
+| `SkDConicLineIntersection` | `sk_d_conic_line_intersection.rs` (item 13) |
+| `SkOpCubicHull` | was already in `sk_path_ops_cubic.rs` (item 14) |
+| `SkLineParameters` | `sk_line_parameters.rs` (item 15) |
+
+`SkPathOpsWinding`, which this table did not list, is `sk_op_sortable_top.rs`
+(item 07). `CurveIntersectRay`, which it also did not list and which nothing
+had noticed was missing, is `sk_curve_intersect_ray.rs`.
+
+## The caveat at the bottom held
+
+"0% for a module means 'no Rust file of that name', **not** necessarily 'not
+ported'." That caught item 14 during the original audit, and it caught two
+more since: `SkPathOpsOp.rs` and `sk_add_intersections.rs` both existed,
+neither was needed, and both were deleted rather than wired in. Check where
+the code landed before starting on a unit that reads as absent.

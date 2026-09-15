@@ -147,3 +147,28 @@ they rot.
 5. Port `endsIntersect` / `endToSide` / `midToSide` / `orderable` / `after`, and
    hand `after` to `AngleList::insert` (§2).
 6. Port `SkOpCoincidence` for real (§4).
+
+---
+
+## Closed (2026-09-15)
+
+Every item here is resolved or has moved to a file of its own.
+
+| § | item | outcome |
+|---|---|---|
+| 1 | two competing `SkOpSpan` definitions | The arena's won, as this file recommended. The `Box`-linked one in `sk_op_segment.rs` is unreachable dead code; deleting it is `17-retire-the-pre-arena-segment-model.md`. |
+| 2 | `SkOpAngle`'s unported half | Done — `sk_op_angle_order.rs`. See `done/04-op-angle-loop.md`. |
+| 3 | `SkOpSegment`'s stubs | Done on the arena. See `done/05-op-segment-winding.md`. |
+| 4 | `SkOpCoincidence` all no-ops | Done. See `done/06-op-coincidence.md`. |
+| 5 | seven orphaned files | Done. See `done/01-wire-orphaned-modules.md`. Two turned out superseded and were deleted; the rest were wired in. |
+| 6 | `sk_op_contour`'s shadow types | `SkOpCoincidence` and `SkPathWriter` are now re-exports of the real types. `SkOpGlobalState` stays until item 17 retires the model that uses it. |
+| 6 | `SkOpSpan::compute_wind_sum` returning its field | Fixed — it runs the `sortable_top` closure under `MAX_WINDING_TRIES`. |
+| 6 | f32-only ULPs helpers | Unchanged, and deliberately: this file's own advice was to keep the narrowing at the call site, matching how the C++ `double` overloads are defined. |
+| 6 | `sk_path_ops_tsect.rs` deprecated `std::f32::INFINITY` | Already gone. |
+
+The "suggested order" at the bottom was followed almost exactly, with one
+change worth recording: step 4 said to convert `SkIntersections` and
+`SkPathOpsCurve` to f64. Instead `sk_curve_intersect_ray.rs` was written
+fresh in f64 for what the angle code actually needs — `intersectRay` is a
+much smaller thing than the full segment intersection those files implement,
+and converting them would have meant touching every existing caller.
