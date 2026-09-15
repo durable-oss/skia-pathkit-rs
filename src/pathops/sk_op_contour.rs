@@ -75,13 +75,9 @@ pub struct SkOpRayHit {
 /// fields yet.
 #[derive(Debug, Clone)]
 pub struct SkOpGlobalState;
-/// Placeholder for the coincident-run bookkeeping. Carries no fields yet.
-pub struct SkOpCoincidence;
-/// Placeholder for the output path writer. The working one is
-/// [`SkPathWriter`](super::sk_path_writer::SkPathWriter).
-pub struct SkPathWriter;
-
 pub use super::sk_op_angle::SkOpAngle;
+pub use super::sk_op_coincidence::SkOpCoincidence;
+pub use super::sk_path_writer::SkPathWriter;
 
 /// A path contour with segments
 #[derive(Debug)]
