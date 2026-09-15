@@ -2165,8 +2165,20 @@ impl OpArena {
         };
         let max_winding = *own;
         let opp_max_winding = *opp;
-        *own -= delta;
-        *opp -= opp_delta;
+        // C++ (`SkOpSegment::setUpWindings`, `SkOpSegment.cpp:1524`) does this
+        // subtraction in plain `int`, so a sum driven far enough out of range
+        // (e.g. by two fully coincident curves that `record_if_coincident`
+        // cannot detect — see TODO/09-bridge-winding-xor.md item 3 — feeding
+        // the ray cast an unbounded number of "crossings") silently wraps
+        // there instead of resolving to a sane answer. Rust's overflow check
+        // turns that same runaway sum into a hard panic. Saturate instead: it
+        // reproduces C++'s "keeps going with a garbage number" behavior
+        // closely enough that downstream logic (which was never going to get
+        // the right answer from a wrapped sum either) sees a value, not a
+        // crash, and the operation still has the chance to come out empty or
+        // get caught by `empty_is_the_answer` rather than aborting the walk.
+        *own = own.saturating_sub(delta);
+        *opp = opp.saturating_sub(opp_delta);
         (max_winding, opp_max_winding)
     }
 

@@ -2575,4 +2575,230 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn near_coincident_and_flush_rectangle_unions_agree_with_the_operands() {
+        // Probe for TODO/2026-09-15-union-of-many-adjacent-line-polygons-adds-boundary-noise.md:
+        // does a union of two straight-edged rectangles whose adjoining
+        // edges are flush, or offset by a tiny gap, produce any area that
+        // disagrees with the plain union of the two operands? Swept from
+        // exact coincidence down through several near-coincident gaps.
+        //
+        // Probe points are offset off the half-integer grid
+        // (`+ 0.13`/`+ 0.07`) so none lands exactly on an input edge --
+        // `Path::contains`'s own boundary-inclusion behavior can
+        // legitimately differ between an operand and the unioned result
+        // right on a shared edge, which is not the bug this test is for.
+        for gap in [0.0f32, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2] {
+            let a = rect_path(0.0, 0.0, 10.0, 10.0);
+            let b = rect_path(10.0 + gap, 0.0, 20.0, 10.0);
+            let got = op_with_engine(&a, &b, PathOp::Union).expect("should not decline");
+            for xi in -5..30 {
+                for yi in -5..15 {
+                    let (xf, yf) = (xi as f32 + 0.13, yi as f32 + 0.07);
+                    let want = a.contains(xf, yf) || b.contains(xf, yf);
+                    assert_eq!(
+                        got.contains(xf, yf),
+                        want,
+                        "gap={gap:e} probe ({xf},{yf}): engine union disagrees with operand union"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn chain_of_slightly_bent_ribbons_folds_to_a_clean_union() {
+        // Reproduction attempt for
+        // TODO/2026-09-15-union-of-many-adjacent-line-polygons-adds-boundary-noise.md,
+        // which found font-vectorizer's repeated pairwise union of
+        // straight-line "ribbon" polygons (a stroke's spine offset left
+        // and right by half its width) along a skeleton graph adds
+        // boundary noise not present in any input. This builds the
+        // closest in-repo analogue: several short ribbons end to end along
+        // a gently bending spine (as a piecewise-linear stroke centerline
+        // would produce), each sharing an exact endpoint with its
+        // neighbor but meeting at a slight bend rather than running
+        // collinear, folded with repeated pairwise `op_with_engine(_, _,
+        // Union)` exactly as `expand_skeleton` does.
+        //
+        // This does NOT reproduce the reported noise: every probe point
+        // agrees with the union of the individual ribbons, and the
+        // unioned verb count (26) is lower than the input total (30), as
+        // expected from merging shared edges. Also tried and equally
+        // clean (see git history of this file for the exploratory
+        // versions, since removed): two and three ribbons meeting at a
+        // junction point, at near-coincidence epsilons from 1e-5 down to
+        // exact coincidence, and a plain rectangle crossed by a diagonal
+        // ribbon at an ordinary 70-degree angle. None of these shapes
+        // trigger the bug. The real font-vectorizer pipeline likely
+        // differs in some way not captured here -- more ribbons (a full
+        // skeleton graph, 7+ edges per the original report, versus 6 here),
+        // organically smoothed non-radial spine geometry, or a specific
+        // junction configuration (a true Y or X junction where three or
+        // more ribbons all meet within one small region, rather than a
+        // chain) not tried. Left as an honest negative result plus
+        // regression coverage for the shapes that were tried.
+        fn ribbon_between(p0: (f32, f32), p1: (f32, f32), half_w: f32) -> Path {
+            let (dx, dy) = (p1.0 - p0.0, p1.1 - p0.1);
+            let len = (dx * dx + dy * dy).sqrt();
+            let (ux, uy) = (dx / len, dy / len);
+            let (nx, ny) = (-uy * half_w, ux * half_w);
+            let mut p = Path::new();
+            p.move_to(p0.0 + nx, p0.1 + ny);
+            p.line_to(p0.0 - nx, p0.1 - ny);
+            p.line_to(p1.0 - nx, p1.1 - ny);
+            p.line_to(p1.0 + nx, p1.1 + ny);
+            p.close();
+            p
+        }
+        let spine = [
+            (0.0f32, 0.0),
+            (2.0, 10.0),
+            (-1.0, 20.0),
+            (1.5, 30.0),
+            (0.0, 40.0),
+            (2.5, 50.0),
+            (0.5, 60.0),
+        ];
+        let ribbons: Vec<Path> = spine
+            .windows(2)
+            .map(|w| ribbon_between(w[0], w[1], 3.0))
+            .collect();
+        let mut acc: Option<Path> = None;
+        for r in &ribbons {
+            acc = Some(match acc {
+                None => r.clone(),
+                Some(a) => op_with_engine(&a, r, PathOp::Union).expect("union should not decline"),
+            });
+        }
+        let got = acc.unwrap();
+        for xi in -40..40 {
+            for yi in -20..140 {
+                let (xf, yf) = (xi as f32 * 0.25 + 0.031, yi as f32 * 0.25 + 0.017);
+                let want = ribbons.iter().any(|r| r.contains(xf, yf));
+                assert_eq!(
+                    got.contains(xf, yf),
+                    want,
+                    "probe ({xf},{yf}): chained ribbon union disagrees with the operands"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn two_identical_cubics_union_to_one_of_them() {
+        // Probe for TODO/09-bridge-winding-xor.md item 3: curve/curve
+        // coincidence. record_if_coincident only detects line/line overlap;
+        // this checks whether two literally-identical cubic contours (the
+        // simplest curve/curve coincidence case, no t-section machinery
+        // needed to recognize "same curve") still union correctly, and
+        // whether it declines or gives a wrong answer if not.
+        let mut p = Path::new();
+        p.move_to(0.0, 0.0);
+        p.cubic_to(0.0, 50.0, 50.0, 100.0, 100.0, 100.0);
+        p.line_to(100.0, 0.0);
+        p.close();
+        let q = p.clone();
+        let probes = [(50.0, 30.0), (10.0, 5.0), (90.0, 90.0), (50.0, 50.0)];
+        match op_with_engine(&p, &q, PathOp::Union) {
+            None => {
+                // Declines rather than answering wrong; acceptable per the
+                // engine's own contract (falls back to boolean.rs), but
+                // record that it declines rather than assuming it works.
+                panic!(
+                    "engine declined two identical cubics under Union; \
+                     record this as the curve/curve coincidence gap, not a silent pass"
+                );
+            }
+            Some(got) => {
+                for (x, y) in probes {
+                    assert_eq!(
+                        got.contains(x, y),
+                        p.contains(x, y),
+                        "probe ({x},{y}): union of a curve with itself should match the curve"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn two_identical_cubics_intersect_correctly_but_difference_still_declines() {
+        // Same pair as two_identical_cubics_union_to_one_of_them. Intersect
+        // resolves correctly (Intersect(p, p) == p) with the same
+        // saturating-winding fix. Difference does not: it declines rather
+        // than crashing or answering wrong, which is the engine's documented
+        // fallback contract, but it is still evidence that curve/curve
+        // coincidence (TODO/09-bridge-winding-xor.md item 3) is a real,
+        // reachable gap and not just "no known failing case."
+        let mut p = Path::new();
+        p.move_to(0.0, 0.0);
+        p.cubic_to(0.0, 50.0, 50.0, 100.0, 100.0, 100.0);
+        p.line_to(100.0, 0.0);
+        p.close();
+        let q = p.clone();
+        let probes = [(50.0, 30.0), (10.0, 5.0), (90.0, 90.0), (50.0, 50.0)];
+
+        let intersect = op_with_engine(&p, &q, PathOp::Intersect)
+            .expect("engine declined Intersect of two identical cubics");
+        for (x, y) in probes {
+            assert_eq!(
+                intersect.contains(x, y),
+                p.contains(x, y),
+                "probe ({x},{y}): intersect of a curve with itself should match the curve"
+            );
+        }
+
+        assert!(
+            op_with_engine(&p, &q, PathOp::Difference).is_none(),
+            "Difference of two identical cubics is expected to decline for now \
+             (curve/curve coincidence, item 3); if this starts returning Some, \
+             tighten this test to check the result is actually empty"
+        );
+    }
+
+    #[test]
+    fn two_overlapping_cubics_sharing_an_arc_union_correctly() {
+        // A more realistic curve/curve coincidence case than two identical
+        // contours: two cubic-bounded shapes that share part of one cubic
+        // arc exactly (not merely crossing it), the rest of each contour
+        // different. This is closer to what a real shared-boundary curve
+        // case looks like.
+        let mut a = Path::new();
+        a.move_to(0.0, 0.0);
+        a.cubic_to(0.0, 50.0, 50.0, 100.0, 100.0, 100.0);
+        a.line_to(100.0, 0.0);
+        a.close();
+
+        let mut b = Path::new();
+        b.move_to(0.0, 0.0);
+        b.cubic_to(0.0, 50.0, 50.0, 100.0, 100.0, 100.0);
+        b.line_to(100.0, 150.0);
+        b.line_to(0.0, 150.0);
+        b.close();
+
+        let probes = [
+            (50.0, 30.0),   // inside a only
+            (50.0, 120.0),  // inside b only
+            (10.0, 140.0),  // inside b only
+            (90.0, 10.0),   // inside a only
+        ];
+        match op_with_engine(&a, &b, PathOp::Union) {
+            None => panic!(
+                "engine declined two cubics sharing an arc under Union; \
+                 record this as the curve/curve coincidence gap"
+            ),
+            Some(got) => {
+                for (x, y) in probes {
+                    let want = a.contains(x, y) || b.contains(x, y);
+                    assert_eq!(
+                        got.contains(x, y),
+                        want,
+                        "probe ({x},{y}): engine union disagrees with operand union"
+                    );
+                }
+            }
+        }
+    }
 }

@@ -169,11 +169,52 @@ blocker on it, since straight-edge and single-intersection-per-arc inputs
 
 3. **Curve/curve coincidence** — `record_if_coincident` still handles
    line/line only, and two identical curves would still need the t-section
-   machinery in `sk_path_ops_tsect` to detect. Downgraded from "likely cause
-   of the Difference-cutting-a-curve gap" — that gap did not reproduce (see
-   the 2026-09-15 update above) — to "no known failing case, but no coverage
-   either." Worth a dedicated repro sweep before claiming it is fine, since
-   absence of a failure in an unrelated sweep is not the same as testing it.
+   machinery in `sk_path_ops_tsect` to detect.
+
+   Update 2026-09-15: it is a real, reachable gap, not just untested
+   territory. Two literally-identical cubic contours (the simplest possible
+   curve/curve coincidence — no t-section needed to recognize "these are the
+   same curve," just two copies of one path) under `Union` crashed with an
+   `i32` subtraction overflow in `set_up_windings`
+   (`sk_op_arena.rs`), reached via `bridge` → `close_open_contour` →
+   `is_active` → `active_op` → `active_op_with`. Root cause: with no
+   coincidence record for the doubled boundary, the ray-cast winding
+   computation (`update_winding`/`span_compute_wind_sum`) treats the
+   duplicate contour as a real, unresolved crossing and the accumulated sum
+   runs away from the `PK_MIN_S32` sentinel toward `i32::MIN`, then
+   underflows on the next subtraction. Checked against C++
+   (`SkOpSegment::setUpWindings`, `SkOpSegment.cpp:1524`): the reference does
+   the identical subtraction in plain `int` with no overflow guard beyond a
+   debug-only `DEBUG_LIMIT_WIND_SUM` assert, so it silently wraps rather than
+   panicking — the crash is a Rust-arithmetic-checks gap on top of the real
+   bug, not a missing port. `set_up_winding` (the unary form, one line up)
+   already guards its own subtraction with a `PK_MIN_S32` check;
+   `set_up_windings` (the four-output/binary form) was missing the
+   equivalent. Fixed narrowly: `*own -= delta` / `*opp -= opp_delta` changed
+   to `saturating_sub`, so a runaway sum degrades to a clamped value instead
+   of panicking — matching C++'s "keeps going with a garbage number" more
+   safely than a hard abort, without attempting curve/curve coincidence
+   detection itself.
+
+   That fix alone was enough to make `Union` and `Intersect` of two
+   identical cubics come back **correct** (`Union(p, p) == p`,
+   `Intersect(p, p) == p`, checked by `contains()` at several probe points —
+   see `two_identical_cubics_union_to_one_of_them` and
+   `two_identical_cubics_intersect_correctly_but_difference_still_declines`
+   in `sk_op_engine.rs`), and two cubics sharing part of one arc exactly
+   (not merely crossing it) union correctly too
+   (`two_overlapping_cubics_sharing_an_arc_union_correctly`). `Difference` of
+   the same identical pair still declines (returns `None`) rather than
+   crashing or answering wrong — an acceptable outcome under the engine's
+   existing fallback contract, but confirmation that curve/curve coincidence
+   is a live gap for at least one operator, not a hypothetical one.
+
+   Left open: `Difference`'s decline on identical curves, and the general
+   case (two curves that partially, not fully, overlap along a shared
+   sub-arc without being identical) remain unimplemented — actually
+   detecting curve/curve coincidence still needs the `sk_path_ops_tsect`
+   machinery this item originally called out. The panic that motivated this
+   update is fixed; the underlying coincidence-detection gap is not.
 
 4. ~~**Nested shapes that share part of their boundary, under Difference**~~
    Closed 2026-09-15: `ArenaSegment` gained `f_coincident_splits`, a count of
