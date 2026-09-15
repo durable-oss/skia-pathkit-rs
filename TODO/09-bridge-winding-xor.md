@@ -19,6 +19,49 @@ Difference that has to cut a curve against a line**, e.g. a disc differenced
 by a rectangle crossing it. Intersect and Xor on that same geometry come back
 with their cubics, so it is specific to Difference, not to curves generally.
 
+### Update (2026-09-15): that gap is closed; a narrower one remains
+
+The curve/line Difference gap above does not reproduce against a clean
+repro (disc minus a rectangle crossing it at a generic angle, avoiding the
+circle's own quadrant points) — `op_with_engine` answers it directly, cubics
+intact. A dense sweep of 512 shape pairs (disc/disc across 3 radii x 3 radii
+x 8 offsets, disc/rect across 5 offsets x 4 rotations, and 9-gon-through-
+20-gon pairs across 4 phases, all four operators) declines **zero**. Whatever
+produced the original 2-of-48 was either fixed by an intervening commit or
+was this session's own degenerate test geometry (arc endpoints landing
+exactly on the other shape's corners) rather than a real coincidence gap;
+either way it is not reproducible now.
+
+A different, narrower gap was found instead: **`empty_is_the_answer` could
+not tell a Difference apart when one shape's bounding box contains the
+other's**, since box containment does not imply shape containment. Two
+things came out of chasing it:
+
+- When the two operands' boundaries provably never cross (`build` split no
+  segment — `graph_operands_do_not_cross`), a single interior sample point on
+  each settles the question outright, for every operator, not just
+  Intersect. This closes the swallowed-shape case: a disc entirely inside a
+  bigger disc, a rect entirely inside a bigger rect with no shared boundary,
+  disjoint shapes, touching-but-zero-area boxes. See `nesting` and
+  `interior_point` in `sk_op_engine.rs`; sampling had to move off the
+  boundary itself; sampling `one`'s first move-to point directly votes
+  either way arbitrarily whenever it sits exactly on `two`'s boundary, which
+  is exactly the touching case this was meant to cover.
+- **What is still open:** nested shapes whose boundaries touch — share an
+  edge, a corner, or more — go through `record_if_coincident` first, which
+  splits the touching segments (`f_count` goes above 2) before the walk
+  looks at nesting. `graph_operands_do_not_cross` correctly reads that as
+  "cannot assume nesting from zero splits" and declines, even though the
+  contact is a coincident run, not an interior crossing, and nesting still
+  holds outside it. A sweep of one rect nested in another, varying how many
+  edges/corners they share, still declines on Difference in every case that
+  shares at least one edge. Distinguishing "split from a coincident run" from
+  "split from a real crossing" would need `segment_add_t` calls tagged by
+  cause, which does not exist today and is a bigger change than this gap
+  is worth reaching for on its own. `boolean.rs` still answers this case
+  correctly (verified end to end via `pathops::op`), so it is a fallback
+  case, not a wrong answer.
+
 ## The five defects the switch turned up
 
 Recorded because each one was reached by a long trace and none is obvious
@@ -106,15 +149,28 @@ makes each cast meaningful.
    hand-rolled. It flattens curves, so the switch is still worth making —
    after item 1.
 
-3. **Curve/curve coincidence.** `record_if_coincident` handles line/line only.
-   Two identical curves need the t-section machinery in `sk_path_ops_tsect`.
-   This is the likely cause of the Difference-cutting-a-curve gap above.
+3. **Curve/curve coincidence** — `record_if_coincident` still handles
+   line/line only, and two identical curves would still need the t-section
+   machinery in `sk_path_ops_tsect` to detect. Downgraded from "likely cause
+   of the Difference-cutting-a-curve gap" — that gap did not reproduce (see
+   the 2026-09-15 update above) — to "no known failing case, but no coverage
+   either." Worth a dedicated repro sweep before claiming it is fine, since
+   absence of a failure in an unrelated sweep is not the same as testing it.
 
-4. **Deleting `boolean.rs`.** It cannot go while those 2 of 48 still need it.
-   Once the curve gap closes, delete it and the substitute helpers in
-   `sk_path_ops_simplify.rs` together.
+4. **Nested shapes that share part of their boundary, under Difference** —
+   the gap the 2026-09-15 update above found. `boolean.rs` still answers it
+   correctly; closing it in the engine needs `segment_add_t` splits tagged by
+   whether they came from a real crossing or from `record_if_coincident`.
 
-5. **Three copies of `MAX_WINDING_TRIES`,** in `sk_path_ops_winding.rs` (100),
+5. **Deleting `boolean.rs`.** Blocked on item 4, now the only known case
+   where the engine still declines an input the fallback answers correctly.
+   Once it closes, delete `boolean.rs` and the substitute helpers in
+   `sk_path_ops_simplify.rs` together — but re-run a broad sweep first
+   (a few hundred varied shape pairs across all four operators) rather than
+   trusting the last known gap was the only one; that is how the stale "2 of
+   48, curve/curve coincidence" framing above happened in the first place.
+
+6. **Three copies of `MAX_WINDING_TRIES`,** in `sk_path_ops_winding.rs` (100),
    `sk_op_span.rs` (100) and `sk_op_arena.rs` (10). Skia's is 10, and the
    arena's is the one the walk actually reads. The other two are dead or
    wrong; collapse them to one.
@@ -125,6 +181,9 @@ makes each cast meaningful.
 - [x] Output preserves curve verbs where the engine answers.
 - [x] All pathops tests pass, none ignored.
 - [x] The disc-union cases from item 16 pass at every offset, radius and vertex count.
+- [x] The swallowed-shape empty-Difference gap closes when the operands'
+      boundaries provably do not cross (`nesting`/`interior_point`).
 - [ ] `bridgeXor`, so even-odd simplify keeps its holes.
 - [ ] `simplify` on the real engine (blocked on the above).
-- [ ] `boolean.rs` and the substitute helpers deleted.
+- [ ] The nested-shared-boundary Difference gap (item 4 above).
+- [ ] `boolean.rs` and the substitute helpers deleted (blocked on the above).

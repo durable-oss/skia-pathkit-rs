@@ -958,6 +958,9 @@ pub fn op_with_engine(one: &Path, two: &Path, op: PathOp) -> Option<Path> {
     };
     let (xor_mi, xor_su) = xor_masks(one, two);
     let mut graph = build(one, Some(two), xor_mi == 1, xor_su == 1)?;
+    let nested = graph_operands_do_not_cross(&graph)
+        .then(|| nesting(one, two))
+        .flatten();
     let mut result = Path::new();
     result.set_fill_type(fill);
     {
@@ -967,7 +970,7 @@ pub fn op_with_engine(one: &Path, two: &Path, op: PathOp) -> Option<Path> {
         }
         writer.assemble();
     }
-    if result.is_empty() && !empty_is_the_answer(one, two, op) {
+    if result.is_empty() && !empty_is_the_answer(one, two, op, nested) {
         // The walk emitted nothing and the operation should have produced
         // something, so treat it as a decline rather than as an empty result.
         return None;
@@ -975,20 +978,135 @@ pub fn op_with_engine(one: &Path, two: &Path, op: PathOp) -> Option<Path> {
     Some(result)
 }
 
+/// Returns true when `build` found no place where the two operands' own
+/// boundaries cross or run coincident.
+///
+/// When this holds, each input's boundary lies entirely on one side of the
+/// other's: the two shapes are nested one inside the other, or disjoint,
+/// with nothing in between. [`nesting`] turns that into which one it is.
+fn graph_operands_do_not_cross(graph: &OpGraph) -> bool {
+    graph
+        .segments
+        .iter()
+        .all(|&s| graph.arena.segment(s).f_count == 2)
+}
+
+/// How two boundaries that do not cross are nested, decided from one
+/// interior sample point on each.
+///
+/// Sound only when the boundaries provably do not cross or run coincident —
+/// see [`graph_operands_do_not_cross`] — since otherwise a single sample
+/// cannot speak for the whole curve.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Nesting {
+    /// `one` lies entirely inside `two`.
+    OneInTwo,
+    /// `two` lies entirely inside `one`.
+    TwoInOne,
+    /// Neither contains the other; they do not overlap at all.
+    Disjoint,
+}
+
+/// Returns `None` when neither path yielded a usable interior sample point,
+/// which the caller treats as a decline rather than as a guess.
+fn nesting(one: &Path, two: &Path) -> Option<Nesting> {
+    let p = interior_point(one)?;
+    if two.contains(p.x, p.y) {
+        return Some(Nesting::OneInTwo);
+    }
+    let q = interior_point(two)?;
+    if one.contains(q.x, q.y) {
+        return Some(Nesting::TwoInOne);
+    }
+    Some(Nesting::Disjoint)
+}
+
+/// Returns a point known to be in `path`'s own interior, not on its boundary.
+///
+/// Sampling directly on the boundary — the first move-to point, say — is the
+/// one place a containment test can go either way on a technicality: two
+/// shapes that only touch along a shared edge have a boundary point of one
+/// sitting exactly on the boundary of the other, and half-open containment
+/// rules answer that arbitrarily. Stepping a small distance in from the
+/// first segment, along its inward normal, lands inside the shape instead,
+/// where the technicality cannot arise.
+fn interior_point(path: &Path) -> Option<Point> {
+    let bounds = path.bounds();
+    let extent = (bounds.right - bounds.left).max(bounds.bottom - bounds.top);
+    if !extent.is_finite() || extent <= 0.0 {
+        return None;
+    }
+    for (verb, pts, _) in path.iter() {
+        let (a, b) = match verb {
+            Verb::Line => (pts[0], pts[1]),
+            Verb::Quad | Verb::Conic => (pts[0], pts[2]),
+            Verb::Cubic => (pts[0], pts[3]),
+            _ => continue,
+        };
+        let dir = b - a;
+        let len = dir.length();
+        if len < extent * 1e-6 {
+            continue;
+        }
+        let mid = Point::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+        let normal = Point::new(-dir.y / len, dir.x / len);
+        // A step this small relative to the shape stays inside a segment
+        // whose own curvature bends away from its chord, and the winding
+        // test only needs to land unambiguously off the boundary, not deep
+        // in the interior.
+        let step = extent * 1e-3;
+        for &sign in &[1.0f32, -1.0] {
+            let candidate = Point::new(
+                mid.x + normal.x * step * sign,
+                mid.y + normal.y * step * sign,
+            );
+            if path.contains(candidate.x, candidate.y) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 /// Returns whether an empty result is the right answer for these inputs.
 ///
 /// The walk emitting nothing means one of two very different things: the
-/// operation genuinely covers no area, or the engine failed to find it. Only
-/// the bounding boxes can tell them apart cheaply, and only in one direction
-/// — boxes that do not overlap really do make Intersect empty, whereas
-/// overlapping boxes say nothing either way. Anything not decided here is
-/// reported as a decline, which costs a fallback rather than a wrong answer.
-fn empty_is_the_answer(one: &Path, two: &Path, op: PathOp) -> bool {
+/// operation genuinely covers no area, or the engine failed to find it.
+///
+/// `nested` answers it outright when the two boundaries provably never cross
+/// (see [`graph_operands_do_not_cross`]): nesting settles every operator,
+/// including Difference, which the bounding boxes alone cannot.
+///
+/// Otherwise only the bounding boxes are left, and only in one direction —
+/// boxes whose overlap has zero area really do make Intersect empty
+/// (touching along an edge or a corner is included: the shared region has no
+/// width or no height either way), whereas boxes that overlap with positive
+/// area say nothing either way, since neither shape has to fill its box.
+/// Anything not decided here is reported as a decline, which costs a
+/// fallback rather than a wrong answer.
+fn empty_is_the_answer(one: &Path, two: &Path, op: PathOp, nested: Option<Nesting>) -> bool {
+    if let Some(nested) = nested {
+        return match (op, nested) {
+            // Nothing in common only when neither contains the other.
+            (PathOp::Intersect, Nesting::Disjoint) => true,
+            (PathOp::Intersect, _) => false,
+            // `one - two` is empty exactly when `two` swallows `one` whole.
+            (PathOp::Difference, Nesting::OneInTwo) => true,
+            (PathOp::Difference, _) => false,
+            // Union and Xor of two non-empty paths always cover something,
+            // nested or not. ReverseDifference never reaches here: the
+            // caller rewrites it to Difference with the operands swapped
+            // before building the graph.
+            (PathOp::Union | PathOp::Xor | PathOp::ReverseDifference, _) => false,
+        };
+    }
     let (a, b) = (one.bounds(), two.bounds());
-    let disjoint = a.right < b.left || b.right < a.left || a.bottom < b.top || b.bottom < a.top;
+    let overlap_w = a.right.min(b.right) - a.left.max(b.left);
+    let overlap_h = a.bottom.min(b.bottom) - a.top.max(b.top);
+    let zero_area_overlap = overlap_w <= 0.0 || overlap_h <= 0.0;
     match op {
         // Nothing in common, so nothing to keep.
-        PathOp::Intersect => disjoint,
+        PathOp::Intersect => zero_area_overlap,
         // Union and Xor of two non-empty paths always cover something, and
         // a Difference only empties out when the subtrahend swallows the
         // minuend, which the boxes cannot establish.
@@ -1313,19 +1431,84 @@ mod tests {
     }
 
     #[test]
+    fn the_engine_finds_nothing_to_intersect_across_a_touching_edge() {
+        // The boxes touch along x = 10 but do not overlap: their intersection
+        // has zero width, so the true answer is empty even though the boxes
+        // are not disjoint by the strict left/right/top/bottom comparison.
+        let a = rect_path(0.0, 0.0, 10.0, 10.0);
+        let b = rect_path(10.0, 0.0, 20.0, 10.0);
+        let got = op_with_engine(&a, &b, PathOp::Intersect).expect("an answer, not a decline");
+        assert!(got.is_empty(), "a shared edge has no area: {:?}", got.verbs());
+    }
+
+    #[test]
+    fn a_disc_swallowed_by_a_bigger_disc_differences_to_nothing() {
+        // A disc entirely inside a bigger one, with no shared boundary point.
+        // The two never cross, so nesting settles it outright rather than
+        // falling back to the flattening engine to compute the same empty
+        // answer.
+        let mut a = Path::new();
+        a.add_circle(200.0, 200.0, 40.0);
+        let mut b = Path::new();
+        b.add_circle(200.0, 200.0, 90.0);
+        let got = op_with_engine(&a, &b, PathOp::Difference).expect("an answer, not a decline");
+        assert!(got.is_empty(), "the small disc is entirely cut away: {:?}", got.verbs());
+    }
+
+    #[test]
+    fn a_rect_swallowed_by_a_bigger_rect_with_no_shared_edge_differences_to_nothing() {
+        let a = rect_path(10.0, 10.0, 20.0, 20.0);
+        let b = rect_path(0.0, 0.0, 100.0, 100.0);
+        let got = op_with_engine(&a, &b, PathOp::Difference).expect("an answer, not a decline");
+        assert!(got.is_empty(), "the small rect is entirely cut away: {:?}", got.verbs());
+    }
+
+    #[test]
     fn an_empty_walk_is_still_a_decline_where_empty_cannot_be_right() {
         // Overlapping boxes, so Intersect covers real area. If the walk ever
         // emitted nothing here it would be a failure, and reporting it as an
         // empty path would silently lose the overlap.
         let a = rect_path(0.0, 0.0, 10.0, 10.0);
         let b = rect_path(5.0, 5.0, 15.0, 15.0);
-        assert!(!empty_is_the_answer(&a, &b, PathOp::Intersect));
+        assert!(!empty_is_the_answer(&a, &b, PathOp::Intersect, None));
         // Union and Xor of two non-empty paths always cover something.
-        assert!(!empty_is_the_answer(&a, &b, PathOp::Union));
-        assert!(!empty_is_the_answer(&a, &b, PathOp::Xor));
-        // And a Difference cannot be settled from the boxes either way.
+        assert!(!empty_is_the_answer(&a, &b, PathOp::Union, None));
+        assert!(!empty_is_the_answer(&a, &b, PathOp::Xor, None));
+        // And without nesting info, a Difference cannot be settled from the
+        // boxes either way, even when one box contains the other.
         let swallowed = rect_path(-5.0, -5.0, 20.0, 20.0);
-        assert!(!empty_is_the_answer(&a, &swallowed, PathOp::Difference));
+        assert!(!empty_is_the_answer(&a, &swallowed, PathOp::Difference, None));
+    }
+
+    #[test]
+    fn nesting_settles_a_difference_the_boxes_alone_cannot() {
+        // The same swallowed-box pair as above, but now with the nesting the
+        // graph established: `one` never crosses `two`'s boundary and starts
+        // inside it, so `one - two` is provably empty.
+        let a = rect_path(0.0, 0.0, 10.0, 10.0);
+        let swallowed = rect_path(-5.0, -5.0, 20.0, 20.0);
+        assert!(empty_is_the_answer(
+            &a,
+            &swallowed,
+            PathOp::Difference,
+            Some(Nesting::OneInTwo)
+        ));
+        // The reverse nesting must not also claim Difference is empty: `two`
+        // sitting inside `one` still leaves `one - two` as everything outside
+        // the hole `two` cuts.
+        assert!(!empty_is_the_answer(
+            &swallowed,
+            &a,
+            PathOp::Difference,
+            Some(Nesting::TwoInOne)
+        ));
+        // Disjoint nesting settles Intersect the same way the box check does.
+        assert!(empty_is_the_answer(
+            &a,
+            &swallowed,
+            PathOp::Intersect,
+            Some(Nesting::Disjoint)
+        ));
     }
 
     #[test]
