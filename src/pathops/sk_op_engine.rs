@@ -243,19 +243,29 @@ fn intersect_pair(graph: &mut OpGraph, a: SegmentId, b: SegmentId) {
 }
 
 /// Records `a` and `b` as coincident when they are two lines running along
-/// the same infinite line with overlapping extents.
+/// the same infinite line with overlapping extents, or when they are the
+/// exact same curve (same verb, same control points and weight, forward or
+/// reversed) end to end.
 ///
 /// Returns true when a record was made, in which case the pair has no
 /// crossing to look for: they meet everywhere along the shared run, not at a
 /// point.
 ///
-/// Only the line/line case is detected. Curve coincidence needs the
-/// t-section machinery in `sk_path_ops_tsect`; two identical curves are rare
-/// in practice next to two rectangles sharing an edge, which is the case
-/// that makes a union of overlapping boxes wrong.
+/// Line/line overlap and exact whole-curve identity are the two cases
+/// detected. The general curve/curve case — two curves that partially
+/// overlap along a shared sub-arc without being identical — needs the
+/// t-section machinery in `sk_path_ops_tsect` and is not attempted here; see
+/// `TODO/2026-09-15-curve-curve-coincidence-detection.md`.
 fn record_if_coincident(graph: &mut OpGraph, a: SegmentId, b: SegmentId) -> bool {
-    let (a_pts, a_verb, _) = graph.arena.segment_curve(a);
-    let (b_pts, b_verb, _) = graph.arena.segment_curve(b);
+    let (a_pts, a_verb, a_weight) = graph.arena.segment_curve(a);
+    let (b_pts, b_verb, b_weight) = graph.arena.segment_curve(b);
+    if a_verb == b_verb && a_verb != Verb::Line && (a_weight - b_weight).abs() < 1e-4 {
+        let forward = a_pts.iter().zip(b_pts.iter()).all(|(p, q)| points_equal(*p, *q));
+        let reversed = a_pts.iter().zip(b_pts.iter().rev()).all(|(p, q)| points_equal(*p, *q));
+        if forward || reversed {
+            return record_whole_curve_coincidence(graph, a, b);
+        }
+    }
     if a_verb != Verb::Line || b_verb != Verb::Line {
         return false;
     }
@@ -329,6 +339,45 @@ fn record_if_coincident(graph: &mut OpGraph, a: SegmentId, b: SegmentId) -> bool
         return false;
     };
     // Join the matching points, so each end of the run is one place.
+    for (x, y) in [(ca, oa), (cb, ob)] {
+        if x != y {
+            graph.arena.ptt_add_opp(x, y);
+        }
+    }
+    let mut coincidence = std::mem::take(&mut graph.coincidence);
+    coincidence.add_or_extend(&mut graph.arena, ca, cb, oa, ob);
+    graph.coincidence = coincidence;
+    true
+}
+
+/// Records `a` and `b` as coincident along their whole extent (`t` in
+/// `[0, 1]` on each), for two segments already established to be the exact
+/// same curve, forward or reversed.
+///
+/// `t = 0` and `t = 1` already have spans (the segment's own endpoints), so
+/// `segment_add_t_coincident` resolves to the existing head/tail PtT nodes
+/// rather than creating a spurious split.
+fn record_whole_curve_coincidence(graph: &mut OpGraph, a: SegmentId, b: SegmentId) -> bool {
+    let (a_pts, _, _) = graph.arena.segment_curve(a);
+    let (a0, a1) = (a_pts[0], a_pts[a_pts.len() - 1]);
+    let (b_pts, _, _) = graph.arena.segment_curve(b);
+    let b0 = b_pts[0];
+    // `b`'s own t=0/t=1 map to whichever of a's ends they coincide with,
+    // forward or reversed.
+    let (b_t_for_a0, b_t_for_a1) = if points_equal(b0, a0) { (0.0, 1.0) } else { (1.0, 0.0) };
+
+    let Some(ca) = graph.arena.segment_add_t_coincident(a, 0.0, a0) else {
+        return false;
+    };
+    let Some(cb) = graph.arena.segment_add_t_coincident(a, 1.0, a1) else {
+        return false;
+    };
+    let Some(oa) = graph.arena.segment_add_t_coincident(b, b_t_for_a0, a0) else {
+        return false;
+    };
+    let Some(ob) = graph.arena.segment_add_t_coincident(b, b_t_for_a1, a1) else {
+        return false;
+    };
     for (x, y) in [(ca, oa), (cb, ob)] {
         if x != y {
             graph.arena.ptt_add_opp(x, y);
@@ -2544,6 +2593,47 @@ mod tests {
     }
 
     #[test]
+    fn tangent_contact_disc_and_rounded_square_still_drops_the_far_side() {
+        // Pins the known-bad state for
+        // TODO/2026-09-15-tangent-contact-angle-ordering.md piece 1/2: the
+        // original repro from
+        // TODO/2026-09-15-union-drops-the-far-side-of-a-cubic-and-conic-pair.md,
+        // half-width 30 so the square's straight top/bottom edges land at
+        // exactly y = +-30, the circle's own extrema. Traced (with temporary
+        // instrumentation, not kept) to ends_intersect in
+        // sk_op_angle_order.rs: at the junction (-13.35, +-26.87) where the
+        // square's rounded-corner cubic meets the circle, convex_hull_overlaps
+        // correctly declines (t_between_s: one hull genuinely wraps the
+        // other, not a missed exact-tangent shortcut - s0xt0/s1xt0 are not
+        // zero here), so the tie-break falls to ends_intersect's chord-ray
+        // sampling, which is where the wrong pick actually happens. Not
+        // fixed - this test pins the wrong answer so it fails loudly (as a
+        // reminder to tighten it) once someone fixes ends_intersect for this
+        // geometry.
+        let mut disc = Path::new();
+        disc.add_circle(0.0, 0.0, 30.0);
+        let square = rounded_square_cubics(15.0, 0.0, 30.0, 8.0);
+        let got = op_with_engine(&disc, &square, PathOp::Union).expect("should not decline");
+        // The far side (positive x, where the square protrudes past the
+        // circle) is dropped today.
+        assert!(
+            !got.contains(40.0, 0.0),
+            "(40,0) now contained - the tangent-contact bug may be fixed; \
+             tighten this test to assert correctness instead of the known-bad state"
+        );
+        assert!(
+            !got.contains(36.0, 0.0),
+            "(36,0) now contained - the tangent-contact bug may be fixed; \
+             tighten this test to assert correctness instead of the known-bad state"
+        );
+        // The near side still resolves correctly even with the bug present.
+        for (x, y) in [(-40.0f32, 0.0f32), (0.0, 0.0), (0.0, -29.0), (0.0, 29.0)] {
+            let want = disc.contains(x, y) || square.contains(x, y);
+            assert_eq!(got.contains(x, y), want, "probe ({x},{y}) should still be unaffected");
+        }
+    }
+
+    #[test]
     fn union_of_a_disc_and_a_rounded_square_matches_the_operands() {
         // Offset and half-width chosen so the square's straight edges do not
         // land on the circle's own extrema — an exact tangential touch there
@@ -2724,14 +2814,13 @@ mod tests {
     }
 
     #[test]
-    fn two_identical_cubics_intersect_correctly_but_difference_still_declines() {
+    fn two_identical_cubics_intersect_and_difference_both_answer_correctly() {
         // Same pair as two_identical_cubics_union_to_one_of_them. Intersect
-        // resolves correctly (Intersect(p, p) == p) with the same
-        // saturating-winding fix. Difference does not: it declines rather
-        // than crashing or answering wrong, which is the engine's documented
-        // fallback contract, but it is still evidence that curve/curve
-        // coincidence (TODO/09-bridge-winding-xor.md item 3) is a real,
-        // reachable gap and not just "no known failing case."
+        // resolves correctly (Intersect(p, p) == p). Difference used to
+        // decline (TODO/09-bridge-winding-xor.md item 3): with exact-curve
+        // coincidence now detected in record_if_coincident (see
+        // TODO/2026-09-15-curve-curve-coincidence-detection.md piece 2),
+        // Difference(p, p) now answers directly instead of falling back.
         let mut p = Path::new();
         p.move_to(0.0, 0.0);
         p.cubic_to(0.0, 50.0, 50.0, 100.0, 100.0, 100.0);
@@ -2750,12 +2839,92 @@ mod tests {
             );
         }
 
-        assert!(
-            op_with_engine(&p, &q, PathOp::Difference).is_none(),
-            "Difference of two identical cubics is expected to decline for now \
-             (curve/curve coincidence, item 3); if this starts returning Some, \
-             tighten this test to check the result is actually empty"
-        );
+        let difference = op_with_engine(&p, &q, PathOp::Difference)
+            .expect("engine declined Difference of two identical cubics");
+        for (x, y) in probes {
+            assert!(
+                !difference.contains(x, y),
+                "probe ({x},{y}): a curve differenced by itself should contain nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn two_identical_quads_and_conics_union_and_intersect_correctly() {
+        // TODO/2026-09-15-curve-curve-coincidence-detection.md piece 1 found
+        // that, unlike identical cubics (which land right by saturation
+        // luck in set_up_windings), identical quads and identical conics
+        // came back with the WRONG answer under Union and Intersect before
+        // record_if_coincident detected exact whole-curve identity (piece
+        // 2): both operations returned empty for a curve unioned/
+        // intersected with itself, which contains() showed was wrong at
+        // several interior probe points. Fixed by extending
+        // record_if_coincident to recognize same-verb, same-control-point,
+        // same-weight curves (forward or reversed) as coincident along
+        // their whole span, not just line/line overlap.
+        for weight in [1.0f32, 0.7] {
+            let mut p = Path::new();
+            p.move_to(0.0, 0.0);
+            if weight == 1.0 {
+                p.quad_to(50.0, 100.0, 100.0, 0.0);
+            } else {
+                p.conic_to(50.0, 100.0, 100.0, 0.0, weight);
+            }
+            p.close();
+            let q = p.clone();
+            let probes = [(50.0f32, 10.0f32), (10.0, 2.0), (90.0, 2.0)];
+
+            let union = op_with_engine(&p, &q, PathOp::Union)
+                .unwrap_or_else(|| panic!("weight {weight}: engine declined Union of identical curve with itself"));
+            let intersect = op_with_engine(&p, &q, PathOp::Intersect)
+                .unwrap_or_else(|| panic!("weight {weight}: engine declined Intersect of identical curve with itself"));
+            for (x, y) in probes {
+                assert_eq!(
+                    union.contains(x, y),
+                    p.contains(x, y),
+                    "weight {weight}: probe ({x},{y}): union of a curve with itself should match the curve"
+                );
+                assert_eq!(
+                    intersect.contains(x, y),
+                    p.contains(x, y),
+                    "weight {weight}: probe ({x},{y}): intersect of a curve with itself should match the curve"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn two_cubics_sharing_a_reversed_arc_union_correctly() {
+        // Companion to two_overlapping_cubics_sharing_an_arc_union_correctly:
+        // here the shared cubic arc is traversed in opposite directions by
+        // the two contours (as it would be for two shapes on either side of
+        // a shared boundary edge). record_if_coincident's reversed-point
+        // check (piece 2) covers this.
+        let mut a = Path::new();
+        a.move_to(0.0, 0.0);
+        a.cubic_to(0.0, 50.0, 50.0, 100.0, 100.0, 100.0);
+        a.line_to(100.0, 0.0);
+        a.close();
+
+        let mut b = Path::new();
+        b.move_to(100.0, 100.0);
+        b.cubic_to(50.0, 100.0, 0.0, 50.0, 0.0, 0.0);
+        b.line_to(-50.0, 0.0);
+        b.line_to(-50.0, 100.0);
+        b.line_to(100.0, 100.0);
+        b.close();
+
+        let probes = [(50.0f32, 30.0f32), (-20.0, 50.0), (90.0, 10.0)];
+        let union = op_with_engine(&a, &b, PathOp::Union)
+            .expect("engine declined Union of two cubics sharing a reversed arc");
+        for (x, y) in probes {
+            let want = a.contains(x, y) || b.contains(x, y);
+            assert_eq!(
+                union.contains(x, y),
+                want,
+                "probe ({x},{y}): engine union disagrees with operand union"
+            );
+        }
     }
 
     #[test]
@@ -2800,5 +2969,172 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    #[ignore]
+    fn scratch_ribbon_union_slash_repro() {
+        // TODO/2026-09-15-ribbon-union-slash-artifact-repro.md piece 1: the
+        // real 17-edge ribbon geometry pasted into
+        // TODO/2026-09-15-union-of-many-adjacent-line-polygons-adds-boundary-noise.md
+        // (from a real font-vectorizer run on bowl/full.png), folded
+        // pairwise through op_with_engine exactly as expand_skeleton does.
+        // #[ignore]d (real geometry, diagnostic only, not a pass/fail
+        // regression check) - kept in the tree since it's real production
+        // data, not a throwaway synthetic shape; re-run explicitly with
+        // `cargo test scratch_ribbon_union_slash_repro -- --ignored
+        // --nocapture` when picking this file back up.
+        //
+        // Result (2026-09-15): reproduces a similar-shaped defect to what
+        // font-vectorizer reports - one dominant 392-point contour with a
+        // bounding box spanning the whole glyph, plus 9 small fragment
+        // contours (down to a single repeated point - zero area). But the
+        // dominant contour has ZERO self-intersections by a naive O(n^2)
+        // segment-crossing check (see count_self_intersections below), so
+        // this is NOT the same "self-intersection-shaped slash" signature
+        // font-vectorizer's own report describes - it's a related but
+        // distinct defect (excess small fragment contours / boundary
+        // noise), not the slash itself. No decline occurred anywhere in the
+        // pairwise fold. See the TODO file's piece 2/3 branch: since this
+        // doesn't reproduce the exact slash, the slash's cause may be
+        // upstream (font-vectorizer's own smoothing/dedup before this
+        // stage) or downstream (how font-vectorizer reads the result back),
+        // not in op_with_engine itself for this exact input - though the
+        // fragment-contour noise found here is real and worth its own look.
+        fn ribbon(pts: &[(f32, f32)]) -> Path {
+            let mut p = Path::new();
+            p.move_to(pts[0].0, pts[0].1);
+            for &(x, y) in &pts[1..] {
+                p.line_to(x, y);
+            }
+            p.close();
+            p
+        }
+
+        let edges: Vec<Vec<(f32, f32)>> = vec![
+            vec![(149.5809, 86.7757), (177.3841, 67.9104), (167.3854, 78.3814), (167.3854, 102.5829), (167.3854, 82.4788), (188.6397, 63.0082), (211.5099, 32.2403), (288.4901, 121.8952), (260.3237, 134.9487), (275.3435, 122.6870), (275.3435, 102.5829), (275.3435, 126.7843), (257.1631, 144.5454), (249.5058, 168.8519)],
+            vec![(188.9744, 191.6000), (103.3522, 182.7073), (103.3522, 123.4541), (103.3522, 196.3443), (146.3616, 168.0368), (142.7009, 81.2937), (243.1102, 50.5638), (243.1102, 123.4541), (243.1102, 64.2008), (210.1123, 64.0277)],
+            vec![(261.4154, 146.5816), (183.2864, 200.9875), (150.2351, 162.6721), (184.7839, 124.1644), (215.5815, 193.3630), (177.6957, 201.6979), (193.1555, 201.1799), (227.7043, 162.6721), (194.6530, 124.3567), (137.6714, 109.0460)],
+            vec![(157.4358, 198.4311), (143.6659, 262.6425), (115.8524, 232.3888), (143.3715, 262.6163), (175.0111, 273.9643), (104.1904, 260.5299), (149.0549, 202.1613), (176.5740, 232.3888), (148.7605, 202.1350), (146.8146, 196.6298)],
+            vec![(175.0712, 273.6392), (168.4262, 302.0838), (166.7293, 308.5091), (164.2728, 313.1781), (163.0964, 318.1632), (160.6238, 322.8969), (157.1184, 332.9841), (155.6337, 340.3155), (153.5435, 345.7886), (152.7842, 349.2955), (150.2104, 353.9533), (141.9063, 387.5801), (90.3420, 379.3028), (93.2290, 343.2130), (93.1737, 336.2514), (94.9812, 328.1389), (96.9447, 323.0993), (97.4341, 320.8232), (98.1971, 309.7841), (98.1444, 303.4215), (99.5580, 297.4266), (99.8167, 291.2754), (100.9181, 287.1088), (104.1303, 260.8549)],
+            vec![(126.4709, 233.6819), (134.9569, 224.4388), (141.1929, 213.4093), (194.7446, 290.8692), (174.2561, 298.3157), (152.7306, 300.8123)],
+            vec![(751.8461, 362.3389), (747.5354, 398.3045), (746.1010, 405.6586), (744.1252, 412.0863), (742.3734, 418.6641), (740.0369, 424.4510), (736.2730, 434.6115), (732.8421, 445.7734), (728.6743, 457.1842), (723.9594, 468.0325), (718.9105, 478.2340), (713.9483, 488.0492), (707.5023, 498.4120), (700.4077, 508.7075), (694.4977, 518.6445), (693.1255, 523.9281), (691.1162, 527.7161), (688.5633, 533.1147), (683.1819, 539.9397), (664.7111, 581.1228), (608.7264, 524.0795), (648.2100, 508.3836), (650.0384, 506.1723), (653.2658, 502.0822), (657.0310, 498.1697), (661.3678, 495.0403), (668.9728, 486.8967), (673.9559, 478.4019), (678.0447, 469.6810), (681.9723, 460.6796), (686.0126, 451.8674), (688.7476, 442.8936), (691.7670, 433.1781), (694.1184, 423.2138), (696.0231, 412.1486), (697.0799, 406.3161), (698.2724, 401.2744), (698.8336, 396.0827), (699.5713, 391.8174), (701.1344, 358.0663)],
+            vec![(701.1567, 362.5886), (698.4757, 328.5842), (697.7159, 323.8601), (696.7494, 318.4226), (695.5198, 312.9907), (694.2727, 306.9914), (692.3226, 295.2643), (690.0620, 284.1597), (687.3394, 273.0202), (683.8896, 261.9429), (679.8521, 250.9389), (675.2005, 240.0456), (669.8698, 229.3249), (663.7109, 218.8932), (656.6587, 208.9189), (648.0097, 197.9249), (644.3484, 185.9163), (637.1291, 182.6808), (635.2817, 176.9552), (626.5479, 173.3942), (623.3412, 163.8418), (560.1898, 133.5878), (783.5602, 97.3902), (731.9025, 138.0620), (732.3700, 140.1543), (727.2757, 148.2323), (729.0556, 154.1419), (725.4324, 162.5386), (728.0268, 173.8972), (727.1267, 186.1421), (727.3496, 199.4066), (728.1480, 212.2138), (729.5067, 224.7319), (731.2723, 237.0775), (733.3472, 249.3124), (735.6551, 261.4740), (738.2825, 273.5733), (740.8769, 285.7076), (743.2212, 297.2194), (744.4672, 302.8396), (745.5641, 309.0271), (746.7442, 315.2090), (747.9386, 322.1043), (751.8238, 357.8166)],
+            vec![(142.2324, 382.9860), (142.1368, 416.5475), (142.6400, 420.7092), (143.3568, 425.8419), (144.5997, 430.9322), (145.7677, 436.9642), (147.3431, 448.6707), (150.1320, 459.1999), (153.7417, 469.7230), (158.2496, 480.2615), (163.5687, 491.2622), (167.9964, 496.1512), (169.4094, 501.2990), (174.8511, 505.2131), (176.5208, 510.3974), (215.5109, 535.3379), (92.0985, 580.1282), (105.7863, 535.3520), (103.4738, 528.9170), (105.1794, 521.2116), (103.1231, 514.7400), (104.3604, 508.0095), (102.9131, 495.7713), (101.1590, 483.0709), (99.2298, 470.3552), (97.3684, 457.6455), (95.2439, 446.1132), (94.0516, 440.5257), (93.2435, 433.9965), (92.2291, 427.5098), (91.3279, 420.0521), (90.0159, 383.8970)],
+            vec![(692.5291, 543.0822), (628.6738, 586.6896), (635.3608, 587.5847), (676.3582, 557.6781), (597.0793, 547.5242), (641.5554, 490.4572), (648.2423, 491.3523), (598.2265, 502.6673)],
+            vec![(218.2724, 545.3589), (221.0779, 562.0442), (252.3635, 577.6836), (60.1365, 582.4476), (90.8761, 576.0566), (89.3371, 570.1073)],
+            vec![(55.7859, 576.8769), (44.3375, 567.3666), (44.3375, 569.1917), (113.7920, 493.8055), (198.7080, 666.3257), (162.6937, 642.8522), (162.6937, 644.6773), (92.6516, 660.8812)],
+            vec![(209.9275, 500.3022), (210.9078, 542.1127), (212.8853, 542.8424), (213.6615, 547.5985), (216.9992, 548.6897), (220.8294, 553.9407), (230.5966, 560.5694), (238.5287, 563.7565), (246.1222, 569.3346), (255.3425, 572.4443), (263.8115, 577.4508), (273.4363, 581.9999), (283.4543, 586.0608), (293.7492, 589.7126), (304.2593, 592.9282), (314.9354, 595.7760), (325.7403, 598.2583), (336.6317, 600.3810), (347.5799, 602.1512), (358.5480, 603.5753), (369.5056, 604.6483), (380.4343, 605.3821), (391.3185, 605.7995), (402.1498, 605.9298), (412.9212, 605.8427), (423.6304, 605.5728), (434.2834, 605.1230), (444.8846, 604.4339), (455.4463, 603.5077), (465.9742, 602.3087), (476.4795, 600.7980), (488.4736, 598.9568), (494.6840, 597.8672), (499.9023, 597.3757), (505.0060, 596.2728), (509.0527, 595.8344), (542.5033, 582.6942), (566.8717, 647.3323), (530.0098, 660.6997), (522.3377, 663.4350), (515.7227, 665.2076), (509.2223, 667.3077), (503.7139, 668.5341), (492.2705, 672.3330), (479.3383, 675.5334), (466.4287, 678.1812), (453.5529, 680.3043), (440.7166, 681.9227), (427.9321, 683.0927), (415.2038, 683.8046), (402.5377, 684.1083), (389.9315, 684.0805), (377.3782, 683.8254), (364.8694, 683.4053), (352.3895, 682.8725), (339.9201, 682.2617), (327.4308, 681.5845), (314.8847, 680.8428), (302.2521, 680.0274), (289.4907, 679.1157), (276.5633, 678.0576), (263.4207, 676.8630), (250.0012, 675.4264), (236.1885, 673.7119), (221.2200, 671.5259), (209.2504, 666.5246), (195.5371, 664.0916), (183.9049, 657.8282), (174.4959, 655.3077), (167.8586, 655.9806), (161.0069, 652.1911), (151.9760, 651.7657), (144.6926, 647.0234), (102.5725, 659.8290)],
+            vec![(231.4919, 20.9569), (271.2047, 16.6059), (279.5112, 14.4383), (286.6511, 14.4705), (293.3721, 12.9656), (299.1079, 13.3444), (310.8934, 11.6812), (324.1550, 10.3551), (337.2731, 9.3028), (350.2833, 8.5145), (363.1912, 7.9588), (375.9680, 7.5491), (388.6527, 7.3355), (401.2657, 7.2469), (413.8209, 7.0342), (426.3482, 7.0861), (438.8550, 7.3923), (451.3465, 7.9472), (463.8403, 8.7477), (476.3615, 9.4969), (488.9162, 10.0001), (501.5232, 10.5216), (514.2597, 11.0740), (527.1423, 11.7026), (540.2111, 12.4089), (553.5147, 13.2480), (567.0626, 14.3608), (580.6618, 15.5931), (594.5973, 16.7501), (609.3096, 18.3102), (626.2260, 20.8898), (638.5239, 27.4229), (648.5701, 29.0077), (655.7196, 27.3511), (662.8304, 31.1597), (673.0684, 29.0251), (681.6841, 33.7175), (730.6283, 18.7978), (613.1217, 212.1802), (608.1476, 164.4977), (605.9249, 163.5690), (605.1290, 156.1407), (601.0688, 154.9911), (596.9478, 148.6837), (585.6872, 140.6739), (576.8990, 137.0227), (570.3779, 130.9575), (561.6527, 124.9543), (552.1507, 119.3984), (542.3124, 114.4673), (532.4228, 110.1514), (522.2889, 106.2146), (511.9202, 102.7397), (501.3653, 99.7106), (490.6643, 97.1008), (479.8338, 94.9048), (468.9510, 93.1108), (458.0347, 92.0024), (447.0910, 91.3915), (436.1450, 90.9670), (425.2143, 90.7324), (414.3041, 90.6897), (403.4218, 90.8425), (392.5973, 91.5975), (381.8445, 92.7349), (371.1838, 94.2082), (360.6542, 96.1140), (350.2269, 98.4147), (339.9075, 101.0887), (329.7316, 104.1760), (318.0796, 107.6486), (312.0966, 110.1760), (307.0989, 111.0373), (302.5200, 113.6666), (299.1078, 114.3371), (268.5081, 133.1787)],
+            vec![(532.5110, 588.5334), (561.7297, 569.1236), (549.4704, 572.5608), (549.4704, 588.8964), (549.4704, 572.0723), (566.6315, 558.0826), (581.5321, 528.8411), (645.0304, 600.2273), (613.5428, 612.2483), (621.8540, 605.7204), (621.8540, 588.8964), (621.8540, 605.2320), (601.7035, 615.6298), (576.8640, 641.4931)],
+            vec![(592.4105, 521.5642), (586.6275, 533.8159), (586.6275, 534.9031), (617.8259, 517.3859), (655.6116, 587.8165), (665.1803, 581.9035), (665.1803, 582.9907), (634.1520, 607.5042)],
+            vec![(647.6314, 4.9748), (712.7718, 51.1942), (749.0703, 67.9497), (758.7422, 131.1898), (732.5407, 157.5040), (696.1186, 226.0032)],
+        ];
+
+        assert_eq!(edges.len(), 17, "expected all 17 edges from the source TODO file");
+
+        let mut union: Option<Path> = None;
+        for (i, edge) in edges.iter().enumerate() {
+            let r = ribbon(edge);
+            union = Some(match union {
+                None => r,
+                Some(acc) => {
+                    match op_with_engine(&acc, &r, PathOp::Union) {
+                        Some(u) => u,
+                        None => {
+                            eprintln!("edge {i}: op_with_engine declined, falling back");
+                            crate::pathops::op(&acc, &r, PathOp::Union)
+                                .expect("boolean.rs fallback should not error")
+                        }
+                    }
+                }
+            });
+        }
+        let union = union.unwrap();
+        eprintln!("final union: {} verbs", union.verbs().len());
+
+        // Break down per contour: point count and bounding box, to compare
+        // against font-vectorizer's reported signature (11 contours, one
+        // with 292 points and a bounding box spanning the whole glyph).
+        fn report_contour(idx: usize, pts: &[(f32, f32)]) {
+            let (mut minx, mut miny, mut maxx, mut maxy) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+            for &(x, y) in pts {
+                minx = minx.min(x);
+                miny = miny.min(y);
+                maxx = maxx.max(x);
+                maxy = maxy.max(y);
+            }
+            let crossings = count_self_intersections(pts);
+            eprintln!(
+                "contour {idx}: {} points, bbox ({minx:.1},{miny:.1})-({maxx:.1},{maxy:.1}), {crossings} self-intersections",
+                pts.len()
+            );
+        }
+
+        let mut contour_pts: Vec<(f32, f32)> = Vec::new();
+        let mut contour_idx = 0;
+        let mut pt_cursor = 0usize;
+        let points = union.points();
+        for verb in union.verbs() {
+            match verb {
+                Verb::Move => {
+                    if !contour_pts.is_empty() {
+                        report_contour(contour_idx, &contour_pts);
+                        contour_idx += 1;
+                    }
+                    contour_pts.clear();
+                    contour_pts.push((points[pt_cursor].x, points[pt_cursor].y));
+                    pt_cursor += 1;
+                }
+                Verb::Line => {
+                    contour_pts.push((points[pt_cursor].x, points[pt_cursor].y));
+                    pt_cursor += 1;
+                }
+                Verb::Quad | Verb::Conic => {
+                    pt_cursor += 2;
+                }
+                Verb::Cubic => {
+                    pt_cursor += 3;
+                }
+                Verb::Close => {}
+            }
+        }
+        if !contour_pts.is_empty() {
+            report_contour(contour_idx, &contour_pts);
+        }
+    }
+
+    /// Counts self-intersections in a closed polyline (naive O(n^2) segment
+    /// crossing test), to confirm the "self-intersection-shaped defect"
+    /// signature reported in
+    /// TODO/2026-09-15-union-of-many-adjacent-line-polygons-adds-boundary-noise.md.
+    fn count_self_intersections(pts: &[(f32, f32)]) -> usize {
+        fn seg_intersect(a0: (f32, f32), a1: (f32, f32), b0: (f32, f32), b1: (f32, f32)) -> bool {
+            let cross = |o: (f32, f32), a: (f32, f32), b: (f32, f32)| -> f32 {
+                (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
+            };
+            let d1 = cross(b0, b1, a0);
+            let d2 = cross(b0, b1, a1);
+            let d3 = cross(a0, a1, b0);
+            let d4 = cross(a0, a1, b1);
+            (d1 * d2 < 0.0) && (d3 * d4 < 0.0)
+        }
+        let n = pts.len();
+        let mut count = 0;
+        for i in 0..n {
+            let a0 = pts[i];
+            let a1 = pts[(i + 1) % n];
+            for j in (i + 2)..n {
+                if i == 0 && j == n - 1 {
+                    continue; // adjacent via wraparound
+                }
+                let b0 = pts[j];
+                let b1 = pts[(j + 1) % n];
+                if seg_intersect(a0, a1, b0, b1) {
+                    count += 1;
+                }
+            }
+        }
+        count
     }
 }

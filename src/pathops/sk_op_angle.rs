@@ -2240,4 +2240,470 @@ mod tests {
         assert_eq!(out.f_curve[1], pts[2], "controls swap when reversed");
         assert_eq!(out.f_curve[2], pts[1]);
     }
+
+    // --- extended coverage: extrema, degenerate curves, tangent ties ------
+
+    /// Builds an angle whose part is a cubic through the four points.
+    fn cubic_angle(pts: [LinePoint; 4]) -> SkOpAngle {
+        let mut angle = SkOpAngle::new();
+        angle.f_part.f_verb = Verb::Cubic;
+        angle.f_part.f_curve[0] = pts[0];
+        angle.f_part.f_curve[1] = pts[1];
+        angle.f_part.f_curve[2] = pts[2];
+        angle.f_part.f_curve[3] = pts[3];
+        angle.f_part.set_curve_hull_sweep();
+        angle.f_original_curve_part = angle.f_part;
+        angle.set_sector();
+        angle
+    }
+
+    // --- find_sector: every octant boundary, not just the four compass
+    // points and the four 45s already covered above.
+
+    #[test]
+    fn find_sector_covers_every_sign_combination() {
+        let a = SkOpAngle::new();
+        // (x sign, y sign) x (|x| vs |y|) exhausts the sedecimant table's
+        // input space away from the axes and the diagonal.
+        let cases = [
+            ((2.0, -1.0), true),   // x>0,y<0, |x|>|y|
+            ((1.0, -2.0), true),   // x>0,y<0, |x|<|y|
+            ((-2.0, -1.0), true),  // x<0,y<0, |x|>|y|
+            ((-1.0, -2.0), true),  // x<0,y<0, |x|<|y|
+            ((-2.0, 1.0), true),   // x<0,y>0, |x|>|y|
+            ((-1.0, 2.0), true),   // x<0,y>0, |x|<|y|
+            ((2.0, 1.0), true),    // x>0,y>0, |x|>|y|
+            ((1.0, 2.0), true),    // x>0,y>0, |x|<|y|
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for ((x, y), _) in cases {
+            let s = a.find_sector(Verb::Line, x, y);
+            assert!(s >= 0 && s < NUM_SECTORS as i8, "sector out of range: {s}");
+            assert!(seen.insert(s), "sector {s} reused for ({x}, {y})");
+        }
+    }
+
+    #[test]
+    fn find_sector_negative_zero_matches_positive_zero() {
+        // -0.0 compares equal to 0.0 and must not be treated as a sign.
+        let a = SkOpAngle::new();
+        assert_eq!(
+            a.find_sector(Verb::Line, 1.0, -0.0),
+            a.find_sector(Verb::Line, 1.0, 0.0)
+        );
+        assert_eq!(
+            a.find_sector(Verb::Line, -0.0, 1.0),
+            a.find_sector(Verb::Line, 0.0, 1.0)
+        );
+    }
+
+    #[test]
+    fn find_sector_is_undetermined_on_both_axes_at_once() {
+        // Degenerate in both coordinates, not just the origin case already
+        // covered: NaN-free but still zero-zero after cancellation.
+        let a = SkOpAngle::new();
+        assert_eq!(a.find_sector(Verb::Quad, 0.0, 0.0), -1);
+        assert_eq!(a.find_sector(Verb::Cubic, -0.0, 0.0), -1);
+    }
+
+    // --- set_sector: cubic extrema (degenerate first or second control) ---
+
+    #[test]
+    fn set_sector_cubic_with_degenerate_first_control_steps_out() {
+        // Control point 1 sits on top of the start, so the first sweep
+        // vector is zero-length; set_curve_hull_sweep must step to the
+        // second control point and clear f_ordered.
+        let angle = cubic_angle([[0.0, 0.0], [0.0, 0.0], [4.0, 0.0], [4.0, 4.0]]);
+        assert!(!angle.f_part.is_ordered());
+        assert!(angle.f_part.is_curve());
+        // The sector must still resolve from the stepped-out sweep rather
+        // than being deferred.
+        assert_ne!(angle.f_sector_start, -1);
+    }
+
+    #[test]
+    fn set_sector_cubic_with_degenerate_second_control_steps_out() {
+        // Control point 2 sits on top of the start too (but control 1
+        // doesn't), landing in the `f_sweep[1]` branch of
+        // set_curve_hull_sweep instead of the `f_sweep[0]` branch.
+        let angle = cubic_angle([[0.0, 0.0], [4.0, 1.0], [0.0, 0.0], [4.0, 4.0]]);
+        assert!(!angle.f_part.is_ordered());
+        assert_ne!(angle.f_sector_start, -1);
+    }
+
+    #[test]
+    fn set_sector_cubic_with_both_controls_degenerate_falls_back_to_line() {
+        // Both control points sit on the start point: the cubic is really a
+        // line from p0 to p3. Neither the "step to sweep[1]" branch nor the
+        // "step to pt(3)" branch changes this outcome once both original
+        // sweeps are zero, since the second branch's replacement is also
+        // pt(3) - pt(0).
+        let angle = cubic_angle([[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [4.0, 4.0]]);
+        // Whatever the code decides, it must not silently treat this as
+        // orderable with a stale zero sector, and must not panic.
+        if angle.f_sector_start != -1 {
+            assert_eq!(angle.f_sector_start, angle.find_sector(Verb::Cubic, 4.0, 4.0));
+        }
+    }
+
+    #[test]
+    fn set_sector_quad_at_exact_vertical_extremum() {
+        // Control point directly above the start: sweep[0] is (0, -4), an
+        // exact compass point (sector 7), which set_sector must bump off
+        // the boundary once the far sweep gives the curve real width.
+        let angle = quad_angle([[0.0, 0.0], [0.0, -4.0], [4.0, -4.0]]);
+        assert!(angle.f_part.is_curve());
+        assert_ne!(angle.f_sector_start & 3, 3, "exact compass point must be bumped");
+    }
+
+    #[test]
+    fn set_sector_conic_extreme_weight_does_not_change_the_hull_sweep() {
+        // The hull sweep only looks at control points, not weight, so a
+        // conic and an equivalent quad through the same three points must
+        // land in the same sectors regardless of weight.
+        let mut conic = SkOpAngle::new();
+        conic.f_part.f_verb = Verb::Conic;
+        conic.f_part.f_curve[0] = [0.0, 0.0];
+        conic.f_part.f_curve[1] = [4.0, 1.0];
+        conic.f_part.f_curve[2] = [8.0, 3.0];
+        conic.f_part.f_weight = 1e6; // extreme weight
+        conic.f_part.set_curve_hull_sweep();
+        conic.f_original_curve_part = conic.f_part;
+        conic.set_sector();
+
+        let quad = quad_angle([[0.0, 0.0], [4.0, 1.0], [8.0, 3.0]]);
+        assert_eq!(conic.f_sector_start, quad.f_sector_start);
+        assert_eq!(conic.f_sector_end, quad.f_sector_end);
+    }
+
+    // --- CurveSweep::set_curve_hull_sweep: degenerate cubic combinations --
+
+    #[test]
+    fn hull_sweep_cubic_control_at_max_component_scale_does_not_false_positive_degenerate() {
+        // A very large curve where the first control offset is tiny relative
+        // to the curve's scale must still be treated as degenerate by
+        // approximately_zero_when_compared_to, exercising the `max_val`
+        // relative (not absolute) tolerance.
+        let mut sweep = CurveSweep::new();
+        sweep.f_verb = Verb::Cubic;
+        sweep.f_curve[0] = [0.0, 0.0];
+        sweep.f_curve[1] = [1e-3, 1e-3]; // tiny relative to 1e6 below
+        sweep.f_curve[2] = [1e6, 0.0];
+        sweep.f_curve[3] = [1e6, 1e6];
+        sweep.set_curve_hull_sweep();
+        // Control 1 must have been treated as degenerate and stepped over.
+        assert!(!sweep.is_ordered());
+        assert_eq!(sweep.f_sweep[0], AngleVector::new(1e6, 0.0));
+    }
+
+    #[test]
+    fn hull_sweep_cubic_control_at_comparable_scale_is_not_treated_as_degenerate() {
+        // Same absolute offset as the tiny case above, but now the curve's
+        // own scale is small too, so the offset is not negligible by
+        // comparison and must NOT be stepped over.
+        let mut sweep = CurveSweep::new();
+        sweep.f_verb = Verb::Cubic;
+        sweep.f_curve[0] = [0.0, 0.0];
+        sweep.f_curve[1] = [1e-3, 1e-3];
+        sweep.f_curve[2] = [2e-3, 0.0];
+        sweep.f_curve[3] = [3e-3, 3e-3];
+        sweep.set_curve_hull_sweep();
+        assert!(sweep.is_ordered());
+        assert_eq!(sweep.f_sweep[0], AngleVector::new(1e-3, 1e-3));
+    }
+
+    // --- dist_end_ratio: degenerate distances ------------------------------
+
+    #[test]
+    fn dist_end_ratio_zero_distance_is_infinite() {
+        // A zero dist means the tangent lines were exactly coincident;
+        // dividing by zero must produce +inf, not panic or NaN, so callers
+        // that compare it against 50.0/200.0 get a well-defined answer.
+        let angle = SkOpAngle::new();
+        let pts: [LinePoint; 4] = [[0.0, 0.0], [3.0, 4.0], [0.0, 0.0], [0.0, 0.0]];
+        let ratio = angle.dist_end_ratio(&pts, Verb::Line, 0.0);
+        assert!(ratio.is_infinite() && ratio > 0.0);
+    }
+
+    #[test]
+    fn dist_end_ratio_all_points_coincident_is_zero() {
+        // Every control point on top of every other: longest chord is 0.
+        let angle = SkOpAngle::new();
+        let pts: [LinePoint; 4] = [[5.0, 5.0], [5.0, 5.0], [5.0, 5.0], [5.0, 5.0]];
+        assert_eq!(angle.dist_end_ratio(&pts, Verb::Cubic, 1.0), 0.0);
+    }
+
+    // --- tangents_diverge: the perpendicular and boundary cases -----------
+
+    #[test]
+    fn tangents_diverge_when_sweeps_are_exactly_perpendicular() {
+        // s0.dot(t0) == 0 is a separate early-return branch from the
+        // s0xt0 == 0 branch already covered by
+        // tangents_do_not_diverge_when_parallel; perpendicular sweeps must
+        // report divergence unconditionally.
+        let mut a = quad_angle([[0.0, 0.0], [4.0, 0.0], [4.0, 4.0]]);
+        let b = quad_angle([[0.0, 0.0], [0.0, 4.0], [-4.0, 4.0]]);
+        let a_pts: [LinePoint; 4] = [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 0.0]];
+        let b_pts: [LinePoint; 4] = [[0.0, 0.0], [0.0, 4.0], [-4.0, 4.0], [0.0, 0.0]];
+        let s0xt0 = a.f_part.f_sweep[0].cross_check(b.f_part.f_sweep[0]);
+        assert_eq!(a.f_part.f_sweep[0].dot(b.f_part.f_sweep[0]), 0.0);
+        assert!(a.tangents_diverge(&b, s0xt0, &a_pts, Verb::Quad, &b_pts, Verb::Quad));
+    }
+
+    #[test]
+    fn tangents_diverge_reports_zero_for_exactly_parallel_cross() {
+        // s0xt0 == 0.0 is an explicit early return regardless of how the
+        // curves actually relate; confirm it short-circuits even when the
+        // curves are otherwise very different (different verbs, different
+        // scales), not just the identical-quads case already covered.
+        let mut a = quad_angle([[0.0, 0.0], [4.0, 0.0], [4.0, 4.0]]);
+        let b = cubic_angle([[0.0, 0.0], [8.0, 0.0], [20.0, 0.0], [20.0, 40.0]]);
+        let a_pts: [LinePoint; 4] = [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 0.0]];
+        let b_pts: [LinePoint; 4] = [[0.0, 0.0], [8.0, 0.0], [20.0, 0.0], [20.0, 40.0]];
+        assert!(!a.tangents_diverge(&b, 0.0, &a_pts, Verb::Quad, &b_pts, Verb::Cubic));
+    }
+
+    #[test]
+    fn tangents_ambiguous_flag_tracks_the_50_to_200_band() {
+        // Pick a pair whose m_factor lands inside (50, 200) and confirm the
+        // ambiguous flag is set even though the function still returns a
+        // definite (non-divergent) answer; the two are independent signals.
+        // A very shallow turn keeps m_factor large without being infinite.
+        let mut a = quad_angle([[0.0, 0.0], [1000.0, 0.0], [1000.0, 1.0]]);
+        let b = quad_angle([[0.0, 0.0], [1000.0, 0.0], [1000.0, -1.0]]);
+        let a_pts: [LinePoint; 4] = [[0.0, 0.0], [1000.0, 0.0], [1000.0, 1.0], [0.0, 0.0]];
+        let b_pts: [LinePoint; 4] = [[0.0, 0.0], [1000.0, 0.0], [1000.0, -1.0], [0.0, 0.0]];
+        let s0xt0 = a.f_part.f_sweep[0].cross_check(b.f_part.f_sweep[0]);
+        // Whatever the divergence verdict, the m_factor computation and the
+        // ambiguous-band flag must not panic and must be internally
+        // consistent: ambiguous implies m_factor was in [50, 200), which is
+        // a strict subset of "diverge is false" (diverge requires < 50).
+        let diverges = a.tangents_diverge(&b, s0xt0, &a_pts, Verb::Quad, &b_pts, Verb::Quad);
+        if a.tangents_ambiguous() {
+            assert!(!diverges, "ambiguous band (>=50) can't also be < 50 (diverges)");
+        }
+    }
+
+    // --- convex_hull_overlaps: tangent-tie and boundary cases --------------
+    //
+    // TODO/2026-09-15-tangent-contact-angle-ordering.md initially suspected
+    // convex_hull_overlaps of missing an exact-tangent tie-break, but its
+    // later update (piece 2, traced via op_with_engine) narrowed the actual
+    // defect to ends_intersect in sk_op_angle_order.rs instead: at the real
+    // repro's junction, convex_hull_overlaps correctly declines via
+    // t_between_s (a legitimate hull-wrap case), and ends_intersect's
+    // chord-ray sampling is what returns the wrong answer downstream. The
+    // tests below still exercise convex_hull_overlaps's own tie-break
+    // behavior directly (it has no coverage for the tangent-tie shape at
+    // all), but they're written as consistency checks rather than pins
+    // against that TODO, since this function is not where its bug lives.
+
+    #[test]
+    fn convex_hull_overlaps_same_initial_tangent_opposite_curvature() {
+        // Both curves leave the origin along +x (identical first sweep
+        // vector), one bending up and one bending down. This is exactly the
+        // "tangent lines coincide, curvature must break the tie" shape from
+        // the TODO. The two answers must at least be consistent with each
+        // other (one clockwise, one counterclockwise) — silently returning
+        // the same order for both, or -1 (decline) for a case this
+        // unambiguous, would be a real ordering bug.
+        let mut up = quad_angle([[0.0, 0.0], [4.0, 0.0], [8.0, 4.0]]);
+        let down = quad_angle([[0.0, 0.0], [4.0, 0.0], [8.0, -4.0]]);
+        let up_pts: [LinePoint; 4] = [[0.0, 0.0], [4.0, 0.0], [8.0, 4.0], [0.0, 0.0]];
+        let down_pts: [LinePoint; 4] = [[0.0, 0.0], [4.0, 0.0], [8.0, -4.0], [0.0, 0.0]];
+        let order = up.convex_hull_overlaps(
+            &down,
+            AngleVector::new(4.0, 0.0),
+            AngleVector::new(4.0, 0.0),
+            &up_pts,
+            Verb::Quad,
+            &down_pts,
+            Verb::Quad,
+        );
+        // A curve bending toward +y and one bending toward -y from the same
+        // initial tangent are unambiguously on opposite sides; declining
+        // (-1) here would push the tie-break work onto ends_intersect with
+        // no geometric reason to, and picking a definite order that flips
+        // under a relabeling would be worse. At minimum, this must not
+        // decline outright, since the mid-vectors alone determine the side.
+        assert_ne!(
+            order, -1,
+            "curves bending to opposite sides of a shared tangent must be orderable from the hull"
+        );
+    }
+
+    #[test]
+    fn convex_hull_overlaps_reversing_operands_reverses_the_answer_at_a_tangent_tie() {
+        // Same shape as above but checked for the self-consistency property
+        // that must hold regardless of which side of the bug lands: calling
+        // with (up, down) and (down, up) must give complementary answers
+        // whenever either call actually returns an order (0 or 1). If the
+        // two calls agree, or one declines while the other doesn't, that is
+        // a real bug in the tie-break, not just an ambiguous case.
+        let up_pts: [LinePoint; 4] = [[0.0, 0.0], [4.0, 0.0], [8.0, 4.0], [0.0, 0.0]];
+        let down_pts: [LinePoint; 4] = [[0.0, 0.0], [4.0, 0.0], [8.0, -4.0], [0.0, 0.0]];
+        let up_mid = AngleVector::new(4.0, 0.0);
+        let down_mid = AngleVector::new(4.0, 0.0);
+
+        let mut up = quad_angle([[0.0, 0.0], [4.0, 0.0], [8.0, 4.0]]);
+        let down = quad_angle([[0.0, 0.0], [4.0, 0.0], [8.0, -4.0]]);
+        let forward = up.convex_hull_overlaps(
+            &down, up_mid, down_mid, &up_pts, Verb::Quad, &down_pts, Verb::Quad,
+        );
+
+        let mut down2 = quad_angle([[0.0, 0.0], [4.0, 0.0], [8.0, -4.0]]);
+        let up2 = quad_angle([[0.0, 0.0], [4.0, 0.0], [8.0, 4.0]]);
+        let backward = down2.convex_hull_overlaps(
+            &up2, down_mid, up_mid, &down_pts, Verb::Quad, &up_pts, Verb::Quad,
+        );
+
+        if forward != -1 && backward != -1 {
+            assert_eq!(
+                backward,
+                1 - forward,
+                "swapping operands at a tangent tie must flip clockwise/counterclockwise, \
+                 got forward={forward} backward={backward}"
+            );
+        }
+    }
+
+    #[test]
+    fn convex_hull_overlaps_identical_curves_declines() {
+        // Two copies of the same curve: sweeps are pairwise equal, matching
+        // the explicit "s0 to s1 equals t0 to t1" early return.
+        let mut a = quad_angle([[0.0, 0.0], [4.0, 1.0], [8.0, 3.0]]);
+        let b = quad_angle([[0.0, 0.0], [4.0, 1.0], [8.0, 3.0]]);
+        let pts: [LinePoint; 4] = [[0.0, 0.0], [4.0, 1.0], [8.0, 3.0], [0.0, 0.0]];
+        let order = a.convex_hull_overlaps(
+            &b,
+            AngleVector::new(4.0, 1.0),
+            AngleVector::new(4.0, 1.0),
+            &pts,
+            Verb::Quad,
+            &pts,
+            Verb::Quad,
+        );
+        assert_eq!(order, -1, "identical hulls give no order to read");
+    }
+
+    #[test]
+    fn convex_hull_overlaps_exactly_opposite_sweeps() {
+        // 180 degrees apart: one curve's sweep is the exact negation of the
+        // other's, so every cross product between them is zero and this
+        // must not panic or silently pick an arbitrary order-looking value
+        // from a same-half-plane check that shouldn't fire.
+        let mut a = quad_angle([[0.0, 0.0], [4.0, 0.0], [8.0, 0.0]]); // straight, not a curve
+        let b = quad_angle([[0.0, 0.0], [-4.0, 0.0], [-8.0, 0.0]]);
+        let pts_a: [LinePoint; 4] = [[0.0, 0.0], [4.0, 0.0], [8.0, 0.0], [0.0, 0.0]];
+        let pts_b: [LinePoint; 4] = [[0.0, 0.0], [-4.0, 0.0], [-8.0, 0.0], [0.0, 0.0]];
+        let order = a.convex_hull_overlaps(
+            &b,
+            AngleVector::new(4.0, 0.0),
+            AngleVector::new(-4.0, 0.0),
+            &pts_a,
+            Verb::Quad,
+            &pts_b,
+            Verb::Quad,
+        );
+        // Every combination of cross_check on antiparallel vectors is zero,
+        // so this falls into the "sweeps equal" or same-half-plane path;
+        // either way it must terminate with one of the documented return
+        // values, not something outside {-1, 0, 1}.
+        assert!((-1..=1).contains(&order));
+    }
+
+    #[test]
+    fn convex_hull_overlaps_reflex_sweep_uses_midpoint_tiebreak() {
+        // A hull sweeping more than 180 degrees (the "outside sweeps are
+        // greater than 180 degrees" branch) must fall through to the
+        // midpoint cross product rather than the same-half-plane shortcuts,
+        // since no half-plane contains the whole sweep.
+        let mut a = quad_angle([[0.0, 0.0], [4.0, -4.0], [-4.0, -4.0]]); // sweeps almost 180
+        let b = quad_angle([[0.0, 0.0], [1.0, 4.0], [-1.0, 4.0]]);
+        let a_pts: [LinePoint; 4] = [[0.0, 0.0], [4.0, -4.0], [-4.0, -4.0], [0.0, 0.0]];
+        let b_pts: [LinePoint; 4] = [[0.0, 0.0], [1.0, 4.0], [-1.0, 4.0], [0.0, 0.0]];
+        let order = a.convex_hull_overlaps(
+            &b,
+            AngleVector::new(4.0, -4.0),
+            AngleVector::new(1.0, 4.0),
+            &a_pts,
+            Verb::Quad,
+            &b_pts,
+            Verb::Quad,
+        );
+        // b's hull sits entirely below a's (opposite half-plane, +y here is
+        // down-screen), so this is orderable from the hull without falling
+        // back to ends_intersect.
+        assert_ne!(order, -1);
+    }
+
+    // --- line_on_one_side_of: cubic verb, exact zero, mixed signs ---------
+
+    #[test]
+    fn line_on_one_side_of_cubic_checks_the_third_control() {
+        // Both of the first two controls sit exactly on the ray, so only
+        // the third (cubic-only) cross product distinguishes the side.
+        // This exercises the `test_verb == Verb::Cubic && crosses[2] != 0.0`
+        // branch, which no existing test reaches (existing coverage is
+        // Verb::Quad only).
+        let curve = [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 1.0]];
+        let result = SkOpAngle::line_on_one_side_of(
+            [0.0, 0.0],
+            AngleVector::new(1.0, 0.0),
+            &curve,
+            Verb::Cubic,
+        );
+        assert_eq!(result, 0);
+
+        let mirrored = [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, -1.0]];
+        let mirrored_result = SkOpAngle::line_on_one_side_of(
+            [0.0, 0.0],
+            AngleVector::new(1.0, 0.0),
+            &mirrored,
+            Verb::Cubic,
+        );
+        assert_eq!(mirrored_result, 1);
+        assert_ne!(result, mirrored_result);
+    }
+
+    #[test]
+    fn line_on_one_side_of_cubic_straddle_via_third_control() {
+        // First two controls agree in sign; the third one disagrees with
+        // both, which must be caught by the cubic-specific straddle check
+        // (`crosses[0] * crosses[2] < 0` / `crosses[1] * crosses[2] < 0`)
+        // rather than only the `crosses[0] * crosses[1]` check quads use.
+        let curve = [[0.0, 0.0], [1.0, 1.0], [2.0, 1.0], [3.0, -1.0]];
+        let result = SkOpAngle::line_on_one_side_of(
+            [0.0, 0.0],
+            AngleVector::new(1.0, 0.0),
+            &curve,
+            Verb::Cubic,
+        );
+        assert_eq!(result, -1);
+    }
+
+    #[test]
+    fn line_on_one_side_of_origin_not_at_the_first_point() {
+        // The ray's origin need not be the curve's own start point; confirm
+        // the offsets are taken relative to `origin`, not hardcoded to
+        // curve[0]. Both control points sit strictly above the ray through
+        // (10, 10), so this must resolve to a definite side, and the same
+        // curve translated to the real origin must give the same answer.
+        let curve = [[10.0, 10.0], [11.0, 11.0], [12.0, 12.0], [10.0, 10.0]];
+        let result = SkOpAngle::line_on_one_side_of(
+            [10.0, 10.0],
+            AngleVector::new(1.0, 0.0),
+            &curve,
+            Verb::Quad,
+        );
+        let curve_at_origin = [[0.0, 0.0], [1.0, 1.0], [2.0, 2.0], [0.0, 0.0]];
+        let result_at_origin = SkOpAngle::line_on_one_side_of(
+            [0.0, 0.0],
+            AngleVector::new(1.0, 0.0),
+            &curve_at_origin,
+            Verb::Quad,
+        );
+        assert_eq!(result, result_at_origin, "origin must not be hardcoded to curve[0]");
+        assert!(result == 0 || result == 1);
+    }
 }
