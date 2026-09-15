@@ -149,6 +149,15 @@ impl<'a> SkPathWriter<'a> {
         self.first_pt
     }
 
+    /// Returns whether the current contour has been started.
+    ///
+    /// `SkPathWriter::hasMove`. The walk's closing step consults it: with no
+    /// move written there is no open contour to close.
+    #[must_use]
+    pub fn has_move(&self) -> bool {
+        self.first_pt.is_some()
+    }
+
     /// Returns true if the last point matches the first point
     pub fn is_closed(&self) -> bool {
         self.first_pt.map_or(false, |first| {
@@ -297,8 +306,15 @@ impl<'a> SkPathWriter<'a> {
         let entries = end_count * (end_count - 1) / 2;
         let mut distances: Vec<f32> = Vec::with_capacity(entries);
         let mut sorted_dist: Vec<usize> = Vec::with_capacity(entries);
+        // `sorted_dist` indexes the folded triangle; the pairing below wants
+        // the square `row * end_count + col`. C++ keeps both and maps one to
+        // the other through `distLookup` (`SkPathWriter.cpp:287`) — the two
+        // encodings are not interchangeable, and decoding a triangle index as
+        // if it were square pairs up unrelated endpoints.
+        let mut dist_lookup: Vec<usize> = Vec::with_capacity(entries);
 
         let mut d_idx = 0;
+        let mut r_row = 0;
         for r_idx in 0..end_count - 1 {
             let p1 = self.end_pts[r_idx];
             for i_idx in (r_idx + 1)..end_count {
@@ -306,11 +322,14 @@ impl<'a> SkPathWriter<'a> {
                 let dx = p2.x - p1.x;
                 let dy = p2.y - p1.y;
                 let dist = dx * dx + dy * dy;
+                dist_lookup.push(r_row + i_idx);
                 distances.push(dist);
                 sorted_dist.push(d_idx);
                 d_idx += 1;
             }
+            r_row += end_count;
         }
+        debug_assert_eq!(d_idx, entries);
 
         // Sort by distance
         sorted_dist.sort_by(|a, b| {
@@ -322,6 +341,7 @@ impl<'a> SkPathWriter<'a> {
         // Connect closest endpoints
         let mut remaining = link_count;
         for pair in sorted_dist {
+            let pair = dist_lookup[pair];
             let row = pair / end_count;
             let col = pair - row * end_count;
             let ndx_one = row / 2;
@@ -329,10 +349,16 @@ impl<'a> SkPathWriter<'a> {
             let ndx_two = col / 2;
             let end_two = col % 2 == 1;
 
-            if s_link[ndx_one].is_some() || e_link[ndx_one].is_some() {
+            // Only the end this pair actually uses has to be free. C++ tests
+            // `linkOne[ndxOne]`, the slot `endOne` selects — checking both
+            // ends rejects pairings where a contour's other end is already
+            // spoken for, which is the normal case once linking is underway.
+            let one_taken = if end_one { &e_link[ndx_one] } else { &s_link[ndx_one] };
+            if one_taken.is_some() {
                 continue;
             }
-            if s_link[ndx_two].is_some() || e_link[ndx_two].is_some() {
+            let two_taken = if end_two { &e_link[ndx_two] } else { &s_link[ndx_two] };
+            if two_taken.is_some() {
                 continue;
             }
 
@@ -357,84 +383,109 @@ impl<'a> SkPathWriter<'a> {
             }
         }
 
-        // Build final path from linked contours
-        let mut r_idx = 0;
-        while r_idx < link_count {
-            let forward = true;
+        // Walk the links, emitting one output contour per chain.
+        //
+        // Port of the final loop in `SkPathWriter::assemble`. A chain is
+        // followed through `e_link`/`s_link` rather than by stepping the
+        // index, and a negative link means the next piece is entered from its
+        // far end, so the direction of travel flips and the piece is emitted
+        // reversed. Walking the pieces in index order instead — as this used
+        // to — stitches unrelated ends together and leaves a diagonal across
+        // the result.
+        let mut r_idx = 0usize;
+        loop {
+            let mut forward = true;
             let mut first = true;
 
-            let s_idx_opt = s_link[r_idx].take();
-            let s_idx = match s_idx_opt {
-                Some(v) => v,
-                None => break,
+            let Some(s_idx) = s_link[r_idx].take() else {
+                break;
             };
-
-            let e_idx_opt = if s_idx >= 0 {
-                e_link[s_idx as usize].take()
+            let e_idx_opt = if s_idx < 0 {
+                s_link[(!s_idx) as usize].take()
             } else {
-                let idx = (-s_idx - 1) as usize;
-                s_link[idx].take()
+                e_link[s_idx as usize].take()
+            };
+            let Some(mut e_idx) = e_idx_opt else {
+                break;
             };
 
-            if let Some(e_idx) = e_idx_opt {
-                while r_idx < link_count {
-                    let contour = self.partials[r_idx].clone();
-
-                    if !first {
-                        // Connect gap if needed
-                        if let Some(_last_pt) = self.path_ptr.last_point() {
-                            // In a full implementation, we'd connect via segments
-                            // rather than introducing a diagonal
-                        }
-                    }
-
-                    if forward {
-                        for i in 0..contour.count_verbs() {
-                            if let Some(verb) = contour.verb(i) {
-                                self.append_verb(verb, &contour, i);
-                            }
-                        }
-                    } else {
-                        // Add reversed contour
-                        for i in (0..contour.count_verbs()).rev() {
-                            if let Some(verb) = contour.verb(i) {
-                                self.append_verb(verb, &contour, i);
-                            }
-                        }
-                    }
-
+            let mut inner_guard = link_count * 4 + 8;
+            loop {
+                inner_guard -= 1;
+                if inner_guard == 0 {
+                    return;
+                }
+                let contour = self.partials[r_idx].clone();
+                if !first && self.path_ptr.last_point().is_none() {
+                    return;
+                }
+                // TODO (as in Skia): where a gap remains between what has been
+                // written and the piece coming next, follow segments across it
+                // rather than letting the append draw a diagonal.
+                if forward {
                     if first {
-                        first = false;
-                    }
-
-                    let close_now = s_idx == r_idx as isize
-                        || s_idx == (r_idx as isize + link_count as isize)
-                        || e_idx == r_idx as isize
-                        || e_idx == (r_idx as isize + link_count as isize);
-                    if close_now {
-                        self.path_ptr.close();
-                        break;
-                    }
-
-                    // Update link for next iteration
-                    if forward {
-                        if e_idx >= 0 && (e_idx as usize) < link_count {
-                            s_link[e_idx as usize] = None;
-                        }
+                        self.path_ptr.add_path(&contour, 0.0, 0.0);
                     } else {
-                        if r_idx < link_count {
-                            s_link[r_idx] = None;
-                        }
+                        self.path_ptr.add_path_extend(&contour);
                     }
+                } else {
+                    debug_assert!(!first);
+                    self.path_ptr.reverse_path_to(&contour);
+                }
+                first = false;
 
-                    r_idx += 1;
+                // The chain has come back to where it started.
+                let closing = if (r_idx as isize != e_idx) ^ forward {
+                    e_idx
+                } else {
+                    !e_idx
+                };
+                if s_idx == closing {
+                    self.path_ptr.close();
+                    break;
+                }
+
+                let stepped = if forward {
+                    let Some(next) = e_link[r_idx].take() else {
+                        break;
+                    };
+                    if next >= 0 {
+                        s_link[next as usize] = None;
+                    } else {
+                        e_link[(!next) as usize] = None;
+                    }
+                    next
+                } else {
+                    let Some(next) = s_link[r_idx].take() else {
+                        break;
+                    };
+                    if next >= 0 {
+                        e_link[next as usize] = None;
+                    } else {
+                        s_link[(!next) as usize] = None;
+                    }
+                    next
+                };
+                e_idx = stepped;
+                r_idx = if e_idx < 0 {
+                    // Entered from the far end: turn around.
+                    forward = !forward;
+                    (!e_idx) as usize
+                } else {
+                    e_idx as usize
+                };
+                if r_idx >= link_count {
+                    break;
                 }
             }
 
-            // Find next unprocessed contour
+            // Next chain that still has an unclaimed start.
             r_idx = 0;
-            while r_idx < link_count && (s_link[r_idx].is_some() || e_link[r_idx].is_some()) {
+            while r_idx < link_count && s_link[r_idx].is_none() {
                 r_idx += 1;
+            }
+            if r_idx >= link_count {
+                break;
             }
         }
     }
@@ -708,5 +759,40 @@ mod tests {
         assert!(result);
         assert_eq!(writer.defer[0], Some(Point::new(5.0, 5.0)));
         assert_eq!(writer.defer[1], Some(Point::new(10.0, 0.0)));
+    }
+
+    /// Four partial pieces of one square, handed to `assemble` out of order
+    /// and each as its own open contour. Rebuilding it exercises the whole
+    /// link walk: the triangular-to-square index mapping, the per-end
+    /// occupancy test, and following `e_link`/`s_link` rather than stepping
+    /// the index.
+    #[test]
+    fn assemble_rebuilds_one_square_from_four_scattered_pieces() {
+        let mut out = Path::new();
+        {
+            let mut writer = SkPathWriter::new(&mut out);
+            // Deliberately not in walk order.
+            let sides = [
+                [(20.0f32, 0.0f32), (20.0, 20.0)],
+                [(0.0, 0.0), (20.0, 0.0)],
+                [(0.0, 20.0), (0.0, 0.0)],
+                [(20.0, 20.0), (0.0, 20.0)],
+            ];
+            for [a, b] in sides {
+                writer.deferred_move(Point::new(a.0, a.1));
+                writer.deferred_line(Point::new(b.0, b.1));
+                writer.finish_contour();
+            }
+            writer.assemble();
+        }
+        let moves = out.verbs().iter().filter(|v| **v == crate::core::Verb::Move).count();
+        assert_eq!(moves, 1, "the four pieces are one contour: {:?}", out.verbs());
+        // Every corner survives, and nothing invented a shortcut across the
+        // middle - the symptom of decoding a folded-triangle index as if it
+        // were a square one.
+        for (x, y) in [(1.0f32, 1.0f32), (19.0, 1.0), (19.0, 19.0), (1.0, 19.0)] {
+            assert!(out.contains(x, y), "({x}, {y}) should be inside");
+        }
+        assert!(!out.contains(30.0, 10.0), "nothing outside the square");
     }
 }

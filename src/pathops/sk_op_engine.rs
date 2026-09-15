@@ -18,7 +18,7 @@
 use super::sk_op_angle_order::{calc_angles, sort_angles};
 use super::sk_op_arena::{OpArena, SegmentId, SpanId};
 use super::sk_op_coincidence::SkOpCoincidence;
-use super::sk_op_common::{find_chase, handle_coincidence};
+use super::sk_op_common::{find_chase, find_chase_op, handle_coincidence};
 use super::sk_op_walker::{add_curve_to, find_next_op, find_next_winding, WalkState};
 use super::sk_path_writer::SkPathWriter;
 use super::sk_op_sortable_top::{find_sortable_top, sortable_top};
@@ -270,8 +270,23 @@ fn record_if_coincident(graph: &mut OpGraph, a: SegmentId, b: SegmentId) -> bool
     }
 
     // Split both segments at the run's ends and record the pair.
-    let a_start_pt = graph.arena.segment_pt_at_t(a, start);
-    let a_end_pt = graph.arena.segment_pt_at_t(a, end);
+    //
+    // The run's ends are real endpoints of `a` or of `b`, so use those
+    // coordinates rather than the interpolated ones. Evaluating segment 2 of
+    // (20,20)->(0,20) at t = 0.6 gives x = 7.9999995, not 8, and a split made
+    // at that point lands a hair off the corner it is supposed to share.
+    // The PtT rings are keyed on exact coordinates, so the near-miss opens a
+    // second ring at the same corner and the walk loses the edges in it.
+    let snap = |p: Point| -> Point {
+        for c in [a0, a1, b0, b1] {
+            if (p.x - c.x).abs() <= COLLINEAR_TOL && (p.y - c.y).abs() <= COLLINEAR_TOL {
+                return c;
+            }
+        }
+        p
+    };
+    let a_start_pt = snap(graph.arena.segment_pt_at_t(a, start));
+    let a_end_pt = snap(graph.arena.segment_pt_at_t(a, end));
     let Some(ca) = graph.arena.segment_add_t(a, start, a_start_pt) else {
         return false;
     };
@@ -563,7 +578,17 @@ fn bridge(
 
             let mut chase_start = state.start;
             let mut chase_end = Some(state.end);
-            match find_chase(&mut graph.arena, &mut chase, &mut chase_start, &mut chase_end) {
+            // The binary walk needs the binary drain: `find_chase` resolves
+            // one operand's winding only. The drain is reached on real
+            // geometry (the disc-union sweep enters it 67 times) though no
+            // case found so far comes out differently for it; the unary form
+            // here would be a latent wrong answer rather than a visible one.
+            let chased = if op.is_some() {
+                find_chase_op(&mut graph.arena, &mut chase, &mut chase_start, &mut chase_end)
+            } else {
+                find_chase(&mut graph.arena, &mut chase, &mut chase_start, &mut chase_end)
+            };
+            match chased {
                 Some(_) => {
                     let Some(e) = chase_end else { break };
                     if chase_start == e {
@@ -736,6 +761,11 @@ fn walk_contour(
     writer: &mut SkPathWriter,
 ) -> bool {
     let mut guard = INNER_GUARD;
+    // `simple` as it stood before the step about to be taken. C++ keeps the
+    // previous iteration's value (`lastSimple = simple` ahead of
+    // `findNextOp`), because the dead-end emit asks whether the edge just
+    // walked was reached by a simple step, not whether the failed step was.
+    let mut last_simple = false;
     loop {
         guard -= 1;
         if guard == 0 {
@@ -750,10 +780,13 @@ fn walk_contour(
         }
         let edge_start = state.start;
         let edge_end = state.end;
+        let edge_segment = graph.arena.span_segment(edge_start);
+        let prev_simple = last_simple;
+        last_simple = state.simple;
+        let _ = prev_simple;
         // find_next advances `state` to the edge to walk next, and reports
         // which segment that is. When it reports none the walk has run out
-        // of active edges, but `state` still names the edge just walked, so
-        // the caller's closing step has something to test.
+        // of active edges, and `state` still names the edge just walked.
         let next_segment = match op {
             Some(op) => find_next_op(
                 &mut graph.arena,
@@ -765,14 +798,44 @@ fn walk_contour(
             ),
             None => find_next_winding(&mut graph.arena, state, chase),
         };
-        // Emit the edge just walked. Doing this before the `next_segment`
-        // check is what keeps a contour whose walk ends here from losing its
-        // last edge.
-        if !add_curve_to(&mut graph.arena, edge_start, edge_end, writer) {
+        if next_segment.is_none() {
+            // Nowhere active to go. C++ does *not* emit unconditionally here
+            // (`SkPathOpsOp.cpp:140-156`): a line that ran out of
+            // continuations is left for the closing step and for assemble,
+            // and only a curve on an open contour, or the tail of a simple
+            // step, is written out.
+            //
+            // With the winding fixes in place no case found so far reaches
+            // this branch with a different answer either way — the walk stops
+            // because the contour closed, not because it ran dry. It is kept
+            // because it is the shape C++ has, and because an unconditional
+            // emit here writes a trailing edge onto a contour that did run
+            // dry.
+            let is_line = edge_segment
+                .map_or(true, |s| graph.arena.segment_curve(s).1 == Verb::Line);
+            let emit = (!state.unsortable
+                && writer.has_move()
+                && !is_line
+                && !writer.is_closed())
+                || prev_simple;
+            if emit && !add_curve_to(&mut graph.arena, edge_start, edge_end, writer) {
+                return false;
+            }
             break;
         }
-        if next_segment.is_none() || writer.is_closed() {
+        // Emit the edge just walked, before stepping on.
+        if !add_curve_to(&mut graph.arena, edge_start, edge_end, writer) {
+            return false;
+        }
+        if writer.is_closed() {
             break;
+        }
+        if state.unsortable {
+            if let Some(starter) = graph.arena.span_starter(state.start, state.end) {
+                if graph.arena.span(starter).done() {
+                    break;
+                }
+            }
         }
     }
     true
@@ -904,10 +967,33 @@ pub fn op_with_engine(one: &Path, two: &Path, op: PathOp) -> Option<Path> {
         }
         writer.assemble();
     }
-    if result.is_empty() {
+    if result.is_empty() && !empty_is_the_answer(one, two, op) {
+        // The walk emitted nothing and the operation should have produced
+        // something, so treat it as a decline rather than as an empty result.
         return None;
     }
     Some(result)
+}
+
+/// Returns whether an empty result is the right answer for these inputs.
+///
+/// The walk emitting nothing means one of two very different things: the
+/// operation genuinely covers no area, or the engine failed to find it. Only
+/// the bounding boxes can tell them apart cheaply, and only in one direction
+/// — boxes that do not overlap really do make Intersect empty, whereas
+/// overlapping boxes say nothing either way. Anything not decided here is
+/// reported as a decline, which costs a fallback rather than a wrong answer.
+fn empty_is_the_answer(one: &Path, two: &Path, op: PathOp) -> bool {
+    let (a, b) = (one.bounds(), two.bounds());
+    let disjoint = a.right < b.left || b.right < a.left || a.bottom < b.top || b.bottom < a.top;
+    match op {
+        // Nothing in common, so nothing to keep.
+        PathOp::Intersect => disjoint,
+        // Union and Xor of two non-empty paths always cover something, and
+        // a Difference only empties out when the subtrahend swallows the
+        // minuend, which the boxes cannot establish.
+        _ => false,
+    }
 }
 
 /// Simplifies one path through the real engine.
@@ -1219,8 +1305,27 @@ mod tests {
         let a = rect_path(0.0, 0.0, 10.0, 10.0);
         let b = rect_path(50.0, 50.0, 60.0, 60.0);
         // Boxes that do not touch have no common area, so the walk must find
-        // no active edge at all rather than emitting either input.
-        assert!(op_with_engine(&a, &b, PathOp::Intersect).is_none());
+        // no active edge at all rather than emitting either input. Empty is
+        // the answer here, not a decline: `None` would send this to the
+        // flattening fallback to compute the same empty path again.
+        let got = op_with_engine(&a, &b, PathOp::Intersect).expect("an answer, not a decline");
+        assert!(got.is_empty(), "nothing in common: {:?}", got.verbs());
+    }
+
+    #[test]
+    fn an_empty_walk_is_still_a_decline_where_empty_cannot_be_right() {
+        // Overlapping boxes, so Intersect covers real area. If the walk ever
+        // emitted nothing here it would be a failure, and reporting it as an
+        // empty path would silently lose the overlap.
+        let a = rect_path(0.0, 0.0, 10.0, 10.0);
+        let b = rect_path(5.0, 5.0, 15.0, 15.0);
+        assert!(!empty_is_the_answer(&a, &b, PathOp::Intersect));
+        // Union and Xor of two non-empty paths always cover something.
+        assert!(!empty_is_the_answer(&a, &b, PathOp::Union));
+        assert!(!empty_is_the_answer(&a, &b, PathOp::Xor));
+        // And a Difference cannot be settled from the boxes either way.
+        let swallowed = rect_path(-5.0, -5.0, 20.0, 20.0);
+        assert!(!empty_is_the_answer(&a, &swallowed, PathOp::Difference));
     }
 
     #[test]
@@ -1536,12 +1641,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "known gap: see TODO/09-bridge-winding-xor.md"]
     fn an_intersect_across_a_shared_edge_keeps_only_the_overlap() {
-        // Difference on this geometry is right; Intersect is not. It returns
-        // a path that also covers (25, 10), which lies only in the
-        // subtrahend. Left failing on purpose rather than weakened, so the
-        // gap is visible: `cargo test -- --ignored` shows it.
+        // Two rectangles sharing both horizontal edges. This was the last
+        // case the walk got wrong, and it failed because the winding chased
+        // across the corner into the other operand kept its two sums in the
+        // fields they had on this side.
         let a = rect_path(0.0, 0.0, 20.0, 20.0);
         let b = rect_path(10.0, 0.0, 30.0, 20.0);
         let got = op_with_engine(&a, &b, PathOp::Intersect).expect("resolves");
@@ -1562,5 +1666,83 @@ mod tests {
         let mut path = Path::new();
         let mut writer = SkPathWriter::new(&mut path);
         assert!(!bridge(&mut graph, Some(PathOp::Union), -1, -1, &mut writer));
+    }
+
+    /// Two rectangles sharing *both* horizontal edges. This is the geometry
+    /// that kept the walk short: the winding chased across the corner at
+    /// (20, 20) into the second operand arrived with its two sums in the
+    /// fields they had on the first operand's side, so B's right half read as
+    /// interior and was never walked.
+    #[test]
+    fn a_union_across_two_shared_edges_is_one_contour_covering_both() {
+        let a = rect_path(0.0, 0.0, 20.0, 20.0);
+        let b = rect_path(8.0, 0.0, 28.0, 20.0);
+        let got = op_with_engine(&a, &b, PathOp::Union).expect("resolves");
+
+        let moves = got.verbs().iter().filter(|v| **v == Verb::Move).count();
+        assert_eq!(moves, 1, "one contour, not A's outline plus a fragment: {:?}", got.verbs());
+        // The half that only B covers is the part that used to go missing.
+        assert!(got.contains(25.0, 10.0), "B's right half is in the union");
+        assert!(got.contains(1.0, 10.0), "A's left half is too");
+        assert!(got.contains(14.0, 10.0), "and the overlap");
+        assert!(!got.contains(30.0, 10.0), "but not past B's right edge");
+    }
+
+    /// The same graph read the other way. Difference was already right when
+    /// Union and Intersect were not, which is what pointed at the sums rather
+    /// than at how the graph was built.
+    #[test]
+    fn the_three_operators_agree_on_two_rectangles_sharing_both_edges() {
+        let a = rect_path(0.0, 0.0, 20.0, 20.0);
+        let b = rect_path(8.0, 0.0, 28.0, 20.0);
+        // (x, inside A, inside B)
+        let probes = [(1.0f32, true, false), (14.0, true, true), (25.0, false, true)];
+
+        for (op, name) in [
+            (PathOp::Union, "union"),
+            (PathOp::Intersect, "intersect"),
+            (PathOp::Difference, "difference"),
+        ] {
+            let got = op_with_engine(&a, &b, op).unwrap_or_else(|| panic!("{name} resolves"));
+            for (x, in_a, in_b) in probes {
+                let want = match op {
+                    PathOp::Union => in_a || in_b,
+                    PathOp::Intersect => in_a && in_b,
+                    PathOp::Difference => in_a && !in_b,
+                    _ => unreachable!(),
+                };
+                assert_eq!(got.contains(x, 10.0), want, "{name} at ({x}, 10)");
+            }
+        }
+    }
+
+    /// A coincident run's ends are endpoints of one of the two segments, so
+    /// the split must land on those exact coordinates. Evaluating segment
+    /// (20,20)->(0,20) at t = 0.6 gives x = 7.9999995, and a PtT ring keyed on
+    /// that near-miss is a second ring at a corner that should have one.
+    #[test]
+    fn a_coincident_split_lands_exactly_on_the_shared_corner() {
+        let a = rect_path(0.0, 0.0, 20.0, 20.0);
+        let b = rect_path(8.0, 0.0, 28.0, 20.0);
+        let graph = build(&a, Some(&b), false, false).expect("builds");
+
+        let mut corner_rings = 0;
+        for &seg in &graph.segments {
+            for span in graph.arena.segment_spans(seg) {
+                let Some(ptt) = graph.arena.span_ptt(span) else {
+                    continue;
+                };
+                let pt = graph.arena.ptt(ptt).f_pt;
+                assert!(
+                    pt.x.fract() == 0.0 && pt.y.fract() == 0.0,
+                    "every split here is on an integer corner, got {pt:?}"
+                );
+                if pt == Point::new(8.0, 20.0) {
+                    corner_rings = corner_rings.max(graph.arena.ptt_ring(ptt).len());
+                }
+            }
+        }
+        // A's top edge, B's top edge and B's left edge all meet at (8, 20).
+        assert_eq!(corner_rings, 3, "all three segments share the one ring");
     }
 }

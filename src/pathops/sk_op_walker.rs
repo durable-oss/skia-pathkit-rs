@@ -279,12 +279,25 @@ fn transfer(
             .is_some_and(|seg| arena.segment_operand(seg));
         let (max_winding, opp_max_winding) =
             arena.set_up_windings(start, end, operand, &mut sum_mi, &mut sum_su);
+        // `set_up_windings` decrements whichever running sum belongs to this
+        // segment's own operand, so after it `sum_su` holds this segment's
+        // own total and `sum_mi` its opposite when `operand` is set. C++ reads
+        // them back through `sumWinding` / `oppSumWinding`, which
+        // `setUpWindings` already wrote in the right order
+        // (`SkOpSegment.cpp:1529`). Passing `sum_mi`/`sum_su` straight
+        // through instead hands a second-operand segment the two totals the
+        // wrong way round, and the wrong one then propagates along the chase.
+        let (sum_winding, opp_sum_winding) = if operand {
+            (sum_su, sum_mi)
+        } else {
+            (sum_mi, sum_su)
+        };
         match mark_angle_opp(
             arena,
             max_winding,
-            sum_mi,
+            sum_winding,
             opp_max_winding,
-            sum_su,
+            opp_sum_winding,
             next_angle,
         ) {
             Some(last) => last,

@@ -1,8 +1,10 @@
 //! Boolean path operations: union, intersect, difference, xor.
 //!
-//! [`op`] handles empty/identical paths directly, then runs a flatten-split-
-//! classify boolean. The ported engine in [`sk_op_engine`] is built but not
-//! yet the public implementation; see `TODO/09-bridge-winding-xor.md`.
+//! [`op`] handles empty/identical paths directly, then runs the ported Skia
+//! engine in [`sk_op_engine`]. Inputs that engine declines — curve/curve
+//! coincidence is the case that still reaches it — fall back to the
+//! flatten-split-classify boolean in `boolean`, which returns a polyline but
+//! returns the right region.
 //!
 //! Source: `old/pathkit/include/pathops/SkPathOps.h`.
 
@@ -66,16 +68,16 @@ pub enum PathOp {
 
 /// Combines `one` and `two` with `op`, returning the resulting path.
 ///
-/// Empty and identical paths are handled directly. Everything else is
-/// flattened, split at intersections, and classified with
-/// [`Path::contains`], so the result is a polyline.
+/// Empty and identical paths are handled directly. Everything else goes
+/// through the ported engine in [`sk_op_engine`], which walks the segment
+/// graph and keeps the inputs' curve verbs: a contour the operation never
+/// touches comes back with its cubics intact.
 ///
-/// The curve-preserving engine in [`sk_op_engine`] is built and tested, and
-/// keeps curves through an operation, but is **not** wired in here yet: it
-/// still fragments the result into several contours when the two inputs
-/// share a collinear edge. Making it the default before that is fixed would
-/// trade flattened-but-correct results for curve-shaped wrong ones. See
-/// `TODO/09-bridge-winding-xor.md`.
+/// The engine reports failure rather than guessing when it cannot resolve an
+/// input — two rays disagreeing about a span's winding, or a coincidence it
+/// cannot classify. Those fall back to the flattening boolean, which gives a
+/// polyline with the right filled region. Curve/curve coincidence is the
+/// gap that still lands there; see `TODO/09-bridge-winding-xor.md`.
 ///
 /// # Errors
 ///
@@ -102,12 +104,21 @@ pub fn op(one: &Path, two: &Path, op: PathOp) -> Result<Path, PathKitError> {
             PathOp::Difference | PathOp::Xor | PathOp::ReverseDifference => Path::new(),
         });
     }
+    if let Some(result) = sk_op_engine::op_with_engine(one, two, op) {
+        return Ok(result);
+    }
     boolean::path_op(one, two, op)
 }
 
 /// Reduces `path` to an equivalent path built from non-overlapping
 /// contours.
 pub fn simplify(path: &Path) -> Result<Path, PathKitError> {
+    // Deliberately *not* routed through [`sk_op_engine`] the way [`op`] is.
+    // `simplify_with_engine` runs `bridgeWinding` for both fill rules —
+    // `find_next_xor` exists and nothing calls it — so an even-odd path with
+    // a hole comes back solid, and with its fill type rewritten to winding.
+    // The substitute engine gets that case right. See
+    // `TODO/09-bridge-winding-xor.md`.
     crate::pathops::sk_path_ops_simplify::simplify(path).map_err(|_| PathKitError::OperationFailed)
 }
 
@@ -256,5 +267,41 @@ mod tests {
         path.set_fill_type(FillType::InverseWinding);
         let result = as_winding(&path).unwrap();
         assert_eq!(result.fill_type(), FillType::InverseWinding);
+    }
+
+    #[test]
+    fn simplify_keeps_an_even_odd_hole() {
+        // Concentric squares under even-odd fill: an annulus with a square
+        // hole. This is the case that stops `simplify` being routed through
+        // `sk_op_engine` the way `op` is — `simplify_with_engine` walks it
+        // with `bridgeWinding`, fills the hole in, and rewrites the fill type
+        // to winding on the way out. If this test ever fails because someone
+        // switched the routing, `bridgeXor` is the missing piece, not this
+        // assertion.
+        let mut p = Path::new();
+        p.add_rect_simple(Rect::from_ltrb(0.0, 0.0, 100.0, 100.0));
+        p.add_rect_simple(Rect::from_ltrb(25.0, 25.0, 75.0, 75.0));
+        p.set_fill_type(FillType::EvenOdd);
+        assert!(!p.contains(50.0, 50.0), "the input really has a hole");
+
+        let got = simplify(&p).expect("simplifies");
+        assert!(!got.contains(50.0, 50.0), "the hole survives");
+        assert!(got.contains(10.0, 50.0), "and the ring around it is filled");
+    }
+
+    #[test]
+    fn the_engine_still_gets_an_even_odd_hole_wrong() {
+        // The other half of the test above, stated as the known gap rather
+        // than left implicit. Delete both when `bridgeXor` lands.
+        let mut p = Path::new();
+        p.add_rect_simple(Rect::from_ltrb(0.0, 0.0, 100.0, 100.0));
+        p.add_rect_simple(Rect::from_ltrb(25.0, 25.0, 75.0, 75.0));
+        p.set_fill_type(FillType::EvenOdd);
+
+        let got = sk_op_engine::simplify_with_engine(&p).expect("it answers, wrongly");
+        assert!(
+            got.contains(50.0, 50.0),
+            "known gap: bridgeWinding fills the hole in"
+        );
     }
 }

@@ -497,6 +497,126 @@ impl Path {
         self
     }
 
+    /// Appends `src`, turning its leading `Move` into a `Line`.
+    ///
+    /// Port of `SkPath::addPath` with `kExtend_AddPathMode`. Where
+    /// [`add_path`](Self::add_path) starts a new contour, this continues the
+    /// one already open, which is what stitching assembled pieces needs: the
+    /// pieces are consecutive parts of a single boundary, not separate
+    /// contours. With nothing open yet, or an empty `src`, it behaves like
+    /// `add_path`.
+    pub fn add_path_extend(&mut self, src: &Path) -> &mut Self {
+        if src.is_empty() {
+            return self;
+        }
+        if self.last_point().is_none() {
+            return self.add_path(src, 0.0, 0.0);
+        }
+
+        let mut vi = 0usize;
+        let mut pi = 0usize;
+        let mut wi = 0usize;
+        let mut first = true;
+        while vi < src.verbs.len() {
+            match src.verbs[vi] {
+                Verb::Move => {
+                    let p = src.points[pi];
+                    // The extend: the piece's opening move becomes a line
+                    // from wherever the output currently is. A move here
+                    // would break the contour in two.
+                    if first {
+                        self.line_to(p.x, p.y);
+                    } else {
+                        self.move_to(p.x, p.y);
+                    }
+                    pi += 1;
+                }
+                Verb::Line => {
+                    let p = src.points[pi];
+                    self.line_to(p.x, p.y);
+                    pi += 1;
+                }
+                Verb::Quad => {
+                    let (p1, p2) = (src.points[pi], src.points[pi + 1]);
+                    self.quad_to(p1.x, p1.y, p2.x, p2.y);
+                    pi += 2;
+                }
+                Verb::Conic => {
+                    let (p1, p2) = (src.points[pi], src.points[pi + 1]);
+                    let w = src.conic_weights[wi];
+                    self.conic_to(p1.x, p1.y, p2.x, p2.y, w);
+                    pi += 2;
+                    wi += 1;
+                }
+                Verb::Cubic => {
+                    let (p1, p2, p3) =
+                        (src.points[pi], src.points[pi + 1], src.points[pi + 2]);
+                    self.cubic_to(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
+                    pi += 3;
+                }
+                Verb::Close => {
+                    self.close();
+                }
+            }
+            first = false;
+            vi += 1;
+        }
+        self
+    }
+
+    /// Appends `src` traversed backwards, continuing from the current point.
+    ///
+    /// Port of `SkPath::reversePathTo`. Each verb is re-emitted with its
+    /// control points in reverse order, so the geometry is identical and only
+    /// the direction of travel changes. No `move_to` is written: the caller is
+    /// already standing at what was `src`'s *last* point. Stops at the first
+    /// `Move` reached going backwards, which is where `src`'s final contour
+    /// began.
+    pub fn reverse_path_to(&mut self, src: &Path) -> &mut Self {
+        if src.verbs.is_empty() {
+            return self;
+        }
+        let mut pi = src.points.len();
+        let mut wi = src.conic_weights.len();
+        for vi in (0..src.verbs.len()).rev() {
+            let v = src.verbs[vi];
+            // Close carries no points, and a Move's single point is the one
+            // the previous verb already ended on.
+            let consumed = match v {
+                Verb::Move => 1,
+                Verb::Line => 1,
+                Verb::Quad | Verb::Conic => 2,
+                Verb::Cubic => 3,
+                Verb::Close => 0,
+            };
+            pi -= consumed;
+            match v {
+                // Multiple contours: stop once the last one is reversed.
+                Verb::Move => return self,
+                Verb::Line => {
+                    let p = src.points[pi];
+                    self.line_to(p.x, p.y);
+                }
+                Verb::Quad => {
+                    let (a, b) = (src.points[pi], src.points[pi + 1]);
+                    self.quad_to(b.x, b.y, a.x, a.y);
+                }
+                Verb::Conic => {
+                    let (a, b) = (src.points[pi], src.points[pi + 1]);
+                    wi -= 1;
+                    self.conic_to(b.x, b.y, a.x, a.y, src.conic_weights[wi]);
+                }
+                Verb::Cubic => {
+                    let (a, b, c) =
+                        (src.points[pi], src.points[pi + 1], src.points[pi + 2]);
+                    self.cubic_to(c.x, c.y, b.x, b.y, a.x, a.y);
+                }
+                Verb::Close => {}
+            }
+        }
+        self
+    }
+
     /// Returns an iterator over the path's segments.
     ///
     /// Each item is `(verb, points, conic_weight)`, where `points` holds
@@ -1864,5 +1984,67 @@ mod tests {
                 assert_eq!(path.contains(x, y), d < 40.0, "at ({x}, {y}), r = {d}");
             }
         }
+    }
+
+    #[test]
+    fn reverse_path_to_retraces_the_same_geometry_backwards() {
+        let mut src = Path::new();
+        src.move_to(0.0, 0.0);
+        src.line_to(10.0, 0.0);
+        src.quad_to(15.0, 5.0, 10.0, 10.0);
+        src.cubic_to(8.0, 12.0, 4.0, 12.0, 0.0, 10.0);
+
+        let mut out = Path::new();
+        out.move_to(0.0, 10.0);
+        out.reverse_path_to(&src);
+
+        // Same verbs, reversed, and no extra move: the caller is already
+        // standing where `src` ended.
+        assert_eq!(
+            out.verbs(),
+            &[Verb::Move, Verb::Cubic, Verb::Quad, Verb::Line]
+        );
+        // Each verb's control points come back in the other order, so the
+        // walk traces the identical curve the other way.
+        let pts: Vec<(f32, f32)> = out.points().iter().map(|p| (p.x, p.y)).collect();
+        assert_eq!(pts[1], (0.0, 10.0));
+        assert_eq!(pts[2], (4.0, 12.0));
+        assert_eq!(pts[3], (8.0, 12.0));
+        assert_eq!(pts[4], (10.0, 10.0));
+        assert_eq!(pts[5], (15.0, 5.0));
+        // It stops at src's second point, not its first: the leading Move is
+        // where the contour began and is not re-emitted.
+        assert_eq!(pts[6], (10.0, 0.0));
+    }
+
+    #[test]
+    fn add_path_extend_turns_the_leading_move_into_a_line() {
+        let mut piece = Path::new();
+        piece.move_to(0.0, 10.0);
+        piece.line_to(5.0, 10.0);
+
+        let mut out = Path::new();
+        out.move_to(0.0, 0.0);
+        out.line_to(0.0, 10.0);
+        out.add_path_extend(&piece);
+
+        // One contour, not two: the piece's move became a line.
+        assert_eq!(
+            out.verbs(),
+            &[Verb::Move, Verb::Line, Verb::Line, Verb::Line]
+        );
+    }
+
+    #[test]
+    fn add_path_extend_on_an_empty_path_still_moves() {
+        let mut piece = Path::new();
+        piece.move_to(1.0, 2.0);
+        piece.line_to(3.0, 4.0);
+
+        let mut out = Path::new();
+        out.add_path_extend(&piece);
+
+        // With nothing open there is no contour to extend, so the move stands.
+        assert_eq!(out.verbs(), &[Verb::Move, Verb::Line]);
     }
 }

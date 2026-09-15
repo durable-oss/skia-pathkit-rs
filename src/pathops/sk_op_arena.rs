@@ -1676,10 +1676,16 @@ impl OpArena {
         winding
     }
 
-    /// Returns the winding after walking `end` to `start`.
+    /// Returns the winding walking an angle's `start` to its `end`.
     ///
-    /// Port of `SkOpSegment::updateWindingReverse`, which is the same walk
-    /// with its ends swapped.
+    /// Port of `SkOpSegment::updateWindingReverse` (`SkOpSegment.cpp:1761`).
+    ///
+    /// The name is the opposite of what it does to the arguments. The
+    /// angle-taking `updateWinding` passes `(end, start)`; the `Reverse` form
+    /// passes `(start, end)` — it is "reverse" relative to *that*, so it does
+    /// **not** swap. Swapping here reads the winding from the wrong end of
+    /// the span pair, and `compute_one_sum` then transfers that value onto
+    /// the next angle, which is how a correct graph grows a wrong sum.
     pub fn update_winding_reverse<F>(
         &mut self,
         start: SpanId,
@@ -1689,7 +1695,7 @@ impl OpArena {
     where
         F: FnMut(&mut OpArena, SpanId) -> bool,
     {
-        self.update_winding(end, start, sortable_top)
+        self.update_winding(start, end, sortable_top)
     }
 
     /// Returns the opposite operand's winding after walking `start` to `end`.
@@ -1716,12 +1722,14 @@ impl OpArena {
         opp_winding
     }
 
-    /// Returns the opposite operand's winding after walking `end` to `start`.
+    /// Returns the opposite operand's winding walking `start` to `end`.
     ///
-    /// Port of `SkOpSegment::updateOppWindingReverse`.
+    /// Port of `SkOpSegment::updateOppWindingReverse` (`SkOpSegment.cpp:1731`).
+    /// As with [`Self::update_winding_reverse`], the `Reverse` form is the one
+    /// that passes the angle's ends through unswapped.
     #[must_use]
     pub fn update_opp_winding_reverse(&self, start: SpanId, end: SpanId) -> i32 {
-        self.update_opp_winding(end, start)
+        self.update_opp_winding(start, end)
     }
 
 
@@ -1994,6 +2002,15 @@ impl OpArena {
             min: Some(span_start),
             last: None,
         };
+        // C++ also checks `this->operand() == other->operand()` here and
+        // marks with the two windings swapped when the chase has crossed into
+        // the other input (`SkOpSegment.cpp:942`). That branch is unreachable
+        // as this arena is built: `next_chase` prefers the segment on the
+        // chased span's own contour, so a run never changes operand partway.
+        // Instrumenting it across the whole suite and the disc-union sweep
+        // fires it zero times, so it is left out rather than carried as code
+        // no test can reach. Restore both halves together if `next_chase`
+        // ever learns to cross.
         let mut safety_net = 100_000;
         while let Some(_other) = self.next_chase(&mut state) {
             safety_net -= 1;
@@ -2002,6 +2019,18 @@ impl OpArena {
             }
             let Some(min) = state.min else { break };
             if self.span(min).wind_sum() != PK_MIN_S32 {
+                // Already resolved. C++ compares rather than overwrites, and
+                // raises the failure flag when the two answers disagree
+                // (`SkOpSegment.cpp:931`); `bridge` reads that flag and sends
+                // the op to the flattening fallback. No test in the suite
+                // reaches this disagreement - it is the safety net for a
+                // graph that contradicts itself, kept because the alternative
+                // is silently walking one.
+                if self.span(min).wind_sum() != winding
+                    || self.span(min).opp_sum() != opp_winding
+                {
+                    self.set_winding_failed();
+                }
                 break;
             }
             self.mark_winding_opp(min, winding, opp_winding);
@@ -3819,9 +3848,14 @@ mod tests {
         arena.span_mut(head).set_wind_value(1);
         arena.span_set_wind_sum(head, 2);
 
-        let forward = arena.update_winding(head, mid, |_, _| true);
-        let reverse = arena.update_winding_reverse(mid, head, |_, _| true);
-        assert_eq!(forward, reverse, "reverse swaps the ends back");
+        // The `Reverse` form is the one that does *not* swap. C++'s
+        // angle-taking `updateWinding` passes `(end, start)` and
+        // `updateWindingReverse` passes `(start, end)`
+        // (`SkOpSegment.cpp:1725-1736`), so "reverse" names the relationship
+        // to that call, not to the argument order here.
+        let plain = arena.update_winding(head, mid, |_, _| true);
+        let reverse = arena.update_winding_reverse(head, mid, |_, _| true);
+        assert_eq!(plain, reverse, "reverse passes its ends straight through");
     }
 
     #[test]
@@ -3838,8 +3872,9 @@ mod tests {
 
         // Backwards: opp_sign is +1, candidate 2 - 1 = 1, inner wins.
         assert_eq!(arena.update_opp_winding(mid, head), 1);
-        // And the reverse form swaps the ends.
-        assert_eq!(arena.update_opp_winding_reverse(head, mid), 1);
+        // The reverse form passes its ends through unswapped, so it agrees
+        // with the plain call on the same pair.
+        assert_eq!(arena.update_opp_winding_reverse(mid, head), 1);
     }
 
     // --- marking and chasing (item 05, part 5) ---------------------------

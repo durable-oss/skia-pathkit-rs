@@ -18,7 +18,7 @@ use super::sk_op_angle_order::{calc_angles, loop_count, sort_angles};
 use super::sk_op_arena::{OpArena, SegmentId, SpanId};
 use super::sk_op_coincidence::SkOpCoincidence;
 use super::sk_op_span::PK_MIN_S32;
-use super::sk_op_walker::{mark_angle, PK_NAN32};
+use super::sk_op_walker::{mark_angle, mark_angle_opp, PK_NAN32};
 use super::sk_op_arena::AngleId;
 
 /// How many times a self-feeding pass may re-run before the input is called
@@ -156,6 +156,165 @@ fn angle_wind_sum(arena: &OpArena, angle: AngleId) -> i32 {
         return PK_MIN_S32;
     };
     arena.wind_sum_between(start, end)
+}
+
+/// Pops the chase list and picks the next segment to walk from, for a
+/// two-operand op.
+///
+/// Port of `findChaseOp` (`SkPathOpsOp.cpp:20`). It differs from
+/// [`find_chase`] in exactly the way the binary walk differs from the unary
+/// one: two running sums instead of one, swapped when the angle's segment
+/// belongs to the second operand, and `mark_angle_opp` to record both. Using
+/// the unary `find_chase` here resolves the opposite operand's winding to
+/// nothing, so the drain comes back with an edge that looks active only
+/// because half its winding was never counted — which is how a Difference
+/// ends up tracing the operand it was supposed to subtract.
+///
+/// `start` and `end` are updated to the span pair the returned segment should
+/// be walked over.
+pub fn find_chase_op(
+    arena: &mut OpArena,
+    chase: &mut Vec<SpanId>,
+    start: &mut SpanId,
+    end: &mut Option<SpanId>,
+) -> Option<SegmentId> {
+    while let Some(span) = chase.pop() {
+        // C++ takes the ring's *previous* member, not the next one.
+        let Some(ptt) = arena.span_ptt(span) else {
+            continue;
+        };
+        let prev_ptt = arena.ptt_prev(ptt);
+        let Some(prev_span) = arena.ptt_span(prev_ptt) else {
+            continue;
+        };
+        *start = prev_span;
+        *end = None;
+        let mut done = true;
+        let mut start_ptr = None;
+        let mut end_ptr = None;
+        if let Some(last) = arena.active_angle(*start, &mut start_ptr, &mut end_ptr, &mut done) {
+            if let (Some(s), Some(e)) = (
+                arena.angle(last).f_start.map(SpanId::new),
+                arena.angle(last).f_end.map(SpanId::new),
+            ) {
+                *start = s;
+                *end = Some(e);
+                chase.push(span);
+                return arena.span_segment(s);
+            }
+        }
+        if done {
+            continue;
+        }
+        let Some(end_span) = *end else {
+            continue;
+        };
+
+        let found = angle_winding(arena, *start, end_span);
+        let angle = found.angle?;
+        if found.winding == PK_MIN_S32 || found.winding == PK_NAN32 {
+            continue;
+        }
+
+        // Both running sums, read reversed off the angle, then swapped when
+        // the angle's own segment is the second operand.
+        let mut sum_mi_winding = 0;
+        let mut sum_su_winding = 0;
+        if found.sortable {
+            let (Some(a_start), Some(a_end)) = (
+                arena.angle(angle).f_start.map(SpanId::new),
+                arena.angle(angle).f_end.map(SpanId::new),
+            ) else {
+                continue;
+            };
+            sum_mi_winding = arena.update_winding_reverse(a_start, a_end, |_, _| false);
+            sum_su_winding = arena.update_opp_winding_reverse(a_start, a_end);
+            if sum_mi_winding == PK_MIN_S32 || sum_su_winding == PK_MIN_S32 {
+                return None;
+            }
+            if arena
+                .span_segment(a_start)
+                .is_some_and(|s| arena.segment_operand(s))
+            {
+                std::mem::swap(&mut sum_mi_winding, &mut sum_su_winding);
+            }
+        }
+
+        let mut first: Option<SegmentId> = None;
+        let mut current = angle;
+        let mut guard = LOOP_GUARD;
+        loop {
+            guard -= 1;
+            if guard == 0 {
+                break;
+            }
+            current = match arena.angle(current).f_next.map(AngleId::new) {
+                Some(n) => n,
+                None => break,
+            };
+            if current == angle {
+                break;
+            }
+            let (Some(a_start), Some(a_end)) = (
+                arena.angle(current).f_start.map(SpanId::new),
+                arena.angle(current).f_end.map(SpanId::new),
+            ) else {
+                continue;
+            };
+            let Some(segment) = arena.span_segment(a_start) else {
+                continue;
+            };
+            let (max_winding, opp_max_winding) = if found.sortable {
+                let operand = arena.segment_operand(segment);
+                arena.set_up_windings(
+                    a_start,
+                    a_end,
+                    operand,
+                    &mut sum_mi_winding,
+                    &mut sum_su_winding,
+                )
+            } else {
+                (0, 0)
+            };
+            let span_done = arena
+                .span_starter(a_start, a_end)
+                .is_some_and(|s| arena.span(s).done());
+            if span_done {
+                continue;
+            }
+            let has_winding = arena
+                .span_starter(a_start, a_end)
+                .is_some_and(|s| arena.span(s).wind_sum() != PK_MIN_S32);
+            if first.is_none() && (found.sortable || has_winding) {
+                first = Some(segment);
+                *start = a_start;
+                *end = Some(a_end);
+            }
+            if found.sortable {
+                // After `set_up_windings` the two sums hold this angle's own
+                // side; C++ passes them as sumWinding / oppSumWinding.
+                let operand = arena.segment_operand(segment);
+                let (sum_winding, opp_sum_winding) = if operand {
+                    (sum_su_winding, sum_mi_winding)
+                } else {
+                    (sum_mi_winding, sum_su_winding)
+                };
+                mark_angle_opp(
+                    arena,
+                    max_winding,
+                    sum_winding,
+                    opp_max_winding,
+                    opp_sum_winding,
+                    current,
+                );
+            }
+        }
+        if let Some(segment) = first {
+            chase.push(span);
+            return Some(segment);
+        }
+    }
+    None
 }
 
 /// Pops the chase list and picks the next segment to walk from.
