@@ -1864,16 +1864,94 @@ mod tests {
     fn discs_union_to_one_contour_across_the_offset_sweep() {
         // TODO/16 measured the flattening engine failing only in a narrow
         // band around 0.5 and holding elsewhere. Check the whole sweep.
+        //
+        // Contour count alone would not have caught the curve-subdivision
+        // corruption in 2026-09-15-curve-subdivision-corrupts-multi-
+        // intersection-arcs.md: a corrupted result still comes back as one
+        // contour, just the wrong shape. Interior-point containment, checked
+        // against the two circles' own geometry, catches that too.
         for offset in [0.5f32, 1.0, 2.0, 5.0, 20.0, 40.0, 60.0] {
+            let (cx_a, cy_a, r) = (200.0f32, 200.0f32, 40.0f32);
+            let (cx_b, cy_b) = (200.0 + offset, 200.0);
             let mut a = Path::new();
-            a.add_circle(200.0, 200.0, 40.0);
+            a.add_circle(cx_a, cy_a, r);
             let mut b = Path::new();
-            b.add_circle(200.0 + offset, 200.0, 40.0);
+            b.add_circle(cx_b, cy_b, r);
             let got = op_with_engine(&a, &b, PathOp::Union)
                 .unwrap_or_else(|| panic!("offset {offset} should resolve"));
             let contours = got.verbs().iter().filter(|v| **v == Verb::Move).count();
             assert_eq!(contours, 1, "offset {offset} gave {contours} contours");
+
+            let in_circle = |x: f32, y: f32, cx: f32, cy: f32| {
+                ((x - cx).powi(2) + (y - cy).powi(2)).sqrt() < r * 0.9
+            };
+            for (x, y) in [
+                (cx_a, cy_a),
+                (cx_b, cy_b),
+                (cx_a - r * 0.8, cy_a),
+                (cx_b + r * 0.8, cy_b),
+            ] {
+                let want = in_circle(x, y, cx_a, cy_a) || in_circle(x, y, cx_b, cy_b);
+                assert_eq!(
+                    got.contains(x, y),
+                    want,
+                    "offset {offset}: ({x},{y}) containment mismatch"
+                );
+            }
+            // A point far outside both circles must stay out.
+            assert!(!got.contains(cx_a - r * 4.0, cy_a));
         }
+    }
+
+    #[test]
+    fn two_overlapping_circles_union_keeps_correct_curve_geometry() {
+        // Regression test for 2026-09-15-curve-subdivision-corrupts-multi-
+        // intersection-arcs.md: each circle's boundary picks up two new
+        // intersection t values on the arc facing the other circle, since
+        // both circles are built from four conics and the overlap crosses
+        // one of those arcs twice. `SkPathWriter::close`'s partial-contour
+        // reassembly was indexing points by verb position instead of by
+        // running point offset, which is off by however many extra points
+        // every Quad/Conic/Cubic before it had contributed - here it showed
+        // up as adjacent verbs sharing a point that should have been distinct.
+        let mut a = Path::new();
+        a.add_circle(0.0, 0.0, 20.0);
+        let mut b = Path::new();
+        b.add_circle(10.0, 0.0, 20.0);
+
+        let got = op_with_engine(&a, &b, PathOp::Union).expect("union should resolve");
+        assert!(!got.is_empty(), "two large overlapping circles are not empty");
+
+        let in_circle = |x: f32, y: f32, cx: f32, cy: f32, r: f32| {
+            ((x - cx).powi(2) + (y - cy).powi(2)).sqrt() < r * 0.9
+        };
+        for (x, y) in [(0.0, 0.0), (10.0, 0.0), (-15.0, 0.0), (25.0, 0.0), (5.0, 15.0)] {
+            let want = in_circle(x, y, 0.0, 0.0, 20.0) || in_circle(x, y, 10.0, 0.0, 20.0);
+            assert_eq!(got.contains(x, y), want, "({x},{y}) containment mismatch");
+        }
+        assert!(!got.contains(-100.0, -100.0), "far outside both circles");
+    }
+
+    #[test]
+    fn two_overlapping_circles_simplify_keeps_correct_curve_geometry() {
+        // Same geometry as two_overlapping_circles_union_keeps_correct_curve_
+        // geometry, run through simplify's even-odd path instead of a binary
+        // op, per the TODO's task list.
+        let mut combined = Path::new();
+        combined.add_circle(0.0, 0.0, 20.0);
+        combined.add_circle(10.0, 0.0, 20.0);
+
+        let got = simplify_with_engine(&combined).expect("simplify should resolve");
+        assert!(!got.is_empty());
+
+        let in_circle = |x: f32, y: f32, cx: f32, cy: f32, r: f32| {
+            ((x - cx).powi(2) + (y - cy).powi(2)).sqrt() < r * 0.9
+        };
+        for (x, y) in [(0.0, 0.0), (10.0, 0.0), (-15.0, 0.0), (25.0, 0.0), (5.0, 15.0)] {
+            let want = in_circle(x, y, 0.0, 0.0, 20.0) || in_circle(x, y, 10.0, 0.0, 20.0);
+            assert_eq!(got.contains(x, y), want, "({x},{y}) containment mismatch");
+        }
+        assert!(!got.contains(-100.0, -100.0), "far outside both circles");
     }
 
     #[test]

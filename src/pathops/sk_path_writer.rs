@@ -37,10 +37,39 @@ impl<'a> SkPathWriter<'a> {
         let temp = self.current.clone();
         self.current.rewind();
         self.init();
-        // Copy temp to path_ptr
-        for i in 0..temp.count_verbs() {
-            if let Some(verb) = temp.verb(i) {
-                self.append_verb(verb, &temp, i);
+        // Copy temp to path_ptr. `iter()` resolves each verb's own points and
+        // conic weight; indexing `temp.point(verb_idx)` by verb position
+        // instead (the previous approach) only lines up while every verb so
+        // far contributed exactly one point, which breaks the moment a
+        // Quad/Conic/Cubic (two or three points) precedes another verb.
+        for (verb, pts, weight) in temp.iter() {
+            match verb {
+                crate::core::Verb::Move => {
+                    self.path_ptr.move_to(pts[0].x, pts[0].y);
+                }
+                crate::core::Verb::Line => {
+                    self.path_ptr.line_to(pts[1].x, pts[1].y);
+                }
+                crate::core::Verb::Quad => {
+                    self.path_ptr.quad_to(pts[1].x, pts[1].y, pts[2].x, pts[2].y);
+                }
+                crate::core::Verb::Conic => {
+                    self.path_ptr.conic_to(
+                        pts[1].x,
+                        pts[1].y,
+                        pts[2].x,
+                        pts[2].y,
+                        weight.unwrap_or(1.0),
+                    );
+                }
+                crate::core::Verb::Cubic => {
+                    self.path_ptr.cubic_to(
+                        pts[1].x, pts[1].y, pts[2].x, pts[2].y, pts[3].x, pts[3].y,
+                    );
+                }
+                crate::core::Verb::Close => {
+                    self.path_ptr.close();
+                }
             }
         }
     }
@@ -495,61 +524,6 @@ impl<'a> SkPathWriter<'a> {
         &self.partials
     }
 
-    /// Appends a verb from a contour to the path pointer
-    fn append_verb(&mut self, verb: crate::core::Verb, contour: &Path, verb_idx: usize) {
-        match verb {
-            crate::core::Verb::Move => {
-                if let Some(pt) = contour.point(verb_idx as usize) {
-                    self.path_ptr.move_to(pt.x, pt.y);
-                }
-            }
-            crate::core::Verb::Line => {
-                if let Some(pt) = contour.point(verb_idx as usize) {
-                    self.path_ptr.line_to(pt.x, pt.y);
-                }
-            }
-            crate::core::Verb::Quad => {
-                if let Some(pt) = contour.point(verb_idx as usize) {
-                    self.path_ptr.quad_to(
-                        pt.x,
-                        pt.y,
-                        contour
-                            .point(verb_idx as usize + 1)
-                            .unwrap_or(Point::new(0.0, 0.0))
-                            .x,
-                        contour
-                            .point(verb_idx as usize + 1)
-                            .unwrap_or(Point::new(0.0, 0.0))
-                            .y,
-                    );
-                }
-            }
-            crate::core::Verb::Conic => {
-                if let Some(pt) = contour.point(verb_idx as usize) {
-                    let pt2 = contour
-                        .point(verb_idx as usize + 1)
-                        .unwrap_or(Point::new(0.0, 0.0));
-                    let weight = contour.conic_weights().get(0).copied().unwrap_or(1.0);
-                    self.path_ptr.conic_to(pt.x, pt.y, pt2.x, pt2.y, weight);
-                }
-            }
-            crate::core::Verb::Cubic => {
-                if let Some(pt) = contour.point(verb_idx as usize) {
-                    let pt2 = contour
-                        .point(verb_idx as usize + 1)
-                        .unwrap_or(Point::new(0.0, 0.0));
-                    let pt3 = contour
-                        .point(verb_idx as usize + 2)
-                        .unwrap_or(Point::new(0.0, 0.0));
-                    self.path_ptr
-                        .cubic_to(pt.x, pt.y, pt2.x, pt2.y, pt3.x, pt3.y);
-                }
-            }
-            crate::core::Verb::Close => {
-                self.path_ptr.close();
-            }
-        }
-    }
 }
 
 impl<'a> Default for SkPathWriter<'a> {
