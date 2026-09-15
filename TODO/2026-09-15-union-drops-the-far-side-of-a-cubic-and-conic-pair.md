@@ -103,6 +103,12 @@ opposite at the junction — it should probably start from Skia's own
 fallback) as a reference rather than from scratch. Until then, `boolean.rs`'s
 deletion stays blocked on this file plus item 3.
 
+**The fix itself is tracked in its own file, broken into small
+independently-testable pieces:**
+`TODO/2026-09-15-tangent-contact-angle-ordering.md`. This file stays as the
+investigation record (root cause, what was ruled out); further work belongs
+in the split-out file, not here.
+
 ## Acceptance
 
 - [x] Root cause identified: exact tangency between the two operands'

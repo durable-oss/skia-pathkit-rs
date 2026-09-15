@@ -216,6 +216,10 @@ blocker on it, since straight-edge and single-intersection-per-arc inputs
    machinery this item originally called out. The panic that motivated this
    update is fixed; the underlying coincidence-detection gap is not.
 
+   Split out to its own file, broken into independently-closeable pieces:
+   `TODO/2026-09-15-curve-curve-coincidence-detection.md`. Track further
+   work there, not here.
+
 4. ~~**Nested shapes that share part of their boundary, under Difference**~~
    Closed 2026-09-15: `ArenaSegment` gained `f_coincident_splits`, a count of
    how many of a segment's spans came from `record_if_coincident` or
@@ -301,3 +305,8 @@ blocker on it, since straight-edge and single-intersection-per-arc inputs
       fronts are still open; `boolean.rs` is not being deleted.
       The curve-subdivision gap that used to block this is fixed — see
       `TODO/done/2026-09-15-curve-subdivision-corrupts-multi-intersection-arcs.md`.
+      The two blockers now have their own tracking files, split into small
+      independently-testable pieces:
+      `TODO/2026-09-15-tangent-contact-angle-ordering.md` and
+      `TODO/2026-09-15-curve-curve-coincidence-detection.md`. `boolean.rs`
+      deletion stays gated on both closing.

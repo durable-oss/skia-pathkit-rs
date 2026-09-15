@@ -279,6 +279,12 @@ edge_16 = [(647.6314, 4.9748), (712.7718, 51.1942), (749.0703, 67.9497), (758.74
 
 The full union (fold `op(_, _, PathOp::Union)` pairwise over `edge_0..edge_16` in order) is what should reproduce, if this is a pathkit-side gap and not something specific to how `font-vectorizer` walks `SkPath::iter()`'s result afterward (also worth checking, and easy to rule out: convert the unioned `Path` straight to an SVG `d` string via pathkit's own facilities, if any exist, or eyeball its verb/point list directly, without going through `font-vectorizer`'s `sk_path_to_contours`).
 
+**The next step (feeding this data through `op_with_engine` and tracing
+from there) is tracked in its own file, broken into small
+independently-testable pieces:**
+`TODO/2026-09-15-ribbon-union-slash-artifact-repro.md`. This file stays as
+the full investigation history; further work belongs in the split-out file.
+
 ## Acceptance
 
 - [x] Confirmed `OpBuilder` (all-at-once union) does *not* resolve the
