@@ -2522,4 +2522,57 @@ mod tests {
             );
         }
     }
+
+    fn rounded_square_cubics(cx: f32, cy: f32, half: f32, r: f32) -> Path {
+        let k = r * 0.552_284_7;
+        let mut p = Path::new();
+        let l = cx - half;
+        let t = cy - half;
+        let rr = cx + half;
+        let b = cy + half;
+        p.move_to(l + r, t);
+        p.line_to(rr - r, t);
+        p.cubic_to(rr - r + k, t, rr, t + r - k, rr, t + r);
+        p.line_to(rr, b - r);
+        p.cubic_to(rr, b - r + k, rr - r + k, b, rr - r, b);
+        p.line_to(l + r, b);
+        p.cubic_to(l + r - k, b, l, b - r + k, l, b - r);
+        p.line_to(l, t + r);
+        p.cubic_to(l, t + r - k, l + r - k, t, l + r, t);
+        p.close();
+        p
+    }
+
+    #[test]
+    fn union_of_a_disc_and_a_rounded_square_matches_the_operands() {
+        // Offset and half-width chosen so the square's straight edges do not
+        // land on the circle's own extrema — an exact tangential touch there
+        // sends the walk down a different, unfixed path; see
+        // TODO/2026-09-15-union-drops-the-far-side-of-a-cubic-and-conic-pair.md.
+        let mut disc = Path::new();
+        disc.add_circle(0.0, 0.0, 30.0);
+        let square = rounded_square_cubics(15.0, 3.0, 22.0, 8.0);
+        let got = op_with_engine(&disc, &square, PathOp::Union).expect("should not decline");
+        let probes = [
+            (-40.0f32, 0.0f32),
+            (0.0, 0.0),
+            (36.0, 0.0),
+            (36.0, 26.0),
+            (0.0, -29.0),
+            (-20.0, -20.0),
+            (-29.9, 0.0),
+            (20.0, 20.0),
+            (35.0, -18.0),
+            (35.0, 24.0),
+            (40.0, 0.0),
+        ];
+        for (x, y) in probes {
+            let want = disc.contains(x, y) || square.contains(x, y);
+            assert_eq!(
+                got.contains(x, y),
+                want,
+                "probe ({x},{y}): engine union disagrees with operand union"
+            );
+        }
+    }
 }

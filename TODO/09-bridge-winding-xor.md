@@ -213,6 +213,22 @@ blocker on it, since straight-edge and single-intersection-per-arc inputs
    sweep again once the new file's two gaps close, rather than assuming
    they are the last ones either.
 
+   Update 2026-09-15: both of those closed (see
+   `TODO/done/2026-09-15-broad-sweep-found-two-more-op-with-engine-gaps.md`),
+   and widening the sweep as its own due diligence step surfaced a third,
+   unrelated gap — filed as
+   `2026-09-15-union-drops-the-far-side-of-a-cubic-and-conic-pair.md`. That
+   one traced to a genuine engine bug (exact tangential contact between two
+   curves misleads the angle-ring sort in `find_next_op`/`pick_next` into
+   picking the wrong boundary edge — a real wrong answer, not a decline),
+   confirmed narrow (a generic, non-tangent offset of the same shapes
+   answers correctly) but **not fixed** — the fix needs curvature-based
+   angle disambiguation on the scale of Skia's own `SkOpAngle.cpp`, out of
+   scope for a bounded bug fix. Combined with item 3 above (curve/curve
+   coincidence: no known failure, but also no coverage), `boolean.rs` stays
+   blocked on two fronts: one confirmed wrong-answer gap and one unaudited
+   one. It is not being deleted.
+
 6. ~~**Three copies of `MAX_WINDING_TRIES`,**~~ Closed 2026-09-15: the two
    dead copies (`sk_path_ops_winding.rs`, `sk_op_span.rs`, both 100 and
    unread anywhere) are deleted along with their pinning tests. The
@@ -235,8 +251,12 @@ blocker on it, since straight-edge and single-intersection-per-arc inputs
 - [ ] `boolean.rs` and the substitute helpers deleted. Both gaps in
       `2026-09-15-broad-sweep-found-two-more-op-with-engine-gaps.md` are
       now fixed, but widening that file's sweep as its own due diligence
-      found a third, unrelated gap first — a `Union`-only bug on a
-      cubic/conic pair — filed as
+      found a third, unrelated gap first — a real wrong-answer bug at
+      exact tangential contact between two curves, traced to the
+      angle-ring sort, not fixed (needs curvature-based disambiguation on
+      the scale of Skia's own `SkOpAngle.cpp`) — filed as
       `2026-09-15-union-drops-the-far-side-of-a-cubic-and-conic-pair.md`.
+      Combined with item 3's unaudited curve/curve-coincidence gap, two
+      fronts are still open; `boolean.rs` is not being deleted.
       The curve-subdivision gap that used to block this is fixed — see
       `TODO/done/2026-09-15-curve-subdivision-corrupts-multi-intersection-arcs.md`.
