@@ -175,18 +175,43 @@ blocker on it, since straight-edge and single-intersection-per-arc inputs
    either." Worth a dedicated repro sweep before claiming it is fine, since
    absence of a failure in an unrelated sweep is not the same as testing it.
 
-4. **Nested shapes that share part of their boundary, under Difference** —
-   the gap the 2026-09-15 update above found. `boolean.rs` still answers it
-   correctly; closing it in the engine needs `segment_add_t` splits tagged by
-   whether they came from a real crossing or from `record_if_coincident`.
+4. ~~**Nested shapes that share part of their boundary, under Difference**~~
+   Closed 2026-09-15: `ArenaSegment` gained `f_coincident_splits`, a count of
+   how many of a segment's spans came from `record_if_coincident` or
+   coincidence expansion (`SkOpCoincidence::addExpanded`'s port) rather than
+   a real crossing, via a new `segment_add_t_coincident` that tags the split
+   at the two call sites that split for coincidence. `graph_operands_do_not_cross`
+   now treats `f_count - f_coincident_splits == 2` as "does not cross,"
+   so a segment with only coincident splits still lets `nesting` settle the
+   pair, while a segment carrying even one real-crossing split still
+   correctly declines. Regression tests: a rect nested in another sharing
+   one edge, two edges, or only a corner (all settle now), plus a case
+   sharing an edge *and* poking through with a real crossing (still
+   declines, confirming the tagging does not overcorrect).
 
-5. **Deleting `boolean.rs`.** Blocked on item 4, now the only known case
-   where the engine still declines an input the fallback answers correctly.
-   Once it closes, delete `boolean.rs` and the substitute helpers in
-   `sk_path_ops_simplify.rs` together — but re-run a broad sweep first
-   (a few hundred varied shape pairs across all four operators) rather than
-   trusting the last known gap was the only one; that is how the stale "2 of
-   48, curve/curve coincidence" framing above happened in the first place.
+5. **Deleting `boolean.rs`.** Was blocked on item 4 alone; that closed, but
+   the broad sweep item 5 itself asked for (a few hundred shape pairs across
+   all four operators, checked against interior-point containment, not
+   against `boolean.rs`'s own output — see below) found **two more
+   pre-existing gaps**, unrelated to nesting and confirmed to predate this
+   session's item-4 change:
+   - Two overlapping, differently-sized circles whose crossing
+     `find_crossings` never finds at all, which then makes `nesting`'s
+     single-sample shortcut misclassify a real partial overlap as full
+     containment.
+   - A disc/rect pair whose crossings *are* found and split correctly, but
+     the walk still produces a wrong answer downstream of a correctly-built
+     graph — a winding/chase bug in the family of the five defects this file
+     already found, not a graph-construction bug.
+
+   Filed as `2026-09-15-broad-sweep-found-two-more-op-with-engine-gaps.md`.
+   `boolean.rs` stays until both close; deleting it now would leave these two
+   gaps with no fallback. This is exactly the scenario the broad-sweep
+   instruction above was written to catch, and it did: the "2 of 48,
+   curve/curve coincidence" framing from earlier in this file undercounted,
+   and a bigger sweep found real gaps a narrower one had missed. Re-run the
+   sweep again once the new file's two gaps close, rather than assuming
+   they are the last ones either.
 
 6. ~~**Three copies of `MAX_WINDING_TRIES`,**~~ Closed 2026-09-15: the two
    dead copies (`sk_path_ops_winding.rs`, `sk_op_span.rs`, both 100 and
@@ -206,8 +231,8 @@ blocker on it, since straight-edge and single-intersection-per-arc inputs
 - [x] `simplify` on the real engine (falls back to the substitute engine
       the same way `op` does; curved multi-intersection inputs have a
       known, separately-filed correctness gap, not a decline).
-- [ ] The nested-shared-boundary Difference gap (item 4 above).
-- [ ] `boolean.rs` and the substitute helpers deleted (blocked on the above,
-      and now also on `2026-09-15-curve-subdivision-corrupts-multi-intersection-arcs.md`
-      — the substitute engine is still the only correct answer for curved
-      inputs with 2+ intersections on one arc).
+- [x] The nested-shared-boundary Difference gap (item 4 above).
+- [ ] `boolean.rs` and the substitute helpers deleted (blocked on the two new
+      gaps in `2026-09-15-broad-sweep-found-two-more-op-with-engine-gaps.md`;
+      the curve-subdivision gap that used to block this too is fixed —
+      see `TODO/done/2026-09-15-curve-subdivision-corrupts-multi-intersection-arcs.md`).

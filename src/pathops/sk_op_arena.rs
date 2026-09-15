@@ -288,6 +288,11 @@ pub struct ArenaSegment {
     pub f_contour: Option<usize>,
     /// Number of spans in the segment.
     pub f_count: i32,
+    /// Number of spans created by a coincident-run split rather than a real
+    /// crossing. Lets `graph_operands_do_not_cross` (`sk_op_engine.rs`) tell
+    /// "every extra span here came from touching, not crossing" apart from
+    /// an actual interior crossing, which a plain span count cannot.
+    pub f_coincident_splits: i32,
     /// Number of spans already resolved.
     pub f_done_count: i32,
     /// True once every span has been walked.
@@ -316,6 +321,7 @@ impl Default for ArenaSegment {
             f_prev: None,
             f_contour: None,
             f_count: 0,
+            f_coincident_splits: 0,
             f_done_count: 0,
             f_done: false,
             f_reversed: false,
@@ -1363,6 +1369,28 @@ impl OpArena {
     /// Returns `None` when the chain is malformed — a t below the head, or a t
     /// above the tail — which C++ treats as a hard failure.
     pub fn segment_add_t(&mut self, segment: SegmentId, t: f32, pt: Point) -> Option<PtTId> {
+        self.segment_add_t_with_cause(segment, t, pt, false)
+    }
+
+    /// Same as [`segment_add_t`](Self::segment_add_t), but the split is
+    /// recorded as coming from a coincident run rather than a real crossing —
+    /// see [`ArenaSegment::f_coincident_splits`].
+    ///
+    /// Called from `record_if_coincident` and from coincidence expansion
+    /// (`SkOpCoincidence::addExpanded`'s port), the two places that split a
+    /// segment because it touches another rather than because the walk found
+    /// an interior crossing there.
+    pub fn segment_add_t_coincident(&mut self, segment: SegmentId, t: f32, pt: Point) -> Option<PtTId> {
+        self.segment_add_t_with_cause(segment, t, pt, true)
+    }
+
+    fn segment_add_t_with_cause(
+        &mut self,
+        segment: SegmentId,
+        t: f32,
+        pt: Point,
+        from_coincidence: bool,
+    ) -> Option<PtTId> {
         let mut span_base = self.segment(segment).f_head?;
         let tail = self.segment(segment).f_tail;
         loop {
@@ -1376,6 +1404,9 @@ impl OpArena {
                 // The new span goes between this one and the one before it.
                 let prev = self.span_prev(span_base)?;
                 let span = self.segment_insert_after(segment, prev, t, pt);
+                if from_coincidence {
+                    self.segment_mut(segment).f_coincident_splits += 1;
+                }
                 self.span_mut(span).bump_span_adds();
                 return self.span_ptt(span);
             }

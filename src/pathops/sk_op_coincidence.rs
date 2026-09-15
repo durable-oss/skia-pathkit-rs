@@ -909,7 +909,7 @@ impl SkOpCoincidence {
             let want = o_t0 + o_range * part;
             if !opp_ts.iter().any(|o| (o - want).abs() < T_MATCH) {
                 let pt = arena.segment_pt_at_t(o_seg, want);
-                arena.segment_add_t(o_seg, want, pt);
+                arena.segment_add_t_coincident(o_seg, want, pt);
             }
         }
         for o_t in &opp_ts {
@@ -917,7 +917,7 @@ impl SkOpCoincidence {
             let want = t0 + range * part;
             if !coin_ts.iter().any(|t| (t - want).abs() < T_MATCH) {
                 let pt = arena.segment_pt_at_t(seg, want);
-                arena.segment_add_t(seg, want, pt);
+                arena.segment_add_t_coincident(seg, want, pt);
             }
         }
         true
